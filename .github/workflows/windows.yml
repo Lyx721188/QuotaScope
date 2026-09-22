@@ -63,9 +63,9 @@ jobs:
       - name: --json smoke test
         shell: pwsh
         run: |
-          $out = & ./target/release/pulse.exe --json | Out-String
-          $out | Out-File -FilePath "$env:TEMP\pulse-json.txt" -Encoding utf8
-          $json = Get-Content "$env:TEMP\pulse-json.txt" -Raw | ConvertFrom-Json
+          $out = & ./target/release/quotascope.exe --json | Out-String
+          $out | Out-File -FilePath "$env:TEMP\quotascope-json.txt" -Encoding utf8
+          $json = Get-Content "$env:TEMP\quotascope-json.txt" -Raw | ConvertFrom-Json
           if (-not ($json.PSObject.Properties.Name -contains "generatedAt") -or
               -not ($json.PSObject.Properties.Name -contains "accounts")) {
             Write-Host $out
@@ -79,10 +79,10 @@ jobs:
         shell: pwsh
         run: |
           $release = (Resolve-Path target/release).Path
-          $staging = Join-Path $env:RUNNER_TEMP "pulse-windows-x64"
+          $staging = Join-Path $env:RUNNER_TEMP "quotascope-windows-x64"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
-          Copy-Item (Join-Path $release "pulse.exe") $staging
+          Copy-Item (Join-Path $release "quotascope.exe") $staging
           Get-ChildItem $release -File |
             Where-Object { $_.Extension -in ".dll", ".pri" } |
             Copy-Item -Destination $staging
@@ -90,7 +90,7 @@ jobs:
             Where-Object { $_.Name -notin ".fingerprint", "build", "deps", "examples", "incremental" } |
             Copy-Item -Destination $staging -Recurse
 
-          $archive = Join-Path $release "pulse-windows-x64.zip"
+          $archive = Join-Path $release "quotascope-windows-x64.zip"
           Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $archive -Force
           Write-Host (Get-Item $archive).Length
 
@@ -99,11 +99,11 @@ jobs:
       - name: Packaged --settings smoke test
         shell: pwsh
         run: |
-          $package = Join-Path $env:RUNNER_TEMP "pulse-package-smoke"
+          $package = Join-Path $env:RUNNER_TEMP "quotascope-package-smoke"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Expand-Archive target/release/pulse-windows-x64.zip -DestinationPath $package -Force
+          Expand-Archive target/release/quotascope-windows-x64.zip -DestinationPath $package -Force
 
-          $process = Start-Process -FilePath (Join-Path $package "pulse.exe") -ArgumentList "--settings" -PassThru
+          $process = Start-Process -FilePath (Join-Path $package "quotascope.exe") -ArgumentList "--settings" -PassThru
           try {
             Start-Sleep -Seconds 20
             $process.Refresh()
@@ -117,16 +117,16 @@ jobs:
             }
           }
 
-      - name: Upload pulse-windows-x64
+      - name: Upload quotascope-windows-x64
         uses: actions/upload-artifact@v4
         with:
-          name: pulse-windows-x64
-          path: windows/target/release/pulse-windows-x64.zip
+          name: quotascope-windows-x64
+          path: windows/target/release/quotascope-windows-x64.zip
           if-no-files-found: error
 
   # Tag windows-v1.2.3, and the zip the build job just made becomes a
   # Release. The version for the title comes from the tag itself; the build
-  # job remains the single place that decides what a shipped pulse.exe is.
+  # job remains the single place that decides what a shipped quotascope.exe is.
   release:
     if: startsWith(github.ref, 'refs/tags/windows-v')
     needs: build
@@ -139,26 +139,26 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: pulse-windows-x64
+          name: quotascope-windows-x64
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TITLE="Pulse for Windows ${GITHUB_REF_NAME#windows-v}"
-          BODY="Windows x64 build of pulse.exe. Requires Windows 10 1809+ or Windows 11."
+          TITLE="QuotaScope for Windows ${GITHUB_REF_NAME#windows-v}"
+          BODY="Windows x64 build of quotascope.exe. Requires Windows 10 1809+ or Windows 11."
           BODY="$BODY
 
-          Unzip and run \`pulse.exe\` — the WinAppSDK runtime DLLs it needs travel
+          Unzip and run \`quotascope.exe\` — the WinAppSDK runtime DLLs it needs travel
           alongside it in the zip. Right-click the tray icon for settings."
 
           # Re-runnable: a re-tag or a re-run replaces the asset in place
           # instead of failing on an existing release.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" pulse-windows-x64.zip --clobber
+            gh release upload "$GITHUB_REF_NAME" quotascope-windows-x64.zip --clobber
             echo "Updated existing release $GITHUB_REF_NAME."
           else
-            gh release create "$GITHUB_REF_NAME" pulse-windows-x64.zip \
+            gh release create "$GITHUB_REF_NAME" quotascope-windows-x64.zip \
               --title "$TITLE" \
               --notes "$BODY"
           fi

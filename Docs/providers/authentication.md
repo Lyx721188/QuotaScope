@@ -1,6 +1,6 @@
 # Authentication and credentials
 
-Pulse is not an official integration of any of these products. Where it signs in, it drives a **public client the product already ships** (a CLI, an editor plugin, a login page). Settings says so before anyone starts: the consent page names that product, not Pulse, and the provider can change or withdraw the client.
+QuotaScope is not an official integration of any of these products. Where it signs in, it drives a **public client the product already ships** (a CLI, an editor plugin, a login page). Settings says so before anyone starts: the consent page names that product, not QuotaScope, and the provider can change or withdraw the client.
 
 Current code: [`OAuthLogin.swift`](../../Sources/Pulse/Auth/OAuthLogin.swift), [`LoopbackCallback.swift`](../../Sources/Pulse/Auth/LoopbackCallback.swift), [`GitHubDeviceLogin.swift`](../../Sources/Pulse/Auth/GitHubDeviceLogin.swift), [`CursorWebLogin.swift`](../../Sources/Pulse/Auth/CursorWebLogin.swift), [`AccountCredentials.swift`](../../Sources/Pulse/Auth/AccountCredentials.swift), [`APIKeyStore.swift`](../../Sources/Pulse/Auth/APIKeyStore.swift), [`LocalSecrets.swift`](../../Sources/Pulse/Auth/LocalSecrets.swift), [`BrowserCookies.swift`](../../Sources/Pulse/Auth/BrowserCookies.swift), [`ClaudeDesktopSession.swift`](../../Sources/Pulse/Providers/ClaudeDesktopSession.swift).
 
@@ -14,19 +14,19 @@ This is not a catalogue of secrets. Client ids below are public (they ship in ev
 | Copilot GitHub token | `keys.dat` as well (`keepsOwnCredential`) | Sign in again. Device tokens here are not the CLI refresh path. |
 | Extra-account logins (Claude Code, Codex, Grok, Grok Bot) | `accounts.dat` (`AccountCredentialStore`) | `UsageStore.fetchAdded` via `OAuthLogin.refresh` for the three OAuth providers. Grok Bot has **no** refresh endpoint in Cursor’s client. |
 
-Both files are AES-GCM boxes in Pulse’s Application Support folder, owner-only, key derived from this Mac rather than stored. `LocalSecrets` is shared so there is one copy of the crypto; a different derived key per purpose means a box from one store cannot be opened by the other.
+Both files are AES-GCM boxes in QuotaScope’s Application Support folder, owner-only, key derived from this Mac rather than stored. `LocalSecrets` is shared so there is one copy of the crypto; a different derived key per purpose means a box from one store cannot be opened by the other.
 
 A file that exists but will not decode is **not** empty. Treating it as empty meant saving one provider’s key silently threw away every other provider’s — and said it had succeeded. Saving refuses instead.
 
-Pulse does **not** keep a Keychain item of its own for these. Chromium / Claude Desktop / Safari reads may *prompt* for someone else’s Safe Storage key; that is borrowing, not Pulse storing a secret there.
+QuotaScope does **not** keep a Keychain item of its own for these. Chromium / Claude Desktop / Safari reads may *prompt* for someone else’s Safe Storage key; that is borrowing, not QuotaScope storing a secret there.
 
-**Do not say “only OpenCode Go holds a credential” or “Pulse never holds a credential”.** Primary Claude Code, Codex, Cursor, Grok, Grok Bot, and Antigravity borrow another tool’s login. Pulse *does* hold pasted keys, Ollama sessions, Copilot’s token, and every extra-account login.
+**Do not say “only OpenCode Go holds a credential” or “QuotaScope never holds a credential”.** Primary Claude Code, Codex, Cursor, Grok, Grok Bot, and Antigravity borrow another tool’s login. QuotaScope *does* hold pasted keys, Ollama sessions, Copilot’s token, and every extra-account login.
 
 ## Why sign in at all, rather than copy the CLI
 
 Measured: a Codex access token lives on the order of 240 hours; a Claude Code one about five; a Grok CLI token about six hours. Copying the credential would leave the account you are *not* currently using dead within an afternoon. The only way to renew a copied token is the refresh token the CLI is also relying on — which, if the provider rotates it, signs the user out of their own CLI.
 
-Pulse’s extra-account login has its own refresh token and does not read or write what the CLI stored. That separation is the reason for signing in.
+QuotaScope’s extra-account login has its own refresh token and does not read or write what the CLI stored. That separation is the reason for signing in.
 
 `fetchAdded` renews when the access token is within a minute of expiry. A renewal that fails reports `.signedOut`, not a network error: the remedy is the same and the user can act on it. That case names no provider.
 
@@ -42,13 +42,13 @@ Pulse’s extra-account login has its own refresh token and does not read or wri
 
 ## OAuth: Claude Code, Codex, Grok
 
-Pulse cannot register an OAuth application with these providers. `OAuthLogin.Configuration.of` is read from the installed CLI / the provider’s discovery document rather than remembered. A flow with one parameter wrong fails in a way that looks like the user’s fault.
+QuotaScope cannot register an OAuth application with these providers. `OAuthLogin.Configuration.of` is read from the installed CLI / the provider’s discovery document rather than remembered. A flow with one parameter wrong fails in a way that looks like the user’s fault.
 
 ### Claude Code — redirect, any loopback port
 
 - Authorize `https://claude.com/cai/oauth/authorize`, token `https://platform.claude.com/v1/oauth/token`.
 - Public client id from the CLI.
-- Scopes: **`user:profile` only**. The CLI also asks for inference and session scopes, which would let Pulse **spend** the plan it is only supposed to report on.
+- Scopes: **`user:profile` only**. The CLI also asks for inference and session scopes, which would let QuotaScope **spend** the plan it is only supposed to report on.
 - Token endpoint takes **JSON**. Exchange **carries `state`**.
 - Extra authorize item `code=true`.
 - `fixedPort` is nil: any loopback port, path `/callback`.
@@ -71,7 +71,7 @@ Nothing is redirected back to this Mac, so there is no local port to collide wit
 
 The Codex CLI is open source. Read it rather than inferring from a binary’s strings — that is how the first two of these were got wrong.
 
-A sign-in can fail entirely outside Pulse: the device page asks the user to sign in if the browser has no session, and OpenAI’s hand-off to a Google account has come back `token_exchange_failed` there while Pulse’s part had already succeeded (code on screen). Remedy: be signed in at chatgpt.com first. Worth remembering before reading a provider error as a Pulse bug.
+A sign-in can fail entirely outside QuotaScope: the device page asks the user to sign in if the browser has no session, and OpenAI’s hand-off to a Google account has come back `token_exchange_failed` there while QuotaScope’s part had already succeeded (code on screen). Remedy: be signed in at chatgpt.com first. Worth remembering before reading a provider error as a QuotaScope bug.
 
 ### Grok — RFC 8628 device code
 
@@ -81,7 +81,7 @@ Scopes: `openid email offline_access grok-cli:access`.
 
 - `grok-cli:access` is what the CLI proxy is gated on.
 - `email` stops two Grok accounts both being offered as “Grok”.
-- Dropped from the CLI’s set: `profile`, `api:access`, conversation and workspace scopes (the last two would let Pulse read and write chats).
+- Dropped from the CLI’s set: `profile`, `api:access`, conversation and workspace scopes (the last two would let QuotaScope read and write chats).
 - **`billing:read` looks like the right scope and is refused.** Measured: the device endpoint answers `invalid_scope — Scope 'billing:read' is not allowed for this client`. Do not document it as missing-and-needed.
 - That the remaining four are *enough* was settled by performing the sign-in (an added account reads both endpoints), not by reasoning about it. This is not a claim that a later change of server policy will keep working.
 
@@ -89,7 +89,7 @@ Scopes: `openid email offline_access grok-cli:access`.
 
 On the standard flow a refusal and a “still waiting” arrive with the **same HTTP 400**; only the body’s `error` tells them apart. Measured against xAI with an unapproved code: `400 {"error":"authorization_pending"}`. `slow_down` lengthens the interval by the five seconds the specification names. The poll makes its own request rather than calling `post`, so “not yet” never travels as a `Failure` the UI would show every few seconds.
 
-**xAI does send `verification_uri_complete`, and it is used.** Pre-filling is the device-code phishing attack only when the link comes from somebody else. Here Pulse asked for the code and opens the page itself. GitHub deliberately sends none (see Copilot). Use the field where the service offers it; never construct it where it does not. Still copy the code for a page that turns out not to fill itself in.
+**xAI does send `verification_uri_complete`, and it is used.** Pre-filling is the device-code phishing attack only when the link comes from somebody else. Here QuotaScope asked for the code and opens the page itself. GitHub deliberately sends none (see Copilot). Use the field where the service offers it; never construct it where it does not. Still copy the code for a page that turns out not to fill itself in.
 
 The redirect flow was not chosen for Grok. Cloudflare answers 403 to anything but a browser on `auth.x.ai/oauth2/authorize`, so whether the client accepts an arbitrary loopback port cannot be probed without performing a sign-in. Loopback fields are still filled from the CLI’s `http://127.0.0.1:<port>/callback` in case that changes.
 
@@ -113,11 +113,11 @@ Query values are read encoded and decoded here: a query string spells a space `+
 
 The Copilot usage endpoint accepts any GitHub OAuth token — the one `gh` already holds works (verified historically). That token carries `repo` and `workflow`: the run of someone’s source code, handed over to draw a percentage. The device flow asks for `read:user` and nothing else.
 
-Pulse cannot register an OAuth app with GitHub, so it drives the VS Code Copilot plugin’s public client. Consent page names the editor.
+QuotaScope cannot register an OAuth app with GitHub, so it drives the VS Code Copilot plugin’s public client. Consent page names the editor.
 
 **The verification link must not carry the code.** RFC 8628 has `verification_uri_complete`; GitHub deliberately does not send one. Its page: *“Never use a code sent by someone else.”* Pre-filling **is** the device-code phishing attack. A `user_code` query parameter was tried and is ignored; it is not kept. The code goes on the clipboard instead. If a service ever offers `verification_uri_complete`, that is the service’s decision to make (Grok does; GitHub does not).
 
-GitHub’s codes last fifteen minutes; polling patience is 900 seconds so Pulse does not report failure while the code on screen is still good.
+GitHub’s codes last fifteen minutes; polling patience is 900 seconds so QuotaScope does not report failure while the code on screen is still good.
 
 The token is stored in `keys.dat` (`keepsOwnCredential`), not `accounts.dat`.
 
@@ -134,7 +134,7 @@ Tokens last about **sixty days** (measured from `exp` on one Mac). No refresh en
 
 `OAuthLogin.Configuration.of(.grokBot)` is nil. `fetchAdded` still calls `OAuthLogin.refresh` when the token is no longer fresh; that fails closed into `.signedOut`, which is the honest path.
 
-Pulse does **not** read `~/Library/Application Support/Grok Bot/sand-secrets.json`. That file was identified during investigation; the extra-account token Pulse obtained itself is what is stored.
+QuotaScope does **not** read `~/Library/Application Support/Grok Bot/sand-secrets.json`. That file was identified during investigation; the extra-account token QuotaScope obtained itself is what is stored.
 
 ## Browser cookies — Ollama Cloud only
 
@@ -158,12 +158,12 @@ There is no way to ask the Keychain for an item silently (`SecKeychainSetUserInt
 
 `.automatic` then reads the remembered grant (`usageIfAlreadyPermitted`) rather than raising the dialog. Pinning `.desktopApp` calls `usage` directly, so a first-time pin can prompt there.
 
-A grant that stops working is asked about again rather than treated as asked-and-refused: the Keychain ties the allowance to the code signature, and Pulse is ad-hoc signed, so every update is a different app as far as the ACL is concerned.
+A grant that stops working is asked about again rather than treated as asked-and-refused: the Keychain ties the allowance to the code signature, and QuotaScope is ad-hoc signed, so every update is a different app as far as the ACL is concerned.
 
-The desktop session rides its own ephemeral `URLSession` so a `Set-Cookie` on those replies is never carried onto Pulse’s other requests. The session belongs to the desktop app and is borrowed for one call.
+The desktop session rides its own ephemeral `URLSession` so a `Set-Cookie` on those replies is never carried onto QuotaScope’s other requests. The session belongs to the desktop app and is borrowed for one call.
 
 ## What “not public API” means here
 
-Most usage endpoints Pulse calls are **undocumented account or editor routes**. They can change without notice. A few paths are documented by the vendor (Claude Code’s status-line hook; Kimi’s usage URL as the service comments it; GitHub’s device-code *login*, not the Copilot quota JSON). None of that makes Pulse an official integration, and none of it is a promise the JSON will stay stable.
+Most usage endpoints QuotaScope calls are **undocumented account or editor routes**. They can change without notice. A few paths are documented by the vendor (Claude Code’s status-line hook; Kimi’s usage URL as the service comments it; GitHub’s device-code *login*, not the Copilot quota JSON). None of that makes QuotaScope an official integration, and none of it is a promise the JSON will stay stable.
 
-Do not write “official API” unless the vendor documents that exact usage contract. Do not write “the only credential is the provider’s” when Pulse also stores keys, sessions, Copilot tokens, and extra-account logins.
+Do not write “official API” unless the vendor documents that exact usage contract. Do not write “the only credential is the provider’s” when QuotaScope also stores keys, sessions, Copilot tokens, and extra-account logins.

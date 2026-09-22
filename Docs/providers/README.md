@@ -1,6 +1,6 @@
 # Providers
 
-Pulse tracks **seventeen** `Provider` cases. There is no Pulse backend and no Pulse account. Each provider reports its own usage by whatever route that product actually offers — often an undocumented account endpoint the product itself calls, sometimes a documented usage path, sometimes a local helper that only exists while an editor is open.
+QuotaScope tracks **seventeen** `Provider` cases. There is no QuotaScope backend and no QuotaScope account. Each provider reports its own usage by whatever route that product actually offers — often an undocumented account endpoint the product itself calls, sometimes a documented usage path, sometimes a local helper that only exists while an editor is open.
 
 This directory is the home for routes, credentials, cookies, extra logins, and the failure lessons that belong to those. Current service code is authoritative. Historical measurements and “do not repeat” notes are labelled as such. Nothing here claims a runtime test of a live account.
 
@@ -14,8 +14,8 @@ Accounts the stored rail does not mention are appended **in name order**, not in
 
 | `Provider` | Ring name | Icon | Credential | Extra accounts | Route choice | Local transcripts | First-run evidence |
 |---|---|---|---|---|---|---|---|
-| `.claudeCode` | Claude Code | `claude` | Borrow CLI login; Pulse OAuth for extras | yes | endpoint / desktop / status line | yes | `~/.claude` exists |
-| `.codex` | Codex | `openai` | Borrow `~/.codex/auth.json`; Pulse OAuth for extras | yes | endpoint / app-server | yes | `~/.codex` exists |
+| `.claudeCode` | Claude Code | `claude` | Borrow CLI login; QuotaScope OAuth for extras | yes | endpoint / desktop / status line | yes | `~/.claude` exists |
+| `.codex` | Codex | `openai` | Borrow `~/.codex/auth.json`; QuotaScope OAuth for extras | yes | endpoint / app-server | yes | `~/.codex` exists |
 | `.antigravity` | Antigravity | `antigravity` | Loopback language server while the app is open | no | one, named | no | `Antigravity.app` |
 | `.cursor` | Cursor | `cursor` | Cookie built from the editor’s stored token | no (deliberate) | one, named | no | Cursor `state.vscdb` login |
 | `.openCodeGo` | OpenCode Go | `opencode` | Pasted key, else OpenCode’s `auth.json` | no | pasted / found key | no | OpenCode stored key |
@@ -26,7 +26,7 @@ Accounts the stored rail does not mention are appended **in name order**, not in
 | `.minimax` | MiniMax | `minimax` | Pasted key | no | pasted key | no | none |
 | `.minimaxCN` | MiniMax CN | `minimax` | Pasted key | no | pasted key | no | none |
 | `.copilot` | GitHub Copilot | `github` | GitHub device login; token in `keys.dat` | no | sign-in | no | none |
-| `.grok` | Grok | `grok` | Borrow `~/.grok/auth.json`; Pulse OAuth for extras | yes | one, named (primary) | no | `~/.grok` exists |
+| `.grok` | Grok | `grok` | Borrow `~/.grok/auth.json`; QuotaScope OAuth for extras | yes | one, named (primary) | no | `~/.grok` exists |
 | `.grokBot` | Grok Bot | `xai` | Cursor cookie; Cursor web login for extras | yes | one, named (primary) | no | **standalone** `Grok Bot.app` only |
 | `.volcengine` | Volcengine | `volcengine` | `arkcli`'s own login, else a pasted `AK:SK` pair | no | arkcli / signed endpoint | no | none — stays off until switched on |
 | `.commandCode` | Command Code | `commandcode` | Pasted key, else `~/.commandcode/auth.json` | no | pasted / found key | no | the CLI's stored key, **not** `~/.commandcode` |
@@ -40,9 +40,9 @@ Z.ai and GLM Coding Plan share [`ZaiUsageService.swift`](../../Sources/Pulse/Pro
 
 Refresh loop, cache algorithm, ledger, and forecast: [`../refresh-and-data.md`](../refresh-and-data.md). First-run / offer-once / empty rail: [`../architecture.md`](../architecture.md). This page keeps **provider-specific** differences.
 
-### Pulse does not invent a percentage
+### QuotaScope does not invent a percentage
 
-If a provider does not report a figure, the UI says so. Do not derive a percentage from that provider’s local token counts. Labelled exceptions only, each withheld when its inputs cannot carry it: the money estimate ([`../refresh-and-data.md`](../refresh-and-data.md)), Command Code's monthly plan grant ([command-code.md](command-code.md)), and DeepSeek's ring ([deepseek.md](deepseek.md)) — which is the sharpest case, because DeepSeek reports a balance and no allowance whatsoever, so the denominator is either one Pulse watched, one the reader typed, or none at all.
+If a provider does not report a figure, the UI says so. Do not derive a percentage from that provider’s local token counts. Labelled exceptions only, each withheld when its inputs cannot carry it: the money estimate ([`../refresh-and-data.md`](../refresh-and-data.md)), Command Code's monthly plan grant ([command-code.md](command-code.md)), and DeepSeek's ring ([deepseek.md](deepseek.md)) — which is the sharpest case, because DeepSeek reports a balance and no allowance whatsoever, so the denominator is either one QuotaScope watched, one the reader typed, or none at all.
 
 ### Spent comes from the provider
 
@@ -74,7 +74,7 @@ Offer-once, `Key.hasRun` / `Key.offeredProviders`, empty-rail vs empty provider 
 
 ### Seeded state is not “Loading…”
 
-`UsageStore.initialState` does not seed every account as `.loading`. An account that needs a credential Pulse has not got never resolves while nothing is queued for it, and a Settings pane sat on “Reading…” indefinitely. It is seeded with the reason. `loadAPIKeys` rewrites that only over a placeholder, never over a reading actually taken.
+`UsageStore.initialState` does not seed every account as `.loading`. An account that needs a credential QuotaScope has not got never resolves while nothing is queued for it, and a Settings pane sat on “Reading…” indefinitely. It is seeded with the reason. `loadAPIKeys` rewrites that only over a placeholder, never over a reading actually taken.
 
 ### Cache (provider differences)
 
@@ -82,15 +82,15 @@ Shared drop/age/24h/cold-start rules: [`../refresh-and-data.md`](../refresh-and-
 
 Do not paper over `.apiKeyMissing`, `.ollamaSessionMissing`, `.signedOut`, `.claudeDesktopNotSignedIn`, or `.claudeDesktopKeyRefused`. Claude Code’s status-line capture is marked `.live` for ten minutes (`freshFor`) even when an endpoint reading taken later exists — reconciliation is by `observedAt`, not by which route called itself live. See [claude-code.md](claude-code.md).
 
-### Keys and logins Pulse keeps
+### Keys and logins QuotaScope keeps
 
 Not the same question as “does Settings draw a paste field”.
 
 - `usesAPIKey` — Settings paste UI: OpenCode Go, Kimi Code, Ollama Cloud, Z.ai, GLM Coding Plan, MiniMax, MiniMax CN, Volcengine, Command Code, DeepSeek. Ollama’s value is a **session cookie** (`usesSessionCookie`); calling it an API key in Settings would send people looking for one that does not exist.
-- `keepsOwnCredential` — Pulse stores something in `keys.dat`: the paste providers **plus Copilot**. Reading `usesAPIKey` where *storage* was meant left a signed-in Copilot account reporting “sign in again”: the token was saved and then never loaded for the fetch.
+- `keepsOwnCredential` — QuotaScope stores something in `keys.dat`: the paste providers **plus Copilot**. Reading `usesAPIKey` where *storage* was meant left a signed-in Copilot account reporting “sign in again”: the token was saved and then never loaded for the fetch.
 - Extra-account OAuth / Cursor web logins live in `accounts.dat`, not `keys.dat`. See [authentication.md](authentication.md).
 
-OpenCode Go’s file comment still says it is the only provider Pulse holds a key for. That is **stale**. Current `usesAPIKey` / `keepsOwnCredential` in `UsageProvider` win.
+OpenCode Go’s file comment still says it is the only provider QuotaScope holds a key for. That is **stale**. Current `usesAPIKey` / `keepsOwnCredential` in `UsageProvider` win.
 
 Keys are read once per launch rather than once per refresh (`UsageStore.loadAPIKeys`).
 

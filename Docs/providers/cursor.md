@@ -12,7 +12,7 @@ Extra accounts are **not** supported, and that is not an oversight. The same Cur
 
 **The cookie is not stored anywhere — it is built.** The website authenticates with `WorkosCursorSessionToken` rather than a bearer header. The obvious way to get one is to read the browser’s cookie jar. There is no need: the editor keeps its OAuth token in VS Code’s global-state SQLite (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`, `ItemTable` key `cursorAuth/accessToken`). The account id is the tail of that token’s `sub` claim after `|`; the cookie value is **that id and the token joined by `::`**, percent-encoded.
 
-Pulse still holds no Cursor credential of its own for the primary account. The token is used to build one request header and is never written, logged, or shown.
+QuotaScope still holds no Cursor credential of its own for the primary account. The token is used to build one request header and is never written, logged, or shown.
 
 Opened **read-only and in place**. Cursor is usually running, so the database is in WAL mode; copying the file aside takes the main database without the journal holding the newest writes.
 

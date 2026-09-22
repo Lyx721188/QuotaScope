@@ -7,6 +7,12 @@ shows in the update window — see [Scripts/changelog.py](Scripts/changelog.py).
 Add the entry **before** tagging, in the small grammar the converter knows:
 bullets, `**bold**`, `` `code` `` and `[links](https://example.com)`.
 
+## 1.1.1
+
+- **The Windows app is now QuotaScope.** The executable, crate names, settings UI, command examples, CI artifact, and GitHub repository all use the new name.
+
+- **Existing Windows data moves forward automatically.** Settings, cached readings, encrypted credentials, and the startup entry are copied or updated on first launch.
+
 ## 1.1.0
 
 - **A large balance no longer overflows the ring.** The rail shows ¥5k, ¥123k, $1.2M rather than the full figure, which did not fit and was being cut off — the exact balance is on the card and in Settings. It is always rounded **down**, so the ring never claims you have more than you do.

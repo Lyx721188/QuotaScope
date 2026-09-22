@@ -1,6 +1,6 @@
 # Grok Bot usage investigation (historical)
 
-**Status: superseded as an implementation plan.** Pulse now ships Grok Bot as its own provider. Current behaviour, mapping rules, and extra-account login: [providers/grok-bot.md](providers/grok-bot.md). SuperGrok / Grok Build CLI pool: [providers/grok.md](providers/grok.md). Cursor monthly pools: [providers/cursor.md](providers/cursor.md).
+**Status: superseded as an implementation plan.** QuotaScope now ships Grok Bot as its own provider. Current behaviour, mapping rules, and extra-account login: [providers/grok-bot.md](providers/grok-bot.md). SuperGrok / Grok Build CLI pool: [providers/grok.md](providers/grok.md). Cursor monthly pools: [providers/cursor.md](providers/cursor.md).
 
 This page is kept as **investigation evidence** — endpoints, headers, field names, protobuf notes, and the reasons the first product shape was rejected. It is not a description of what to build next. Where this file and `GrokBotUsageService` disagree, **the service wins**.
 
@@ -11,7 +11,7 @@ No runtime re-test of a live account is claimed here. Do not paste cookies, toke
 ## Objective (then)
 
 - Find how Grok Bot (Cursor internal name “Sand”) usage is read: endpoint, auth, headers, response fields, where credentials land on disk.
-- Distinguish it from the Grok Build / SuperGrok quota, and choose a Pulse path.
+- Distinguish it from the Grok Build / SuperGrok quota, and choose a QuotaScope path.
 
 ## Details that remain true
 
@@ -29,11 +29,11 @@ No runtime re-test of a live account is claimed here. Do not paste cookies, toke
     - `Connect-Protocol-Version: 1`
     - `Content-Type: application/json`
     - Body: `{}`
-- Pulse can read a Cursor access token from:
+- QuotaScope can read a Cursor access token from:
   - macOS: `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
   - SQLite key: `cursorAuth/accessToken`
   - Cookie constructed from JWT `sub` + token (see `CursorAppLogin`).
-- OpenUsage also mentioned: SQLite `cursorAuth/refreshToken`; Keychain services `cursor-access-token` / `cursor-refresh-token`. Pulse’s current primary path does not use those Keychain items.
+- OpenUsage also mentioned: SQLite `cursorAuth/refreshToken`; Keychain services `cursor-access-token` / `cursor-refresh-token`. QuotaScope’s current primary path does not use those Keychain items.
 - Response fields seen (camelCase and snake_case):
   - `currentPeriodStart` / `current_period_start`
   - `nextResetTimestampUtc` / `next_reset_timestamp_utc`
@@ -65,7 +65,7 @@ Claude fallback notes that used to live beside this investigation now point at [
 ### Completed then
 
 - CodexBar Claude source review (no Claude Status Line JSON/drop-file there).
-- Pulse Claude fallback checked; `docs/plan.md` created (now a pointer).
+- QuotaScope Claude fallback checked; `docs/plan.md` created (now a pointer).
 - Cloned `xai-org/grok-build`; confirmed Grok Build quota is not the Grok Bot target.
 - CodexBar Grok Bot: `POST /api/dashboard/get-sand-usage-status`, same Cursor session cookie, weekly fields.
 - OpenUsage Connect RPC + Cursor token sources.
@@ -75,13 +75,13 @@ Claude fallback notes that used to live beside this investigation now point at [
 ### Left open then (still not claimed done)
 
 - Exact token location for a **standalone** Grok Bot install with no Cursor app / no Cursor login (directory, database/Keychain names, fields).
-- Whether Pulse should prefer Cookie REST or Bearer Connect RPC; extra native-client headers were not fully compared. **Shipped choice:** Cookie REST. On one account REST and RPC were byte-identical.
-- App data directory `~/Library/Application Support/Grok Bot` was located; credentials inside were **not** read during investigation. Later: `sand-secrets.json` `cursor-accounts`, Electron safeStorage. Pulse does not read that file.
+- Whether QuotaScope should prefer Cookie REST or Bearer Connect RPC; extra native-client headers were not fully compared. **Shipped choice:** Cookie REST. On one account REST and RPC were byte-identical.
+- App data directory `~/Library/Application Support/Grok Bot` was located; credentials inside were **not** read during investigation. Later: `sand-secrets.json` `cursor-accounts`, Electron safeStorage. QuotaScope does not read that file.
 
 ## Recommended direction then (partially rejected)
 
 1. Read Grok Bot as an extra weekly window **inside** `CursorUsageService`, not in `GrokUsageService`.
-2. Reuse Pulse’s Cursor access token / constructed `WorkosCursorSessionToken`.
+2. Reuse QuotaScope’s Cursor access token / constructed `WorkosCursorSessionToken`.
 3. Optional concurrent branch on the Cursor fetch; ignore Grok Bot failure so Cursor’s main usage still succeeds.
 4. Show a window only with a valid `usagePercent` and a non-zero included allowance.
 5. Treat the interface as unpublished; keep fields optional.
@@ -107,9 +107,9 @@ Not OAuth — Cursor has no third-party authorize/token pair. From the asar:
 
 PKCE hashes the **base64url-encoded verifier string**, not the raw random bytes. Tokens ~60 days (`exp` on one Mac). No refresh endpoint in the client; expiry means sign in again.
 
-Standalone client stores Cursor accounts in `~/Library/Application Support/Grok Bot/sand-secrets.json` under `cursor-accounts`, Electron safeStorage. Pulse does not read it.
+Standalone client stores Cursor accounts in `~/Library/Application Support/Grok Bot/sand-secrets.json` under `cursor-accounts`, Electron safeStorage. QuotaScope does not read it.
 
 ## Files (then and now)
 
 - Current: `Sources/Pulse/Providers/GrokBotUsageService.swift`, `Sources/Pulse/Auth/CursorWebLogin.swift`, `Sources/Pulse/Auth/CursorAppLogin.swift`, `Sources/Pulse/Providers/GrokUsageService.swift`, `Sources/Pulse/Providers/CursorUsageService.swift`.
-- Historical references outside this repo (CodexBar `CursorSandUsage` / `CursorStatusProbe`; OpenUsage `CursorUsageClient` / `CursorAuthStore` / `CursorUsageMapper`; `/Applications/Grok Bot.app`). Those trees are not part of Pulse and may have moved.
+- Historical references outside this repo (CodexBar `CursorSandUsage` / `CursorStatusProbe`; OpenUsage `CursorUsageClient` / `CursorAuthStore` / `CursorUsageMapper`; `/Applications/Grok Bot.app`). Those trees are not part of QuotaScope and may have moved.

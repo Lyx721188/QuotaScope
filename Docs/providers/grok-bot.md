@@ -20,7 +20,7 @@ Do **not** read Grok Bot from `~/.grok/auth.json` or `cli-chat-proxy.grok.com`. 
 
 Cursor’s protocol calls this product “Sand”. Not public API; can change without notice. Fields are decoded optionally so a shape change costs the reading rather than a crash.
 
-The investigation also documented Connect RPC `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` with a Bearer token. **Current Pulse uses the dashboard REST cookie call**, not that RPC. Historical comparison: on the account measured while implementing, REST and RPC answered **byte for byte**.
+The investigation also documented Connect RPC `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` with a Bearer token. **Current QuotaScope uses the dashboard REST cookie call**, not that RPC. Historical comparison: on the account measured while implementing, REST and RPC answered **byte for byte**.
 
 ## Mapping (current)
 
@@ -49,7 +49,7 @@ The reply prices the *upgrade* (“$500 of Grok Bot usage each week with Pro+”
 
 Not OAuth. [`CursorWebLogin`](../../Sources/Pulse/Auth/CursorWebLogin.swift): login page + poll. PKCE hashes the **base64url-encoded** verifier string. Tokens ~60 days; no refresh endpoint in Cursor’s client. See [authentication.md](authentication.md).
 
-Pulse does not read the standalone app’s `sand-secrets.json`.
+QuotaScope does not read the standalone app’s `sand-secrets.json`.
 
 ## First run
 
@@ -57,4 +57,4 @@ Pulse does not read the standalone app’s `sand-secrets.json`.
 
 ## Investigation leftovers (not current work)
 
-[`../grok-bot-usage.md`](../grok-bot-usage.md) still records: native Grok Bot client extra headers were not fully compared; Pulse chose not to decrypt `sand-secrets.json`. Those are historical open questions, not a claim that current REST-cookie behaviour is unverified in code. No runtime test of a live account is claimed in this directory.
+[`../grok-bot-usage.md`](../grok-bot-usage.md) still records: native Grok Bot client extra headers were not fully compared; QuotaScope chose not to decrypt `sand-secrets.json`. Those are historical open questions, not a claim that current REST-cookie behaviour is unverified in code. No runtime test of a live account is claimed in this directory.

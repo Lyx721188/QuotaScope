@@ -1,15 +1,15 @@
-# `pulse.exe --json`
+# `quotascope.exe --json`
 
 这是状态栏、终端提示符和脚本使用的 JSON 契约。命令只读取本地缓存，不发起网络
 请求，也不写入凭据或设置。
 
 ```powershell
-.\pulse.exe --json
+.\quotascope.exe --json
 ```
 
 在源码中，报告模型位于
-[`windows/pulse-core/src/report.rs`](../windows/pulse-core/src/report.rs)，命令行入口
-位于 [`windows/pulse-win/src/main.rs`](../windows/pulse-win/src/main.rs)。
+[`windows/quotascope-core/src/report.rs`](../windows/quotascope-core/src/report.rs)，命令行入口
+位于 [`windows/quotascope-win/src/main.rs`](../windows/quotascope-win/src/main.rs)。
 
 ## 输出结构
 
@@ -51,7 +51,7 @@ accounts[]
 ## 示例
 
 ```powershell
-.\pulse.exe --json | ConvertFrom-Json
+.\quotascope.exe --json | ConvertFrom-Json
 ```
 
 脚本应根据 `observedAt` 或 `ageSeconds` 判断数据是否过期，不应把没有读数的账号

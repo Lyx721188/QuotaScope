@@ -12,7 +12,7 @@ Default `.automatic`:
 2. On missing or refused token (401/403): **`codex app-server`** — Codex’s own documented JSON-RPC protocol. It is signed in on its own terms so it renews credentials itself, and it pushes `account/rateLimits/updated`.
 3. Cache, then an unavailable reason.
 
-The HTTP endpoint is **not** a public documented usage API. It is what Codex’s own client calls and can change without notice. The stored token expires; Codex refreshes it while you use Codex, and nothing refreshes it for Pulse on the primary account.
+The HTTP endpoint is **not** a public documented usage API. It is what Codex’s own client calls and can change without notice. The stored token expires; Codex refreshes it while you use Codex, and nothing refreshes it for QuotaScope on the primary account.
 
 Pinned `.endpoint` reports a dead token rather than falling through. Pinned `.tooling` never tries HTTP.
 
@@ -30,7 +30,7 @@ The plan comes back as an internal tier name, not the name on the plan — `prol
 
 ## App-server / SIGPIPE / PATH
 
-**SIGPIPE is ignored process-wide** (`AppDelegate`), and it has to be. Writing to a pipe whose far end has closed raises it; default is to kill the process. The helper exiting, being killed with the terminal it was started from, or the user quitting Codex took Pulse down with it (`Terminated due to signal 13`). Ignored, the write returns `EPIPE` and `CodexAppServer.write` drops the helper so the next call starts a fresh one.
+**SIGPIPE is ignored process-wide** (`AppDelegate`), and it has to be. Writing to a pipe whose far end has closed raises it; default is to kill the process. The helper exiting, being killed with the terminal it was started from, or the user quitting Codex took QuotaScope down with it (`Terminated due to signal 13`). Ignored, the write returns `EPIPE` and `CodexAppServer.write` drops the helper so the next call starts a fresh one.
 
 **Historical evidence:** reproduced both ways against a process that had already exited — unguarded the probe was killed before it could print a line; guarded it reported “Broken pipe” and carried on.
 
@@ -38,13 +38,13 @@ Locating the executable cannot rely on `PATH`: a GUI app inherits almost none of
 
 ## Proxies
 
-`URLSession` follows system proxy settings. On a machine behind a VPN that is what you want (the endpoint may only be reachable through it). A tunnel that stumbles surfaces as a Pulse error, typically `-1005 networkConnectionLost`; transient `URLError`s are retried a couple of times.
+`URLSession` follows system proxy settings. On a machine behind a VPN that is what you want (the endpoint may only be reachable through it). A tunnel that stumbles surfaces as a QuotaScope error, typically `-1005 networkConnectionLost`; transient `URLError`s are retried a couple of times.
 
 `URLSessionConfiguration.connectionProxyDictionary` is empty even when a proxy is in use — it means “use the system defaults”, not “no proxy”. Do not read an empty dictionary as evidence of a direct connection.
 
 ## Added accounts
 
-`fetch(account:credentials:)` uses Pulse’s stored tokens. Extra-account sign-in is **device code**, not redirect. Full published scopes, including connector scopes that looked optional and were not. See [authentication.md](authentication.md).
+`fetch(account:credentials:)` uses QuotaScope’s stored tokens. Extra-account sign-in is **device code**, not redirect. Full published scopes, including connector scopes that looked optional and were not. See [authentication.md](authentication.md).
 
 Codex’s usage endpoint wants the account named in a header of its own; `AccountCredentials.accountID` is taken from the token.
 

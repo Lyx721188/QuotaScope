@@ -755,8 +755,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "pulse-core"
-version = "1.1.0"
+name = "quotascope-core"
+version = "1.1.1"
 dependencies = [
  "base64",
  "chrono",
@@ -768,11 +768,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "pulse-win"
-version = "1.1.0"
+name = "quotascope-win"
+version = "1.1.1"
 dependencies = [
  "chrono",
- "pulse-core",
+ "quotascope-core",
  "serde",
  "serde_json",
  "windows",

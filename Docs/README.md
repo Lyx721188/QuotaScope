@@ -7,7 +7,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [json-output.md](json-output.md) | `pulse.exe --json` 的状态栏输出约定 |
+| [json-output.md](json-output.md) | `quotascope.exe --json` 的状态栏输出约定 |
 | [providers/README.md](providers/README.md) | 各服务商的读取通道、鉴权和本地数据来源 |
 | [grok-bot-usage.md](grok-bot-usage.md) | Grok Bot / Cursor 的历史调查 |
 | [ollama-cloud.md](ollama-cloud.md) | Ollama Cloud 会话读取的历史调查 |

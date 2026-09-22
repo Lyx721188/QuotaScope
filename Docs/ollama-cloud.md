@@ -15,15 +15,15 @@ Other tools read them the same way, including
 
 Originally contributed by [@PcOffeeP](https://github.com/PcOffeeP)
 ([#8](https://github.com/qunqin24/Pulse/pull/8)); the parser and the security
-notes below are theirs. Pulse reworked how the session is obtained and where it
+notes below are theirs. QuotaScope reworked how the session is obtained and where it
 is kept — see below.
 
 ## Set up
 
-Sign in to Ollama in your own browser, then in Pulse open **Settings → Ollama
+Sign in to Ollama in your own browser, then in QuotaScope open **Settings → Ollama
 Cloud**, switch on **Show in panel**, and press **Read from browser**.
 
-That is the whole thing. **Pulse reads the session out of your browser for
+That is the whole thing. **QuotaScope reads the session out of your browser for
 you** rather than asking you to copy a cookie out of the developer tools —
 which was the original flow, and is a step nobody performs correctly at two in
 the morning. What that costs you is stated on the row before you press it:
@@ -34,15 +34,15 @@ the morning. What that costs you is stated on the row before you press it:
   from some other browser may be months out of date. Pick a specific one under
   **Browser** if you would rather — naming one means *only* that one is opened.
 - **Safari needs Full Disk Access**, because its cookie file lives inside its
-  container. Only the installed `Pulse.app` can be granted it; a `swift run`
+  container. Only the installed `QuotaScope.app` can be granted it; a `swift run`
   build cannot.
 - **Chrome, Edge, Brave and Arc keep their key in the login keychain**, so
-  macOS will ask once — "Pulse wants to use your confidential information".
+  macOS will ask once — "QuotaScope wants to use your confidential information".
   The row says so before you press it.
 - **Firefox** is plain SQLite and asks for nothing.
 
 **Clear** deletes the saved session. When it expires, sign in again in your
-browser and press **Read from browser** again — Pulse cannot renew a browser
+browser and press **Read from browser** again — QuotaScope cannot renew a browser
 login.
 
 A session cookie grants access to your account. Treat it as a password: do not
@@ -70,11 +70,11 @@ paste it into issues, pull requests, chat, screenshots or repository files.
 
 ## Where the session is kept
 
-In `keys.dat`, Pulse's own encrypted store — AES-GCM boxes in its Application
+In `keys.dat`, QuotaScope's own encrypted store — AES-GCM boxes in its Application
 Support folder, owner-only, with the key derived from this Mac rather than
 stored ([`APIKeyStore.swift`](../Sources/Pulse/Auth/APIKeyStore.swift)).
 
-**Not the keychain**, which is what the original contribution used. Pulse holds
+**Not the keychain**, which is what the original contribution used. QuotaScope holds
 no keychain item of its own anywhere; one encrypted store for every secret it
 keeps means one piece of crypto to be right about, and it is the same store the
 OpenCode Go and Kimi Code keys live in. Nothing is written to `UserDefaults`,

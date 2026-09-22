@@ -4,7 +4,7 @@ Service: [`OpenCodeGoUsageService.swift`](../../Sources/Pulse/Providers/OpenCode
 
 Extra accounts are not supported. `keepsLocalTranscripts` is false today.
 
-The file header still says this is the only provider Pulse holds a key for. That is **stale**. Several providers paste keys; Copilot’s token lives in the same store. See [README.md](README.md).
+The file header still says this is the only provider QuotaScope holds a key for. That is **stale**. Several providers paste keys; Copilot’s token lives in the same store. See [README.md](README.md).
 
 ## Credential
 

@@ -6,7 +6,7 @@ This is the **account’s** weekly SuperGrok / xAI pool, not “Grok Build the C
 
 Extra accounts are supported. `keepsLocalTranscripts` is false. Primary route is named (“Grok’s own login”); an added account is not shown that row.
 
-Issue history: [Pulse #9](https://github.com/qunqin24/Pulse/issues/9).
+Issue history: [QuotaScope #9](https://github.com/qunqin24/Pulse/issues/9).
 
 ## Why the ring is called Grok
 
@@ -21,7 +21,7 @@ Borrow the OIDC login Grok Build’s CLI stored in `~/.grok/auth.json`. Nothing 
 
 Neither endpoint is a public documented usage API. They are what the CLI itself calls and can change without notice.
 
-The stored token lasts about six hours. The CLI renews it while you use Grok; nothing renews it for Pulse on the primary. Aged-out vs never-signed-in are two cases (`.grokLoginExpired` vs `.grokSignInRequired`) because the instruction is different. `.signInRequired` names Codex — do not reuse it here.
+The stored token lasts about six hours. The CLI renews it while you use Grok; nothing renews it for QuotaScope on the primary. Aged-out vs never-signed-in are two cases (`.grokLoginExpired` vs `.grokSignInRequired`) because the instruction is different. `.signInRequired` names Codex — do not reuse it here.
 
 ## The header selects the shape of the reply
 
@@ -41,13 +41,13 @@ Measured from the period’s own two timestamps (`currentPeriod` start and end),
 
 ## Plan and balance
 
-Settings call is on a shorter budget than usage — figures are already in hand. Only `subscription_tier_display` is read; the same reply carries subagent and planner settings, no use to Pulse.
+Settings call is on a shorter budget than usage — figures are already in hand. Only `subscription_tier_display` is read; the same reply carries subagent and planner settings, no use to QuotaScope.
 
 `prepaidBalance` and `onDemandCap` are denominated in a unit the reply never names, and the cap is an allowance rather than a balance, so `creditBalance` stays nil.
 
 ## Added accounts
 
-Same two endpoints with the token Pulse holds. Never looks at `~/.grok/auth.json`. Device-code OAuth, scopes `openid email offline_access grok-cli:access`. `billing:read` is **not allowed for this client** — not a missing scope Pulse forgot. Details: [authentication.md](authentication.md).
+Same two endpoints with the token QuotaScope holds. Never looks at `~/.grok/auth.json`. Device-code OAuth, scopes `openid email offline_access grok-cli:access`. `billing:read` is **not allowed for this client** — not a missing scope QuotaScope forgot. Details: [authentication.md](authentication.md).
 
 ## First run
 

@@ -6,11 +6,11 @@ The Ark Coding Plan, sold on Volcengine (火山引擎). Named for the platform r
 
 ## Not verified against a live account
 
-**Nobody on this side holds an Ark coding plan.** Every shape below is second-hand — read out of CodexBar's parser and its tests (MIT) — rather than captured from a real reply. That is weaker evidence than any other provider in Pulse has behind it, and it is why:
+**Nobody on this side holds an Ark coding plan.** Every shape below is second-hand — read out of CodexBar's parser and its tests (MIT) — rather than captured from a real reply. That is weaker evidence than any other provider in QuotaScope has behind it, and it is why:
 
 - the parsing is pinned by fixtures (`Tests/PulseTests/Fixtures/volcengine-*.json`), so a schema change is a failing test rather than a wrong number;
 - the signing is cross-checked against a second implementation of the scheme written in another language, because a wrong signature comes back as a bare 403 with nothing in it to debug;
-- the failure copy names the exact command to run, since the first person to hit a problem will be someone Pulse cannot ask questions of.
+- the failure copy names the exact command to run, since the first person to hit a problem will be someone QuotaScope cannot ask questions of.
 
 **Replace the fixtures with a real capture** the first time somebody with an account can produce one, and delete this section when they have.
 
@@ -23,7 +23,7 @@ The Ark Coding Plan, sold on Volcengine (火山引擎). Named for the platform r
 | `arkcli` | `.tooling` | The login `arkcli auth login` already stored — nothing to paste |
 | Volcengine Top OpenAPI | `.endpoint` | An access key pair, pasted |
 
-**`.automatic` prefers the pasted keys over the CLI**, which is backwards from every other automatic in Pulse and deliberate. The reason is account identity, not reliability: `arkcli` carries an ambient SSO session that can be signed in to a *different* account than the keys, and quietly reporting the wrong account's limits is worse than either answer on its own. If you pasted keys, you meant those. A key that is refused says so rather than falling through — only an unreachable network drops to the CLI. (Rule and reasoning: CodexBar.)
+**`.automatic` prefers the pasted keys over the CLI**, which is backwards from every other automatic in QuotaScope and deliberate. The reason is account identity, not reliability: `arkcli` carries an ambient SSO session that can be signed in to a *different* account than the keys, and quietly reporting the wrong account's limits is worse than either answer on its own. If you pasted keys, you meant those. A key that is refused says so rather than falling through — only an unreachable network drops to the CLI. (Rule and reasoning: CodexBar.)
 
 ### `arkcli`
 
@@ -31,7 +31,7 @@ The Ark Coding Plan, sold on Volcengine (火山引擎). Named for the platform r
 
 Run with stdin at `/dev/null` so a CLI that decides to prompt gets EOF instead of blocking the refresh pass behind it — and with three guarantees that are enforced rather than merely commented, because a pass that never finishes never calls `scheduleNext` and the rail then freezes for **all seventeen** providers, not just this one:
 
-- **Both pipes are drained at once.** Reading stdout to EOF and only then reading stderr deadlocks the moment the child writes more than a 64 KiB pipe buffer to stderr before closing stdout — a panic, a debug build, a TLS dump. The child blocks writing, Pulse blocks reading, neither returns.
+- **Both pipes are drained at once.** Reading stdout to EOF and only then reading stderr deadlocks the moment the child writes more than a 64 KiB pipe buffer to stderr before closing stdout — a panic, a debug build, a TLS dump. The child blocks writing, QuotaScope blocks reading, neither returns.
 - **Reading never stops early.** Past the 512 KiB ceiling the bytes are dropped but the pipe is still drained; a reader that walks away is the same deadlock wearing a different hat.
 - **Every wait is bounded, and the kill escalates.** `Process.waitUntilExit()` has no timeout, so bounding only the readers moved the hang rather than removing it — a child that ignores SIGTERM, or one that closes its pipes and keeps running, sailed past the deadline and parked the call for ever. Exit is awaited through `terminationHandler` with a deadline; `terminate()` is a *request*, so SIGKILL follows if it is not honoured.
 - **Reading is a `readabilityHandler`, not a blocking loop.** A loop parks a thread per pipe, and a grandchild inheriting the write end keeps it parked after the call has given up — a leak that repeats until libdispatch's per-QoS thread cap starves everything else. A handler holds no thread.
@@ -39,7 +39,7 @@ Run with stdin at `/dev/null` so a CLI that decides to prompt gets EOF instead o
 
 `VolcengineProcessTests` produces each failure for real: a child that floods stderr with 1 MiB, one that ignores SIGTERM, one that closes its pipes and keeps running, and one that leaves a grandchild holding the write ends.
 
-**Timeout cleanup includes the child's process group.** Darwin Foundation normally launches the child as a process-group leader; Pulse verifies that group and refuses to target its own. A fast-exiting leader can leave a surviving group, which is checked as well — with one accepted residual: that check confirms a group with the child's id exists *now*, and a pid freed and reused between the check and the signal would be a group Pulse did not spawn. It needs the child reaped, its pid reissued within milliseconds, and the new owner to be a group leader; the alternative is leaving inherited-group descendants running, which is the failure that branch exists for. Timeout sends TERM to the verified group, allows up to two seconds for the group (not just its leader) to disappear, then sends KILL if necessary. If no separate group can be established, cleanup falls back to the direct child. Descendants that deliberately escape into another group/session are outside this guarantee. Tests check both bounded return and the death of an inherited-group grandchild, including one ignoring TERM after its parent has exited.
+**Timeout cleanup includes the child's process group.** Darwin Foundation normally launches the child as a process-group leader; QuotaScope verifies that group and refuses to target its own. A fast-exiting leader can leave a surviving group, which is checked as well — with one accepted residual: that check confirms a group with the child's id exists *now*, and a pid freed and reused between the check and the signal would be a group QuotaScope did not spawn. It needs the child reaped, its pid reissued within milliseconds, and the new owner to be a group leader; the alternative is leaving inherited-group descendants running, which is the failure that branch exists for. Timeout sends TERM to the verified group, allows up to two seconds for the group (not just its leader) to disappear, then sends KILL if necessary. If no separate group can be established, cleanup falls back to the direct child. Descendants that deliberately escape into another group/session are outside this guarantee. Tests check both bounded return and the death of an inherited-group grandchild, including one ignoring TERM after its parent has exited.
 
 ```
 { "items": [ { "product": "coding-plan" | "agent-plan"
@@ -86,7 +86,7 @@ The region is a constant (`cn-beijing`), not a setting. A wrong region fails as 
 
 ## The route that was left out
 
-Ark returns `x-ratelimit-remaining-requests` on a chat completion, and CodexBar reads it as a third fallback. **Pulse cannot.** Reading that header means *sending a completion*, so every refresh would spend a piece of the quota it is measuring — every 2 to 30 minutes, for ever. And a request-rate throttle is not the coding plan's quota; it would put a number under the ring that answers a different question.
+Ark returns `x-ratelimit-remaining-requests` on a chat completion, and CodexBar reads it as a third fallback. **QuotaScope cannot.** Reading that header means *sending a completion*, so every refresh would spend a piece of the quota it is measuring — every 2 to 30 minutes, for ever. And a request-rate throttle is not the coding plan's quota; it would put a number under the ring that answers a different question.
 
 ## Credential
 
@@ -106,7 +106,7 @@ A month is 28 to 31 days, so 30 is a sort key and not a measurement — the wind
 
 A label not in that table is **left out rather than guessed at**, and so is a product this version has no name for: with four plans possible on one account, a window that cannot say which one it is about is worse than no window.
 
-Ark reports no "you are blocked" flag, so `isExhausted` is its own figure reaching its own ceiling. That is the provider's number, not Pulse's inference.
+Ark reports no "you are blocked" flag, so `isExhausted` is its own figure reaching its own ceiling. That is the provider's number, not QuotaScope's inference.
 
 ## First run
 

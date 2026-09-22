@@ -10,7 +10,7 @@ Default `.automatic`, in this order:
 
 1. **Usage endpoint** — `GET https://api.anthropic.com/api/oauth/usage` with the OAuth access token Claude Code already stored (Keychain service `Claude Code-credentials`, falling back to `~/.claude/.credentials.json`).
 2. **Desktop session** — only if the Keychain grant for `Claude Safe Storage` has already happened, the session returns a **live** reading, and account identity is compatible (or there is nothing to compare). See [authentication.md](authentication.md).
-3. **Status line capture** — Claude Code’s documented status-line hook. Pulse registers as `Pulse --statusline`, banks the blob, prints a status line back.
+3. **Status line capture** — Claude Code’s documented status-line hook. QuotaScope registers as `QuotaScope --statusline`, banks the blob, prints a status line back.
 4. **Cache**, then an actionable unavailable reason.
 
 Shorthand:
@@ -37,7 +37,7 @@ The saved CLI token expires in hours and **nothing here renews it**. An unusable
 
 `GET /api/oauth/profile` — the usage reply does not carry a plan, which is why this provider once showed no plan while every other one did. Prefer `subscription_type`; otherwise `organization.rate_limit_tier`, where the **multiplier** lives (`default_claude_max_5x` → “Max 5x”). Unfamiliar values are tidied and passed through, not blanked.
 
-Only plan-shaped fields are read. The same reply carries name, email, organisation identifiers — the user’s, no use to Pulse. Cached for six hours; a failure is cached too so the plan can never cost the usage reading a retry every pass. The same reply seeds `ClaudeAccountIdentity` with a fingerprint of whoever this token belongs to, because by the time the desktop route needs that question the CLI token has usually expired.
+Only plan-shaped fields are read. The same reply carries name, email, organisation identifiers — the user’s, no use to QuotaScope. Cached for six hours; a failure is cached too so the plan can never cost the usage reading a retry every pass. The same reply seeds `ClaudeAccountIdentity` with a fingerprint of whoever this token belongs to, because by the time the desktop route needs that question the CLI token has usually expired.
 
 ## Status line
 
@@ -61,11 +61,11 @@ Web client paths (not public API): `/api/bootstrap` and `/api/organizations/{id}
 
 **The two apps can be signed in as different people.** `ClaudeAccountIdentity` compares this session’s account/organisation/email against whatever the CLI token last said (captured in passing by the profile call). A comparison with nothing on one side is **not** a mismatch: someone who has only ever used the desktop app may never have had a working CLI token, and refusing the route until one appeared would withhold it from exactly the person it exists for. A pinned `.desktopApp` skips the comparison.
 
-At launch, if Claude Code is enabled and its source is Automatic or Desktop App, Pulse may request `Claude Safe Storage` once when a desktop cookie store exists. Automatic refreshes do not raise a new unsolicited Keychain prompt each pass.
+At launch, if Claude Code is enabled and its source is Automatic or Desktop App, QuotaScope may request `Claude Safe Storage` once when a desktop cookie store exists. Automatic refreshes do not raise a new unsolicited Keychain prompt each pass.
 
 ## Added accounts
 
-`fetch(account:token:)` goes straight over HTTP with the token Pulse holds. Status-line capture and the desktop session belong to whichever account the CLI or desktop app is signed in to, which for an added account is not this one. `UsageSource.options(for:)` leaves `.desktopApp` off an added account’s picker.
+`fetch(account:token:)` goes straight over HTTP with the token QuotaScope holds. Status-line capture and the desktop session belong to whichever account the CLI or desktop app is signed in to, which for an added account is not this one. `UsageSource.options(for:)` leaves `.desktopApp` off an added account’s picker.
 
 OAuth scopes and loopback behaviour: [authentication.md](authentication.md).
 

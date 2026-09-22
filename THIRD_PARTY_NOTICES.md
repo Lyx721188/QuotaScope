@@ -1,8 +1,8 @@
 # Third-Party Notices
 
-Pulse bundles provider marks derived from [Lobe Icons](https://github.com/lobehub/lobe-icons):
+QuotaScope bundles provider marks derived from [Lobe Icons](https://github.com/lobehub/lobe-icons):
 
-- `windows/pulse-win/assets/icons/*.png`
+- `windows/quotascope-win/assets/icons/*.png`
 
 Lobe Icons is distributed under the MIT License:
 
@@ -31,7 +31,7 @@ SOFTWARE.
 ```
 
 The Windows app ships copies of the Lobe-derived provider marks, rasterised for its own renderer
-(`windows/pulse-win/assets/icons`). It is written in Rust against the
+(`windows/quotascope-win/assets/icons`). It is written in Rust against the
 Microsoft Windows SDK via the [`windows`](https://github.com/microsoft/windows-rs)
 crate, and links against further crates from crates.io — overwhelmingly
 dual-licensed MIT OR Apache-2.0. The pinned list with versions is

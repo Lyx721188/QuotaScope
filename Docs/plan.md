@@ -6,7 +6,7 @@ Grok (account weekly pool / Grok Build CLI login) is not a Claude topic: [provid
 
 ## Compact primary-account flow (current)
 
-Pulse currently resolves the **primary** Claude Code account in this order:
+QuotaScope currently resolves the **primary** Claude Code account in this order:
 
 1. OAuth usage endpoint
 2. Claude Desktop web session (only when already permitted, live, and compatible)

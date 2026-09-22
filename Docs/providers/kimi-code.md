@@ -2,7 +2,7 @@
 
 Service: [`KimiCodeUsageService.swift`](../../Sources/Pulse/Providers/KimiCodeUsageService.swift).
 
-Extra accounts are not supported. `keepsLocalTranscripts` is false. No first-run detection: nothing to install, Pulse never goes looking for a key, so it stays off until switched on.
+Extra accounts are not supported. `keepsLocalTranscripts` is false. No first-run detection: nothing to install, QuotaScope never goes looking for a key, so it stays off until switched on.
 
 ## Credential
 
@@ -12,7 +12,7 @@ A key the user pastes, kept in `keys.dat`. No fallback to another tool’s file.
 
 `GET https://api.kimi.com/coding/v1/usages` with a bearer token.
 
-The service comments this as Kimi’s **documented** usage endpoint, unlike most of the undocumented account routes elsewhere. That is not a Pulse official-integration claim, and the JSON can still change.
+The service comments this as Kimi’s **documented** usage endpoint, unlike most of the undocumented account routes elsewhere. That is not a QuotaScope official-integration claim, and the JSON can still change.
 
 ## Two kinds of limit, not the same figure
 

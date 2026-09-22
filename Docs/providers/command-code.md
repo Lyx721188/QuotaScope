@@ -37,9 +37,9 @@ Two places, in this order — the same arrangement as [opencode-go.md](opencode-
  "keyName": "…", "authenticatedAt": "…"}
 ```
 
-Only `apiKey` is read. The CLI also writes `auth.staging.json` and `auth.local.json` when it is pointed at the vendor's staging or a developer's laptop; neither is a credential for the service Pulse reports on, and neither is read.
+Only `apiKey` is read. The CLI also writes `auth.staging.json` and `auth.local.json` when it is pointed at the vendor's staging or a developer's laptop; neither is a credential for the service QuotaScope reports on, and neither is read.
 
-**`COMMAND_CODE_API_KEY` is deliberately not read.** The CLI honours it, but Pulse is a launched app and does not inherit the user's shell environment — looking would find nothing on the machines where it is set, and would only add a way to be confusing about it.
+**`COMMAND_CODE_API_KEY` is deliberately not read.** The CLI honours it, but QuotaScope is a launched app and does not inherit the user's shell environment — looking would find nothing on the machines where it is set, and would only add a way to be confusing about it.
 
 ## First-run evidence: the key, not the directory
 
@@ -60,7 +60,7 @@ Four undocumented account routes on `https://api.commandcode.ai`, each carrying 
 
 `whoami` runs first and alone: it is the cheapest call, it is what says whether the key is any good, and its organisation id scopes the rest. A failure there ends the fetch rather than firing three more requests with a credential already known to be bad. `credits` and `subscriptions` then run side by side, and `summary` last because its `since` is the subscription's period start.
 
-**`orgId` is optional** — the CLI omits the parameter when `whoami` did not answer, and so does Pulse. **`since` is passed through verbatim**: it is a query parameter to the service that produced it, not a date this side has any business reformatting.
+**`orgId` is optional** — the CLI omits the parameter when `whoami` did not answer, and so does QuotaScope. **`since` is passed through verbatim**: it is a query parameter to the service that produced it, not a date this side has any business reformatting.
 
 Losing `credits` is losing the answer, so its failure is reported. Losing `subscriptions` or `summary` is not: a pay-as-you-go balance with no subscription is a complete answer, and the billing period simply goes unstated.
 
@@ -122,11 +122,11 @@ Shortest first. **Ties keep the order they were built in** — `sorted(by:)` is 
 | `individual-max` | $150 | Max |
 | `individual-ultra` | $300 | Ultra |
 
-The third column is **not what Pulse shows** — it is the CLI's own display table, recorded here only because it is what the grants are advertised under. Pulse tidies the id instead ("Individual Pro", "Individual Goat"), for the reason under [Plan and balance](#plan-and-balance): a name table blanks every tier added after this build, and an unfamiliar name beats none. Note also that two different grants share the name "Pro", which is why nothing here may be reasoned about from the name.
+The third column is **not what QuotaScope shows** — it is the CLI's own display table, recorded here only because it is what the grants are advertised under. QuotaScope tidies the id instead ("Individual Pro", "Individual Goat"), for the reason under [Plan and balance](#plan-and-balance): a name table blanks every tier added after this build, and an unfamiliar name beats none. Note also that two different grants share the name "Pro", which is why nothing here may be reasoned about from the name.
 
-**No reply reports any of those numbers.** `credits.monthlyCredits` is the grant's *remainder*; its size is published on the pricing page. The vendor's own CLI carries this table for that reason, and so does CodexBar. Pulse carries it in [`CommandCodePlans`](../../Sources/Pulse/Providers/CommandCodePlans.swift), deliberately in its own file, because it is the one thing here that goes stale on someone else's schedule.
+**No reply reports any of those numbers.** `credits.monthlyCredits` is the grant's *remainder*; its size is published on the pricing page. The vendor's own CLI carries this table for that reason, and so does CodexBar. QuotaScope carries it in [`CommandCodePlans`](../../Sources/Pulse/Providers/CommandCodePlans.swift), deliberately in its own file, because it is the one thing here that goes stale on someone else's schedule.
 
-So this is the **second labelled exception** to "Pulse does not invent a percentage", alongside the money estimate. What that costs is bounded in three ways, and the bounds are the design:
+So this is the **second labelled exception** to "QuotaScope does not invent a percentage", alongside the money estimate. What that costs is bounded in three ways, and the bounds are the design:
 
 - **The numerator is reported.** `grant - monthlyCredits` subtracts the account's own figure; only the denominator is inferred.
 - **The row carries `isEstimated`**, so the card reads "Monthly limit · estimated" rather than passing for a reported limit. A flag and not a `scope`: [json-output.md](../json-output.md) promises `scope` is a product name that is the same in every language, and this marker's wording is translated. `--json` exposes it as `estimated`.
