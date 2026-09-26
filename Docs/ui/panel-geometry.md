@@ -19,6 +19,8 @@ History and the two bugs that taught this: [../decisions/panel-frame.md](../deci
 
 `UsageBubbleShape` is the card **and** its pointer as **one path**, same winding (`sweep` when mirrored). Two views in a stack drift apart when height and pointer target change together. `pointerCenterY` is `animatableData`. Check both edges after any change. With `usesRoundEnds` on, the tail's flanks leave the card **along its edge** (first control point on the edge) and bend out to a ~50° tip, the way the flare leaves the screen edge; off they leave at an angle and crease where they meet the card, which is the shipped tail.
 
+**On glass the surface is two shapes fused, not the one outline** (`LiquidBubbleSurface` in UsageDetailCard.swift): `UsageBubbleShape.only(.body)` and `.only(.tail)` as two `glassEffect`s in a `GlassEffectContainer` (spacing 12pt × scale). Drawn as one outline, Liquid Glass treated the narrow tail as all rim — it refracted what was behind it sharply and lighter while the body beside it blurred, so over a busy backdrop it read as a crystal stuck onto the card. Fused, the tail shades on from the body with a smooth neck. Ruled out first, measured on real glass from a bundled build: the flowing tail on glass (no visible change) and making the whole outline a single contour (pixel-identical). A spacing of 40 rippled the body's edge beside the tail. Content is still masked to the whole outline; the solid card still fills the whole outline in one go.
+
 On the card, the window’s name has the top row to itself; spent and reset pair on the line below the bar. Sharing the top line fails when a limit is scoped to a model group.
 
 ## Dock, float, displays
