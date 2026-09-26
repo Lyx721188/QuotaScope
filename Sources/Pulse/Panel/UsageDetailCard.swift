@@ -258,7 +258,8 @@ struct UsageDetailCard: View {
             pointerCenter: pointerCenter,
             cornerRadius: DetailCardLayout.cornerRadius,
             pointerWidth: DetailCardLayout.pointerWidth,
-            pointerHeight: DetailCardLayout.pointerHeight
+            pointerHeight: DetailCardLayout.pointerHeight,
+            usesGlass: usesGlass
         )
     }
 
