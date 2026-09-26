@@ -18,9 +18,6 @@ struct UsageBubbleShape: Shape {
     let cornerRadius: CGFloat
     let pointerWidth: CGFloat
     let pointerHeight: CGFloat
-    /// Whether the card is glass. Glass always takes the flowing tail — see
-    /// `pointerPath`.
-    var usesGlass: Bool = false
 
     /// Lets the pointer slide as part of the shape rather than as a separate
     /// animation that could run on its own curve.
@@ -102,16 +99,8 @@ struct UsageBubbleShape: Shape {
         // an angle. That puts a crease either side of the base, which is what
         // makes it read as a triangle stuck on rather than grown out of the
         // card — but it is the tail the rest of that style was drawn against.
-        //
-        // **Except on glass.** Liquid Glass refracts by the outline's
-        // direction, so each crease turns the refraction at once: over a busy
-        // backdrop the tail showed its own, differently bent piece of what is
-        // behind, cut off from the card's along the base. The flowing tail has
-        // no crease — its flanks leave along the edge — so the bend changes
-        // gradually and the tail reads as part of the card.
-        let flows = PanelMetrics.usesRoundEnds || usesGlass
         let (nearAlong, nearAcross, farAlong, farAcross): (CGFloat, CGFloat, CGFloat, CGFloat) =
-            flows ? (0, 0.5, 0.55, 0.22) : (0.24, 0.44, 0.55, 0.24)
+            PanelMetrics.usesRoundEnds ? (0, 0.5, 0.55, 0.22) : (0.24, 0.44, 0.55, 0.24)
 
         var path = Path()
         path.move(to: CGPoint(x: baseX, y: centre - sweep))
