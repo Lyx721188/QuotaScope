@@ -859,3 +859,7 @@
 "Reading local records…" = "ローカルの記録を読み込み中…";
 "Usage credits" = "クレジット";
 "%@ remaining" = "残り %@";
+"Split" = "分割";
+"Short: day" = "日";
+"Short: week" = "週";
+"Short: month" = "月";

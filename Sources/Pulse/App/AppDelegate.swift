@@ -192,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// again on every change, because `withObservationTracking` fires once.
     private func showMenuBarReading() {
         guard let button = statusItem?.button else { return }
-        let (reading, remaining, asRing) = withObservationTracking {
+        let (reading, remaining, style) = withObservationTracking {
             (
                 settings.showsUsageInMenuBar
                     ? MenuBarReading.choose(
@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     )
                     : nil,
                 settings.showsRemaining,
-                settings.menuBarShowsRing
+                settings.menuBarStyle
             )
         } onChange: { [weak self] in
             Task { @MainActor in self?.showMenuBarReading() }
@@ -213,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MenuBarReading.draw(
             reading,
             remaining: remaining,
-            asRing: asRing,
+            style: style,
             label: reading.map { settings.label(for: $0.account) },
             on: button
         )

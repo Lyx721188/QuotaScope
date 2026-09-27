@@ -54,12 +54,12 @@ final class AppSettings {
         }
     }
 
-    /// A small ring beside the mark instead of the figure. Narrower, and drawn
-    /// the way the rail draws.
-    var menuBarShowsRing = false {
+    /// How the menu bar draws the account: its figure, a small ring, or its
+    /// five-hour and weekly limits side by side. See `MenuBarStyle`.
+    var menuBarStyle: MenuBarStyle = .figure {
         didSet {
-            guard menuBarShowsRing != oldValue else { return }
-            UserDefaults.standard.set(menuBarShowsRing, forKey: Key.menuBarShowsRing)
+            guard menuBarStyle != oldValue else { return }
+            UserDefaults.standard.set(menuBarStyle.rawValue, forKey: Key.menuBarStyle)
             onMenuBarIconChange?()
         }
     }
@@ -1591,7 +1591,7 @@ final class AppSettings {
         settings.showsCodexResetCredits = defaults.bool(forKey: Key.showsCodexResetCredits)
         settings.showsUsageInMenuBar = defaults.bool(forKey: Key.showsUsageInMenuBar)
         settings.menuBarAccount = defaults.string(forKey: Key.menuBarAccount)
-        settings.menuBarShowsRing = defaults.bool(forKey: Key.menuBarShowsRing)
+        settings.menuBarStyle = defaults.string(forKey: Key.menuBarStyle).flatMap(MenuBarStyle.init(rawValue:)) ?? .figure
         settings.balanceBases = defaults.dictionary(forKey: Key.balanceBases) as? [String: String] ?? [:]
         settings.balanceBudgets = (defaults.dictionary(forKey: Key.balanceBudgets) as? [String: Double] ?? [:])
             .filter { $0.value.isFinite && $0.value > 0 }
@@ -1700,7 +1700,7 @@ final class AppSettings {
         static let showsCodexResetCredits = "settings.showsCodexResetCredits"
         static let showsUsageInMenuBar = "settings.showsUsageInMenuBar"
         static let menuBarAccount = "settings.menuBarAccount"
-        static let menuBarShowsRing = "settings.menuBarShowsRing"
+        static let menuBarStyle = "settings.menuBarStyle"
         static let extensionNames = "settings.extensionNames"
         static let balanceBudgets = "settings.balanceBudgets"
         static let language = "settings.language"

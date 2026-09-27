@@ -859,3 +859,7 @@
 "Reading local records…" = "Reading local records…";
 "Usage credits" = "Credits";
 "%@ remaining" = "%@ remaining";
+"Split" = "Split";
+"Short: day" = "Day";
+"Short: week" = "Wk";
+"Short: month" = "Mo";

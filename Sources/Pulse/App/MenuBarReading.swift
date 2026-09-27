@@ -1,5 +1,17 @@
 import AppKit
 
+/// How the menu bar item draws the account it speaks for.
+enum MenuBarStyle: String, CaseIterable, Sendable {
+    /// The mark and the ring's figure: `✳ 15%`.
+    case figure
+    /// The mark and a small ring.
+    case ring
+    /// The mark and the account's timed limits side by side, each with a
+    /// short name: `✳ 5h/9%  周/15%`. An account with fewer than two falls
+    /// back to the figure.
+    case split
+}
+
 /// What the menu bar item says when it shows usage: one account's ring.
 ///
 /// **The rail's own figure, not a new one.** An account contributes the limit
@@ -16,6 +28,16 @@ struct MenuBarReading: Equatable {
     let money: String?
     /// Past the reader's warning line, or spent. Drawn in red.
     let isAlert: Bool
+    /// The account's timed limits, shortest first, at most two and one of
+    /// each length — what the split style draws. Only the account-wide ones:
+    /// a limit scoped to one model is not "the five-hour limit".
+    var split: [Part] = []
+
+    /// One limit of the split style, and whether it is past the line.
+    struct Part: Equatable {
+        let window: UsageWindow
+        let isAlert: Bool
+    }
 
     /// The chosen account while it is on the rail; the tightest otherwise,
     /// so switching the chosen one off falls back rather than going blank.
@@ -67,7 +89,10 @@ struct MenuBarReading: Equatable {
                 account: account,
                 window: window,
                 money: nil,
-                isAlert: UsageTint.isSpent(window) || window.usedFraction >= threshold
+                isAlert: UsageTint.isSpent(window) || window.usedFraction >= threshold,
+                split: splitWindows(usage.windows).map { part in
+                    Part(window: part, isAlert: UsageTint.isSpent(part) || part.usedFraction >= threshold)
+                }
             )
         }
         return MenuBarReading(
@@ -76,6 +101,34 @@ struct MenuBarReading: Equatable {
             money: usage.creditRemaining?.railText() ?? usage.creditBalance,
             isAlert: false
         )
+    }
+
+    /// Lengths the split style names, in the order it draws them.
+    static let splitKinds: [UsageWindow.Kind] = [.fiveHour, .daily, .weekly, .monthly]
+
+    static func splitWindows(_ windows: [UsageWindow]) -> [UsageWindow] {
+        var seen: [UsageWindow.Kind] = []
+        let picked = windows.filter { window in
+            guard window.scope == nil, window.estimate == nil,
+                  splitKinds.contains(window.kind), !seen.contains(window.kind)
+            else { return false }
+            seen.append(window.kind)
+            return true
+        }
+        return Array(picked
+            .sorted { splitKinds.firstIndex(of: $0.kind)! < splitKinds.firstIndex(of: $1.kind)! }
+            .prefix(2))
+    }
+
+    /// A limit's name at menu bar size.
+    static func shortName(_ kind: UsageWindow.Kind) -> String {
+        switch kind {
+        case .fiveHour: "5h"
+        case .daily: .localized("Short: day")
+        case .weekly: .localized("Short: week")
+        case .monthly: .localized("Short: month")
+        default: ""
+        }
     }
 
     func text(remaining: Bool) -> String {
@@ -100,7 +153,7 @@ extension MenuBarReading {
     static func draw(
         _ reading: MenuBarReading?,
         remaining: Bool,
-        asRing: Bool,
+        style: MenuBarStyle,
         label: String?,
         on button: NSStatusBarButton
     ) {
@@ -125,7 +178,7 @@ extension MenuBarReading {
         button.toolTip = [label, tooltipFigure].compactMap { $0 }.joined(separator: "\n")
 
         // The ring needs a limit to measure; money and "no reading" stay text.
-        if asRing, let fraction = reading.ringFraction(remaining: remaining) {
+        if style == .ring, let fraction = reading.ringFraction(remaining: remaining) {
             button.image = combined(mark, ring(fraction: fraction, alert: reading.isAlert))
             button.attributedTitle = NSAttributedString()
             button.imagePosition = .imageOnly
@@ -134,9 +187,28 @@ extension MenuBarReading {
 
         button.image = mark
         button.imagePosition = .imageLeading
-        var attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium),
-        ]
+        let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+
+        // Each limit red on its own: a spent five-hour window beside a quiet
+        // week is exactly the thing this style is for.
+        if style == .split, reading.split.count == 2 {
+            let title = NSMutableAttributedString()
+            for (index, part) in reading.split.enumerated() {
+                let window = part.window
+                var attributes: [NSAttributedString.Key: Any] = [.font: font]
+                if part.isAlert { attributes[.foregroundColor] = NSColor.systemRed }
+                let gap = index == 0 ? " " : "  "
+                title.append(NSAttributedString(string: gap, attributes: [.font: font]))
+                title.append(NSAttributedString(
+                    string: shortName(window.kind) + "/" + window.percentText(remaining: remaining),
+                    attributes: attributes
+                ))
+            }
+            button.attributedTitle = title
+            return
+        }
+
+        var attributes: [NSAttributedString.Key: Any] = [.font: font]
         if reading.isAlert { attributes[.foregroundColor] = NSColor.systemRed }
         button.attributedTitle = NSAttributedString(string: " " + reading.text(remaining: remaining), attributes: attributes)
     }

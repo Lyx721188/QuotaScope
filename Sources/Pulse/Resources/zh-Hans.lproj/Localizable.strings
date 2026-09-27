@@ -859,3 +859,7 @@
 "Reading local records…" = "正在读取本机记录…";
 "Usage credits" = "额度";
 "%@ remaining" = "%@ 剩余";
+"Split" = "分项";
+"Short: day" = "日";
+"Short: week" = "周";
+"Short: month" = "月";

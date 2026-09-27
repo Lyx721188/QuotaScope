@@ -1012,11 +1012,12 @@ struct SettingsView: View {
 
                     SettingsRow(String.localized("Menu bar style")) {
                         Picker("", selection: Binding(
-                            get: { settings.menuBarShowsRing },
-                            set: { settings.menuBarShowsRing = $0 }
+                            get: { settings.menuBarStyle },
+                            set: { settings.menuBarStyle = $0 }
                         )) {
-                            Text(localized: "Figure").tag(false)
-                            Text(localized: "Ring").tag(true)
+                            Text(localized: "Figure").tag(MenuBarStyle.figure)
+                            Text(localized: "Ring").tag(MenuBarStyle.ring)
+                            Text(localized: "Split").tag(MenuBarStyle.split)
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)

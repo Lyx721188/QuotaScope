@@ -859,3 +859,7 @@
 "Reading local records…" = "로컬 기록을 읽는 중…";
 "Usage credits" = "크레딧";
 "%@ remaining" = "%@ 남음";
+"Split" = "분할";
+"Short: day" = "일";
+"Short: week" = "주";
+"Short: month" = "월";

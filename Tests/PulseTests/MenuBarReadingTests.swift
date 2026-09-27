@@ -138,4 +138,35 @@ struct MenuBarReadingTests {
         let spent = MenuBarReading.of(claude, usage: live(claude, [window("week", 1, exhausted: true)]), pinned: nil, warningAt: 0.8)
         #expect(spent.ringFraction(remaining: true) == 1)
     }
+
+    private func timed(_ kind: UsageWindow.Kind, _ fraction: Double, scope: String? = nil) -> UsageWindow {
+        UsageWindow(id: "\(kind)\(scope ?? "")", kind: kind, scope: scope, usedFraction: fraction,
+                    windowSeconds: 604_800, resetsAt: nil)
+    }
+
+    @Test("Split takes the account-wide five-hour and weekly limits, shortest first")
+    func splitPicksTimedLimits() {
+        let usage = live(claude, [timed(.weekly, 0.15), timed(.weekly, 0.0, scope: "Fable"), timed(.fiveHour, 0.9)])
+        let reading = MenuBarReading.of(claude, usage: usage, pinned: nil, warningAt: 0.8)
+        #expect(reading.split.map(\.window.kind) == [.fiveHour, .weekly])
+        #expect(reading.split.map(\.window.scope) == [nil, nil])
+        // Red on its own: the spent five hours, not the quiet week.
+        #expect(reading.split.map(\.isAlert) == [true, false])
+    }
+
+    @Test("An account with one timed limit has nothing to split")
+    func splitNeedsTwo() {
+        let reading = MenuBarReading.of(codex, usage: live(codex, [timed(.weekly, 0.08)]), pinned: nil, warningAt: 0.8)
+        #expect(reading.split.count == 1)
+        let scoped = MenuBarReading.of(cursor, usage: live(cursor, [
+            timed(.monthly, 0.1, scope: "Cursor Models"), timed(.monthly, 0.2, scope: "Other Models"),
+        ]), pinned: nil, warningAt: 0.8)
+        #expect(scoped.split.isEmpty)
+    }
+
+    @Test("The short names", arguments: [UsageWindow.Kind.fiveHour, .weekly, .monthly, .daily])
+    func shortNames(kind: UsageWindow.Kind) {
+        #expect(!MenuBarReading.shortName(kind).isEmpty)
+    }
 }
+
