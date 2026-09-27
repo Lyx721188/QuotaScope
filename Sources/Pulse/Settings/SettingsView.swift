@@ -996,7 +996,13 @@ struct SettingsView: View {
                         subtitle: String.localized("An account switched off falls back to the fullest ring.")
                     ) {
                         Picker("", selection: Binding(
-                            get: { settings.menuBarAccount },
+                            // An account taken off the rail reads as the
+                            // fallback it has become, not as no selection.
+                            get: {
+                                settings.menuBarAccount.flatMap { id in
+                                    settings.shownAccounts.contains { $0.id == id } ? id : nil
+                                }
+                            },
                             set: { settings.menuBarAccount = $0 }
                         )) {
                             Text(localized: "Fullest ring").tag(String?.none)

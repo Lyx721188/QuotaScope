@@ -16,7 +16,12 @@ final class MenuDashboardModel {
     /// on. Kept for the session: the reader's own cache makes a re-read cheap,
     /// but a menu should not sit empty while it happens.
     var ledgers: [Provider: UsageLedger] = [:]
+    /// When each was read. A tab opened after `ledgerLifetime` reads it again.
+    var ledgerReadAt: [Provider: Date] = [:]
     var readingLedger: Provider?
+    /// Long enough that flicking between tabs does not rescan, short enough
+    /// that "Today" is today's.
+    static let ledgerLifetime: TimeInterval = 5 * 60
 }
 
 /// The top of the menu bar item's menu: a tab per account on the rail and an
@@ -71,7 +76,7 @@ struct MenuDashboard: View {
     // MARK: - Tabs
 
     private var tabs: some View {
-        // Labels only while they fit: past six accounts the marks carry it and
+        // Labels only while they fit: past five accounts the marks carry it and
         // the name is in the tooltip.
         let labelled = accounts.count <= 5
         return HStack(spacing: 2) {
@@ -375,24 +380,26 @@ private struct MenuAccountDetail: View {
             Text(verbatim: title)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text(verbatim: cost.formatted(
-                .currency(code: "USD").precision(.fractionLength(cost >= 1000 ? 0 : 2)).locale(LocalizationSource.locale)
-            ))
-            .font(.system(size: 15, weight: .semibold).monospacedDigit())
+            Text(verbatim: AccountUsageCard.money(cost))
+                .font(.system(size: 15, weight: .semibold).monospacedDigit())
             Text(verbatim: String.localized("\(TokenCount.short(tokens)) tokens"))
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
         }
     }
 
-    /// The ledger for this provider, read once per session. Incremental —
-    /// only transcripts that changed since the last read are parsed again.
+    /// The ledger for this provider, read when the tab opens unless it was
+    /// read in the last few minutes. Incremental — only transcripts that
+    /// changed since the last read are parsed again — and the previous figures
+    /// stay on screen while it runs.
     private func readLedgerIfNeeded() async {
         let provider = account.provider
-        guard showsSpend, model.ledgers[provider] == nil, model.readingLedger != provider else { return }
+        let fresh = model.ledgerReadAt[provider].map { Date().timeIntervalSince($0) < MenuDashboardModel.ledgerLifetime } ?? false
+        guard showsSpend, !fresh, model.readingLedger != provider else { return }
         model.readingLedger = provider
-        let ledger = await UsageLedgerReader.shared.ledger(for: provider)
+        let ledger = await UsageLedgerReader.shared.ledger(for: provider, refresh: true)
         model.ledgers[provider] = ledger
+        model.ledgerReadAt[provider] = Date()
         if model.readingLedger == provider { model.readingLedger = nil }
     }
 }

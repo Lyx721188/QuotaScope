@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var store = UsageStore(settings: settings, alerts: alerts)
     /// Which tab the menu bar's menu last had open, kept between openings.
     private let dashboard = MenuDashboardModel()
+    /// Bumped on every redraw of the status item. A tracking closure re-arms
+    /// only while it still holds the latest, so the chain started by each
+    /// settings change replaces the one before instead of running beside it.
+    private var menuBarGeneration = 0
 
     private var panelController: FloatingPanelController?
     private var statusItem: NSStatusItem?
@@ -192,31 +196,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// again on every change, because `withObservationTracking` fires once.
     private func showMenuBarReading() {
         guard let button = statusItem?.button else { return }
-        let (reading, remaining, style) = withObservationTracking {
-            (
-                settings.showsUsageInMenuBar
-                    ? MenuBarReading.choose(
-                        among: settings.shownAccounts,
-                        chosen: settings.menuBarAccount.flatMap(AccountKey.init(id:)),
-                        usage: store.usage(for:),
-                        pinned: settings.pinnedWindow(for:),
-                        warningAt: settings.warningThreshold.fraction
-                    )
-                    : nil,
-                settings.showsRemaining,
-                settings.menuBarStyle
-            )
+        menuBarGeneration += 1
+        let generation = menuBarGeneration
+        let (reading, remaining, style, label) = withObservationTracking {
+            let reading = settings.showsUsageInMenuBar
+                ? MenuBarReading.choose(
+                    among: settings.shownAccounts,
+                    chosen: settings.menuBarAccount.flatMap(AccountKey.init(id:)),
+                    usage: store.usage(for:),
+                    pinned: settings.pinnedWindow(for:),
+                    warningAt: settings.warningThreshold.fraction
+                )
+                : nil
+            // The label inside too: renaming the account is a change to show.
+            return (reading, settings.showsRemaining, settings.menuBarStyle,
+                    reading.map { settings.label(for: $0.account) })
         } onChange: { [weak self] in
-            Task { @MainActor in self?.showMenuBarReading() }
+            Task { @MainActor in
+                guard let self, self.menuBarGeneration == generation else { return }
+                self.showMenuBarReading()
+            }
         }
 
-        MenuBarReading.draw(
-            reading,
-            remaining: remaining,
-            style: style,
-            label: reading.map { settings.label(for: $0.account) },
-            on: button
-        )
+        MenuBarReading.draw(reading, remaining: remaining, style: style, label: label, on: button)
     }
 
     /// An accessory app has no Dock icon. When the panel is also hidden, a
