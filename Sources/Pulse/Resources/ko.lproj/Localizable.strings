@@ -858,3 +858,5 @@
 "Last 30 days" = "최근 30일";
 "Estimated from token counts at API prices — not your subscription bill." = "토큰 사용량을 API 가격으로 추정한 값이며 구독 청구액이 아닙니다.";
 "Reading local records…" = "로컬 기록을 읽는 중…";
+"Usage credits" = "크레딧";
+"%@ remaining" = "%@ 남음";

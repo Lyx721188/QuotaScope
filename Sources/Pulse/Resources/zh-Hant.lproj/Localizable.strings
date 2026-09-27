@@ -858,3 +858,5 @@
 "Last 30 days" = "近 30 天";
 "Estimated from token counts at API prices — not your subscription bill." = "按 API 價格根據 Token 用量估算，不是訂閱帳單。";
 "Reading local records…" = "正在讀取本機記錄…";
+"Usage credits" = "額度";
+"%@ remaining" = "%@ 剩餘";

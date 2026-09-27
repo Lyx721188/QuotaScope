@@ -858,3 +858,5 @@
 "Last 30 days" = "Last 30 days";
 "Estimated from token counts at API prices — not your subscription bill." = "Estimated from token counts at API prices — not your subscription bill.";
 "Reading local records…" = "Reading local records…";
+"Usage credits" = "Credits";
+"%@ remaining" = "%@ remaining";

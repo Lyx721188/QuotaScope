@@ -295,7 +295,23 @@ private struct MenuAccountDetail: View {
             )
         }
         if let balance = usage.creditBalance {
-            valueRow(String.localized("Credit balance"), balance)
+            credit(balance)
+        }
+    }
+
+    /// What is left, as the provider stated it, and nothing more: no bar,
+    /// because no provider here says what it was out of — Codex reports its
+    /// credits as a balance alone. Money is headed as a balance; anything else
+    /// (Codex's credits) as credits.
+    private func credit(_ balance: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(verbatim: usage.creditRemaining == nil
+                ? String.localized("Usage credits")
+                : String.localized("Balance"))
+                .font(.system(size: 12, weight: .medium))
+            Text(verbatim: String.localized("\(balance) remaining"))
+                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                .foregroundStyle(.secondary)
         }
     }
 
