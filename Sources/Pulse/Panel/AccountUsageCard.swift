@@ -262,7 +262,7 @@ struct AccountUsageCard: View {
 }
 
 /// Daily totals as bars, oldest on the left.
-private struct DailyTokensChart: View {
+struct DailyTokensChart: View {
     let days: [LedgerDay]
 
     var body: some View {

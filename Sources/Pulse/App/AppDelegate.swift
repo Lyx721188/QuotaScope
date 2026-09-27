@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -16,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// that can report a combination the window server refused.
     let shortcuts = GlobalShortcutMonitor()
     private lazy var store = UsageStore(settings: settings, alerts: alerts)
+    /// Which tab the menu bar's menu last had open, kept between openings.
+    private let dashboard = MenuDashboardModel()
 
     private var panelController: FloatingPanelController?
     private var statusItem: NSStatusItem?
@@ -243,53 +246,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         // Only the menu bar's menu: the rail's own menu opens beside the rings
         // it would be repeating.
-        if menu === statusItem?.menu { addUsage(to: menu) }
+        if menu === statusItem?.menu { addDashboard(to: menu) }
         populateMenu(menu)
     }
 
-    /// Every account on the rail, one row each: its mark, its name and figure,
-    /// and under them the limit and when it resets. The panel steps aside for
-    /// full-screen apps and can be hidden; the menu bar cannot, so this is the
-    /// whole rail where it is always reachable. A row opens that account's
-    /// settings.
-    private func addUsage(to menu: NSMenu) {
-        guard !settings.needsProviderSelection else { return }
-        let accounts = settings.shownAccounts
-        guard !accounts.isEmpty else { return }
-        let remaining = settings.showsRemaining
-        let threshold = settings.warningThreshold.fraction
+    /// The tabbed view at the top of the menu bar's menu, and the items that
+    /// go with whichever tab is open. See `MenuDashboard`.
+    private func addDashboard(to menu: NSMenu) {
+        guard !settings.needsProviderSelection, !settings.shownAccounts.isEmpty else { return }
 
-        menu.addItem(.sectionHeader(title: .localized("Usage")))
-        for account in accounts {
-            let usage = store.usage(for: account)
-            let reading = MenuBarReading.of(
-                account, usage: usage, pinned: settings.pinnedWindow(for: account), warningAt: threshold
-            )
-            let name = settings.label(for: account)
-            let figure = reading.text(remaining: remaining)
-            let detail = reading.window.map { window in
-                [window.name, UsageDetailCard.resetDescription(window)].filter { !$0.isEmpty }.joined(separator: " · ")
-            } ?? (reading.money == nil ? String.localized("No reading") : nil)
-            // The title is what VoiceOver and type-to-select read; the view is
-            // what is drawn.
-            let item = NSMenuItem(title: name + " " + figure, action: #selector(openAccountSettings(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = account.id
-            item.view = MenuUsageRowView(
-                mark: MenuBarReading.markImage(for: account.provider, size: 16),
-                name: name,
-                figure: figure,
-                detail: detail,
-                alert: reading.isAlert
-            )
-            menu.addItem(item)
-        }
+        let item = NSMenuItem()
+        let hosting = NSHostingView(rootView: AnyView(EmptyView()))
+        hosting.rootView = AnyView(MenuDashboard(
+            store: store,
+            settings: settings,
+            model: dashboard,
+            onResize: { [weak hosting] size in
+                // The menu lays itself out from its items' frames, so a tab
+                // of a different height has to say so here.
+                guard let hosting, hosting.frame.size != size else { return }
+                hosting.setFrameSize(size)
+            }
+        ))
+        hosting.setFrameSize(hosting.fittingSize)
+        item.view = hosting
+        menu.addItem(item)
         menu.addItem(.separator())
+
+        let page = NSMenuItem(title: "", action: #selector(openUsagePage(_:)), keyEquivalent: "")
+        page.target = self
+        page.image = NSImage(systemSymbolName: "safari", accessibilityDescription: nil)
+        menu.addItem(page)
+
+        let refresh = NSMenuItem(title: .localized("Refresh"), action: #selector(refreshAll), keyEquivalent: "r")
+        refresh.target = self
+        refresh.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
+        menu.addItem(refresh)
+        menu.addItem(.separator())
+
+        // The page item names the open tab's provider, and is there only when
+        // that provider has a page Pulse knows.
+        let showPage = { [weak self, weak page] in
+            guard let self, let page else { return }
+            let account = self.dashboard.selected.flatMap(AccountKey.init(id:))
+                .flatMap { self.settings.shownAccounts.contains($0) ? $0 : nil }
+            if let account, let url = account.provider.usagePage {
+                page.title = .localized("Open \(account.provider.displayName) usage page")
+                page.representedObject = url
+                page.isHidden = false
+            } else {
+                page.isHidden = true
+            }
+        }
+        dashboard.onSelect = showPage
+        showPage()
     }
 
-    @objc private func openAccountSettings(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String, let account = AccountKey(id: id) else { return }
-        showSettings(link: .account(account))
+    @objc private func openUsagePage(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func refreshAll() {
+        store.refresh()
     }
 
     private func makeMenu() -> NSMenu {

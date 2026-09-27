@@ -851,3 +851,10 @@
 "Menu bar style" = "菜单栏样式";
 "Figure" = "数字";
 "Ring" = "圆环";
+"Open %@ usage page" = "打开 %@ 用量页";
+"Overview" = "概览";
+"Updated just now" = "刚刚更新";
+"Updated %@" = "%@更新";
+"Last 30 days" = "近 30 天";
+"Estimated from token counts at API prices — not your subscription bill." = "按 API 价格根据 Token 用量估算，不是订阅账单。";
+"Reading local records…" = "正在读取本机记录…";
