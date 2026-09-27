@@ -6,6 +6,24 @@
         <description>Updates for Pulse.</description>
         <language>en</language>
         <item>
+            <title>1.6.0</title>
+            <pubDate>Sun, 27 Sep 2026 08:46:20 -0000</pubDate>
+            <sparkle:version>1.6.0</sparkle:version>
+            <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/qunqin24/Pulse/releases/tag/v1.6.0</link>
+            <description><![CDATA[<style>
+  h2 { font-size: 1.05em; margin: 0 0 .5em; }
+  ul { margin: 0; padding-left: 1.2em; }
+  li { margin: .3em 0; }
+  p { margin: .8em 0 0; }
+</style><h2>Pulse 1.6.0</h2><p><strong>中文</strong></p><p><strong>新功能</strong></p><ul><li><strong>菜单栏显示用量。</strong> 在 设置 › 通用 打开「在菜单栏显示用量」，菜单栏图标旁会显示用得最多的那个圆环，也可以指定某个账号。样式可选数字、迷你圆环，或「分项」并排显示 5 小时与每周额度（<code>5h/9%  周/15%</code>）；超过警示线时变红。默认关闭。</li><li><strong>菜单栏用量面板。</strong> 点开菜单栏图标，顶部是「概览」和每个账号的标签：概览列出所有账号的用量与重置时间；账号标签里有各项额度的进度条、套餐、更新时间、Codex 重置券与额度余额，开启「Token 消耗」后还有今天、最近 31 天、单日最多、累计的花费估算和每日柱状图。还可以一键打开服务方的官方用量页，或按 ⌘R 立即刷新。</li><li><strong>只用菜单栏。</strong> 菜单里新增「显示悬浮面板」开关，不喜欢屏幕边上胶囊的可以直接关掉。</li><li><strong>再次打开 Pulse 会弹出设置。</strong> Pulse 在后台运行时，从「应用程序」或聚焦搜索再打开它，会直接弹出设置窗口；就算面板和菜单栏图标都隐藏了，也不会找不到。</li></ul><p><strong>改进与修复</strong></p><ul><li><strong>液态玻璃下，卡片的尾巴和卡片融为一体。</strong> 此前尾巴在花哨背景上会像单独贴上去的一块水晶。</li><li><strong>Grok 额度用到 100% 时会算作已用完</strong>，和其他服务一致，会发出「额度用完」的通知。</li><li><strong>删除额外账号时，会清掉它的所有设置</strong>（小机器人外观、余额提醒等），不再残留。</li></ul><p><strong>English</strong></p><p><strong>New</strong></p><ul><li><strong>Usage in the menu bar.</strong> Turn on Show usage in the menu bar in Settings › General, and the menu bar icon shows the fullest ring — or an account you pick — as a figure, a small ring, or Split: the five-hour and weekly limits side by side (<code>5h/9%  Wk/15%</code>), red past the warning line. Off by default.</li><li><strong>A dashboard in the menu bar menu.</strong> Tabs across the top: an Overview of every account&#x27;s figure and reset, and one tab per account with each limit&#x27;s bar, the plan, how fresh the reading is, Codex&#x27;s reset credits and credits left, and — with Token spend on — today, the last 31 days, the busiest day and all time as estimated cost, with a daily chart. Plus a link to the provider&#x27;s own usage page and Refresh (⌘R).</li><li><strong>Menu bar only.</strong> Show floating panel is now in the menu, so the rail can be switched off in one click.</li><li><strong>Opening Pulse again opens Settings.</strong> A double-click in Applications or Spotlight while Pulse runs brings up Settings, so hiding both the panel and the menu bar icon is never a dead end.</li></ul><p><strong>Changed and fixed</strong></p><ul><li><strong>With Liquid Glass, the card&#x27;s tail is part of the card.</strong> It used to read as a separate crystal over a busy backdrop.</li><li><strong>Grok&#x27;s pool counts as spent at 100%</strong>, like every other provider, so the spent notification fires.</li><li><strong>Removing an added account clears all of its settings</strong>, including its animated mark and low-balance alert.</li></ul><p><a href="https://github.com/qunqin24/Pulse/releases/tag/v1.6.0">Release notes on GitHub</a></p>]]></description>
+            <enclosure url="https://github.com/qunqin24/Pulse/releases/download/v1.6.0/Pulse-1.6.0.zip"
+                       length="10694367"
+                       type="application/octet-stream"
+                       sparkle:edSignature="ZuJYKZ+QBLmTIkqXSblo3J5M5+Ro1wGqYF5CViCMdD+gMI/2j2d3b39i5SAMG2qw0Tt4QNuCsCUZB+5QJ/NNDA==" />
+        </item>
+        <item>
             <title>1.5.2</title>
             <pubDate>Sat, 26 Sep 2026 10:59:00 -0000</pubDate>
             <sparkle:version>1.5.2</sparkle:version>
