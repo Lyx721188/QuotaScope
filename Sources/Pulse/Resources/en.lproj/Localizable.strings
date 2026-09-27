@@ -863,3 +863,17 @@
 "Short: day" = "Day";
 "Short: week" = "Wk";
 "Short: month" = "Mo";
+"Start windows automatically" = "Start windows automatically";
+"Start a new window after each reset" = "Start a new window after each reset";
+"When the 5-hour limit resets, sends “hi” to Haiku through Claude Code, so the next window starts counting then rather than at your next message. Nothing is saved." = "When the 5-hour limit resets, sends “hi” to Haiku through Claude Code, so the next window starts counting then rather than at your next message. Nothing is saved.";
+"When the 5-hour or weekly limit resets, sends “hi” to the cheapest model through Codex, so the next window starts counting then rather than at your next message. Nothing is saved." = "When the 5-hour or weekly limit resets, sends “hi” to the cheapest model through Codex, so the next window starts counting then rather than at your next message. Nothing is saved.";
+"Only between" = "Only between";
+"A reset outside these hours is started when they begin. Shared by Claude Code and Codex." = "A reset outside these hours is started when they begin. Shared by Claude Code and Codex.";
+"Last started" = "Last started";
+"Use at your own risk" = "Use at your own risk";
+"I understand the risk, turn it on" = "I understand the risk, turn it on";
+"This is not a feature of Anthropic or OpenAI. Starting usage windows automatically may be treated as getting around usage limits, and could get your account restricted or suspended. Pulse only sends one short message through the tool you are already signed in to, and is not responsible for anything that happens to your account as a result. Turn it on only if you accept that." = "This is not a feature of Anthropic or OpenAI. Starting usage windows automatically may be treated as getting around usage limits, and could get your account restricted or suspended. Pulse only sends one short message through the tool you are already signed in to, and is not responsible for anything that happens to your account as a result. Turn it on only if you accept that.";
+"Not started yet" = "Not started yet";
+"%@ · the command-line tool was not found" = "%@ · the command-line tool was not found";
+"%@ · it did not go through; check the tool is signed in" = "%@ · it did not go through; check the tool is signed in";
+"%@ · it did not answer in time" = "%@ · it did not answer in time";

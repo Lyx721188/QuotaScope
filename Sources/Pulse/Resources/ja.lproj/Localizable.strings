@@ -863,3 +863,17 @@
 "Short: day" = "日";
 "Short: week" = "週";
 "Short: month" = "月";
+"Start windows automatically" = "ウィンドウを自動で開始";
+"Start a new window after each reset" = "リセット後に新しいウィンドウを自動で開始";
+"When the 5-hour limit resets, sends “hi” to Haiku through Claude Code, so the next window starts counting then rather than at your next message. Nothing is saved." = "5 時間の上限がリセットされたら、Claude Code から Haiku に「hi」を送り、次のウィンドウを次のメッセージ時ではなくその時点から計測させます。会話は保存されません。";
+"When the 5-hour or weekly limit resets, sends “hi” to the cheapest model through Codex, so the next window starts counting then rather than at your next message. Nothing is saved." = "5 時間または週の上限がリセットされたら、Codex からいちばん安いモデルに「hi」を送り、次のウィンドウを次のメッセージ時ではなくその時点から計測させます。会話は保存されません。";
+"Only between" = "この時間帯のみ";
+"A reset outside these hours is started when they begin. Shared by Claude Code and Codex." = "時間帯外のリセットは、時間帯が始まったときに開始します。Claude Code と Codex で共通です。";
+"Last started" = "前回の自動開始";
+"Use at your own risk" = "自己責任でご利用ください";
+"I understand the risk, turn it on" = "リスクを理解して有効にする";
+"This is not a feature of Anthropic or OpenAI. Starting usage windows automatically may be treated as getting around usage limits, and could get your account restricted or suspended. Pulse only sends one short message through the tool you are already signed in to, and is not responsible for anything that happens to your account as a result. Turn it on only if you accept that." = "これは Anthropic や OpenAI が提供する機能ではありません。使用量ウィンドウを自動で開始することは使用制限の回避とみなされ、アカウントの制限や停止につながる可能性があります。Pulse はサインイン済みのツールから短いメッセージを 1 通送るだけで、その結果アカウントに生じたいかなる影響についても責任を負いません。これを受け入れる場合のみ有効にしてください。";
+"Not started yet" = "まだ自動開始していません";
+"%@ · the command-line tool was not found" = "%@ · コマンドラインツールが見つかりません";
+"%@ · it did not go through; check the tool is signed in" = "%@ · 送信できませんでした。ツールにサインインしているか確認してください";
+"%@ · it did not answer in time" = "%@ · 時間内に応答がありませんでした";

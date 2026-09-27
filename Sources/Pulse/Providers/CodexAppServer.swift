@@ -61,6 +61,13 @@ actor CodexAppServer {
         return try await send(method: "account/rateLimits/read")
     }
 
+    /// The models the account may use, as `model/list` reports them, still
+    /// encoded as JSON.
+    func models() async throws -> Data {
+        try await ensureRunning()
+        return try await send(method: "model/list")
+    }
+
     /// The account's token history, as `account/usage/read` reports it, still
     /// encoded as JSON.
     func accountUsage() async throws -> Data {
@@ -208,7 +215,7 @@ actor CodexAppServer {
     /// Where `codex` tends to live. A GUI app inherits almost no `PATH`, so
     /// the usual install locations have to be checked by hand rather than
     /// relying on the environment.
-    private static func locateCodex() -> URL? {
+    static func locateCodex() -> URL? {
         let fileManager = FileManager.default
         // Wherever the app actually is — a second drive, a folder of its own
         // — Launch Services knows it by its bundle id. Both the ChatGPT app
@@ -262,32 +269,12 @@ actor CodexAppServer {
         if let app {
             candidates += bundled.map { app.appending(path: $0).path }
         }
-
-        candidates += [
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex",
-            "\(home)/.local/bin/codex",
-            "\(home)/.bun/bin/codex",
-            "\(home)/.volta/bin/codex",
-            "\(home)/.npm-global/bin/codex",
-            "\(home)/Library/pnpm/codex",
-        ]
+        candidates += CommandLocator.directories(home: home).map { "\($0)/codex" }
         for app in ["/Applications/Codex.app", "\(home)/Applications/Codex.app",
                     "/Applications/ChatGPT.app", "\(home)/Applications/ChatGPT.app"] {
             candidates += bundled.map { "\(app)/\($0)" }
         }
-
-        // Newest version last in each listing, so the newest wins.
-        let managers: [(root: String, bin: String)] = [
-            ("\(home)/.nvm/versions/node", "bin"),
-            ("\(home)/Library/Application Support/fnm/node-versions", "installation/bin"),
-            ("\(home)/.local/share/fnm/node-versions", "installation/bin"),
-            ("\(home)/.local/share/mise/installs/node", "bin"),
-        ]
-        for manager in managers {
-            candidates += versions(manager.root).reversed().map { "\(manager.root)/\($0)/\(manager.bin)/codex" }
-        }
-        return candidates
+        return candidates + CommandLocator.managed("codex", home: home, versions: versions)
     }
 
     // MARK: - Messaging

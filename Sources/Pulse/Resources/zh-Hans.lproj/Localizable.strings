@@ -863,3 +863,17 @@
 "Short: day" = "日";
 "Short: week" = "周";
 "Short: month" = "月";
+"Start windows automatically" = "自动开始新窗口";
+"Start a new window after each reset" = "额度重置后自动开始新窗口";
+"When the 5-hour limit resets, sends “hi” to Haiku through Claude Code, so the next window starts counting then rather than at your next message. Nothing is saved." = "5 小时额度重置后，通过 Claude Code 给 Haiku 发一句“hi”，让下一个窗口从这时开始计时，而不是等到你下一次发消息。不会保存任何对话。";
+"When the 5-hour or weekly limit resets, sends “hi” to the cheapest model through Codex, so the next window starts counting then rather than at your next message. Nothing is saved." = "5 小时或每周额度重置后，通过 Codex 给最便宜的模型发一句“hi”，让下一个窗口从这时开始计时，而不是等到你下一次发消息。不会保存任何对话。";
+"Only between" = "仅在此时段";
+"A reset outside these hours is started when they begin. Shared by Claude Code and Codex." = "在这个时段以外重置的，会等到时段开始时再自动开始。Claude Code 和 Codex 共用。";
+"Last started" = "上次自动开始";
+"Use at your own risk" = "请自行承担风险";
+"I understand the risk, turn it on" = "我了解风险，开启";
+"This is not a feature of Anthropic or OpenAI. Starting usage windows automatically may be treated as getting around usage limits, and could get your account restricted or suspended. Pulse only sends one short message through the tool you are already signed in to, and is not responsible for anything that happens to your account as a result. Turn it on only if you accept that." = "这不是 Anthropic 或 OpenAI 提供的功能。自动开始用量窗口可能被视为规避用量限制，可能导致你的账号被限制或封禁。Pulse 只会通过你已登录的命令行工具发送一条简短消息，对你的账号因此受到的任何影响不承担责任。请确认接受这一点后再开启。";
+"Not started yet" = "还没有自动开始过";
+"%@ · the command-line tool was not found" = "%@ · 找不到命令行工具";
+"%@ · it did not go through; check the tool is signed in" = "%@ · 没有发送成功，请检查工具是否已登录";
+"%@ · it did not answer in time" = "%@ · 没有及时响应";

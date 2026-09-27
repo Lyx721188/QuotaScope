@@ -40,6 +40,7 @@ Treat remaining warnings as failures. macOS 14+, Swift tools 6.0, no linter. **`
 - **Disabled providers are not fetched.** Shared `Unavailability` copy names no provider.
 - **Layout constants are budgets** (`PanelMetrics` computed `var`, never `static let`). Anything new on the panel takes size from them.
 - **Do not fetch or document provider auth here.** [Docs/providers/README.md](Docs/providers/README.md)
+- **Pulse reads; the window starter is the one exception.** It sends a single "hi" through the provider's own CLI, off by default, switched on only through the risk confirmation, nothing saved. Nothing else may send on the user's behalf. [Docs/window-starter.md](Docs/window-starter.md)
 
 ## Read by task
 
@@ -56,6 +57,7 @@ Treat remaining warnings as failures. macOS 14+, Swift tools 6.0, no linter. **`
 | What is tested, fixtures | [Docs/testing.md](Docs/testing.md) |
 | `--json` output contract | [Docs/json-output.md](Docs/json-output.md) |
 | Developer integrations, account links | [Docs/integrations.md](Docs/integrations.md) |
+| Starting usage windows after a reset | [Docs/window-starter.md](Docs/window-starter.md) |
 | Localization, resources, adding UI | [Docs/development.md](Docs/development.md) |
 | Bundle, tag, Sparkle, DMG | [Docs/releasing.md](Docs/releasing.md) / [Docs/build-from-source.md](Docs/build-from-source.md) |
 | Why / failure lessons | [Docs/decisions/README.md](Docs/decisions/README.md) |

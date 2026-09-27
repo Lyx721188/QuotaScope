@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var store = UsageStore(settings: settings, alerts: alerts)
     /// Which tab the menu bar's menu last had open, kept between openings.
     private let dashboard = MenuDashboardModel()
+    /// Starts usage windows after they reset, for the providers switched on.
+    private lazy var primer = WindowPrimer(store: store, settings: settings)
     /// Bumped on every redraw of the status item. A tracking closure re-arms
     /// only while it still holds the latest, so the chain started by each
     /// settings change replaces the one before instead of running beside it.
@@ -129,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.contextMenu = { [weak self] in self?.panelMenu() ?? NSMenu() }
         if settings.isPanelVisible { controller.show() }
         store.start()
+        primer.start()
         prepareClaudeIfSelected()
     }
 

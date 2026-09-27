@@ -20,6 +20,7 @@ Maintained map. Change the topic file that owns a behaviour in the same patch as
 | [json-output.md](json-output.md) | The `--json` contract for status lines and scripts |
 | [integrations.md](integrations.md) | Raycast, tmux, sketchybar, shell prompt setup and account links |
 | [extensions.md](extensions.md) | The extension contract: folder, manifest, how a program is run, what it prints |
+| [window-starter.md](window-starter.md) | Starting Claude Code's and Codex's usage windows after a reset: the risk confirmation, when, and what is sent |
 | [build-from-source.md](build-from-source.md) | Toolchain, `swift build`, `#Preview`, local run |
 | [releasing.md](releasing.md) | Tag, bundle, Sparkle, DMG, CI |
 | [providers/README.md](providers/README.md) | Per-provider routes, auth, cookies, extra accounts |

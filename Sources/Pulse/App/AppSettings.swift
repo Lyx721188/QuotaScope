@@ -212,6 +212,54 @@ final class AppSettings {
     ///
     /// No `onChange`: that refetches every provider, and this is one row on
     /// one card. Settings asks the store for the count itself.
+    /// Providers whose usage windows Pulse starts as soon as they reset, by
+    /// raw value — see `WindowPrimer`. Empty by default, and switched on only
+    /// through Settings' confirmation, which says what it does and what it
+    /// risks. Not through `onChange`, which refetches every provider:
+    /// `WindowPrimer` observes this itself.
+    var primedProviders: Set<String> = [] {
+        didSet {
+            guard primedProviders != oldValue else { return }
+            UserDefaults.standard.set(Array(primedProviders), forKey: Key.primedProviders)
+        }
+    }
+
+    func primesWindows(for provider: Provider) -> Bool {
+        primedProviders.contains(provider.rawValue)
+    }
+
+    func setPrimesWindows(_ on: Bool, for provider: Provider) {
+        if on { primedProviders.insert(provider.rawValue) } else { primedProviders.remove(provider.rawValue) }
+    }
+
+    /// When the window starter may act. See `PrimerHours`.
+    var primerHours: PrimerHours = .default {
+        didSet {
+            guard primerHours != oldValue else { return }
+            UserDefaults.standard.set(primerHours.start, forKey: Key.primerStart)
+            UserDefaults.standard.set(primerHours.end, forKey: Key.primerEnd)
+        }
+    }
+
+    /// When each provider's window was last started, and how that went —
+    /// what its pane shows, so the reader can see it is doing something.
+    private(set) var primerRunTimes: [String: Double] = [:]
+    private(set) var primerRunOutcomes: [String: String] = [:]
+
+    func lastPrimerRun(for provider: Provider) -> (date: Date, outcome: WindowStarter.Outcome)? {
+        guard let time = primerRunTimes[provider.rawValue],
+              let outcome = primerRunOutcomes[provider.rawValue].flatMap(WindowStarter.Outcome.init(rawValue:))
+        else { return nil }
+        return (Date(timeIntervalSince1970: time), outcome)
+    }
+
+    func recordPrimerRun(for provider: Provider, outcome: WindowStarter.Outcome, at date: Date) {
+        primerRunTimes[provider.rawValue] = date.timeIntervalSince1970
+        primerRunOutcomes[provider.rawValue] = outcome.rawValue
+        UserDefaults.standard.set(primerRunTimes, forKey: Key.primerRunTimes)
+        UserDefaults.standard.set(primerRunOutcomes, forKey: Key.primerRunOutcomes)
+    }
+
     var showsCodexResetCredits = false {
         didSet {
             guard showsCodexResetCredits != oldValue else { return }
@@ -1590,6 +1638,14 @@ final class AppSettings {
         )
         settings.showsCodexResetCredits = defaults.bool(forKey: Key.showsCodexResetCredits)
         settings.showsUsageInMenuBar = defaults.bool(forKey: Key.showsUsageInMenuBar)
+        settings.primedProviders = Set(defaults.stringArray(forKey: Key.primedProviders) ?? [])
+        if let start = defaults.object(forKey: Key.primerStart) as? Int,
+           let end = defaults.object(forKey: Key.primerEnd) as? Int,
+           (0...23).contains(start), (0...23).contains(end) {
+            settings.primerHours = PrimerHours(start: start, end: end)
+        }
+        settings.primerRunTimes = defaults.dictionary(forKey: Key.primerRunTimes) as? [String: Double] ?? [:]
+        settings.primerRunOutcomes = defaults.dictionary(forKey: Key.primerRunOutcomes) as? [String: String] ?? [:]
         settings.menuBarAccount = defaults.string(forKey: Key.menuBarAccount)
         settings.menuBarStyle = defaults.string(forKey: Key.menuBarStyle).flatMap(MenuBarStyle.init(rawValue:)) ?? .figure
         settings.balanceBases = defaults.dictionary(forKey: Key.balanceBases) as? [String: String] ?? [:]
@@ -1699,6 +1755,11 @@ final class AppSettings {
         static let balanceBases = "settings.balanceBases"
         static let showsCodexResetCredits = "settings.showsCodexResetCredits"
         static let showsUsageInMenuBar = "settings.showsUsageInMenuBar"
+        static let primedProviders = "settings.primedProviders"
+        static let primerStart = "settings.primerStart"
+        static let primerEnd = "settings.primerEnd"
+        static let primerRunTimes = "settings.primerRunTimes"
+        static let primerRunOutcomes = "settings.primerRunOutcomes"
         static let menuBarAccount = "settings.menuBarAccount"
         static let menuBarStyle = "settings.menuBarStyle"
         static let extensionNames = "settings.extensionNames"
