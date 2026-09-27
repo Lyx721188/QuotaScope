@@ -265,16 +265,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let reading = MenuBarReading.of(
                 account, usage: usage, pinned: settings.pinnedWindow(for: account), warningAt: threshold
             )
-            let item = NSMenuItem(title: settings.label(for: account), action: #selector(openAccountSettings(_:)), keyEquivalent: "")
+            let name = settings.label(for: account)
+            let figure = reading.text(remaining: remaining)
+            let detail = reading.window.map { window in
+                [window.name, UsageDetailCard.resetDescription(window)].filter { !$0.isEmpty }.joined(separator: " · ")
+            } ?? (reading.money == nil ? String.localized("No reading") : nil)
+            // The title is what VoiceOver and type-to-select read; the view is
+            // what is drawn.
+            let item = NSMenuItem(title: name + " " + figure, action: #selector(openAccountSettings(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = account.id
-            item.image = MenuBarReading.markImage(for: account.provider, size: 16)
-            item.attributedTitle = MenuBarReading.menuTitle(
-                name: settings.label(for: account),
-                figure: reading.text(remaining: remaining),
-                detail: reading.window.map { window in
-                    [window.name, UsageDetailCard.resetDescription(window)].filter { !$0.isEmpty }.joined(separator: " · ")
-                } ?? (reading.money == nil ? String.localized("No reading") : nil),
+            item.view = MenuUsageRowView(
+                mark: MenuBarReading.markImage(for: account.provider, size: 16),
+                name: name,
+                figure: figure,
+                detail: detail,
                 alert: reading.isAlert
             )
             menu.addItem(item)

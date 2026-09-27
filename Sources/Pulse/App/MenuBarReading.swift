@@ -203,28 +203,3 @@ extension MenuBarReading {
         }
     }
 }
-
-extension MenuBarReading {
-    /// Name and figure on one line, the figure against the right edge; the
-    /// limit and its reset smaller beneath.
-    static func menuTitle(name: String, figure: String, detail: String?, alert: Bool) -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.tabStops = [NSTextTab(textAlignment: .right, location: 250)]
-        let base = NSFont.menuFont(ofSize: 0)
-        let title = NSMutableAttributedString(string: name + "\t", attributes: [.font: base, .paragraphStyle: paragraph])
-        var figureAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: base.pointSize, weight: .medium),
-            .paragraphStyle: paragraph,
-        ]
-        if alert { figureAttributes[.foregroundColor] = NSColor.systemRed }
-        title.append(NSAttributedString(string: figure, attributes: figureAttributes))
-        if let detail {
-            title.append(NSAttributedString(string: "\n" + detail, attributes: [
-                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-                .foregroundColor: NSColor.secondaryLabelColor,
-                .paragraphStyle: paragraph,
-            ]))
-        }
-        return title
-    }
-}
