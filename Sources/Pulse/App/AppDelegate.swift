@@ -394,6 +394,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         update.check()
     }
 
+    /// Opening Pulse while it is already running — a double-click in
+    /// Applications, Spotlight, Launchpad — opens Settings.
+    ///
+    /// An accessory app has no Dock icon, and with the panel and the menu bar
+    /// icon both hidden (allowed once a global shortcut is registered) nothing
+    /// of it is on screen. A forgotten shortcut then left no way back short
+    /// of Activity Monitor; opening the app again is the way everybody tries
+    /// first, and it did nothing at all.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Before a service is chosen the chooser is the way in, not Settings —
+        // the one already open brought forward rather than a second made.
+        if settings.needsProviderSelection {
+            if let chooser = providerSetupWindow {
+                chooser.show()
+            } else {
+                showProviderSelection(providers: Set(Provider.builtIn), isInitial: true)
+            }
+        } else {
+            showSettings()
+        }
+        return false
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             if let link = PulseLink(url: url) { showSettings(link: link) }
