@@ -28,6 +28,21 @@ final class AppSettings {
         }
     }
 
+    /// Whether the menu bar item also shows the tightest limit: the mark of
+    /// the account whose ring is fullest, and its percentage.
+    ///
+    /// The menu bar is the one place that is never out of sight — the panel
+    /// steps aside for full-screen apps, and some people hide it. Off by
+    /// default, like every other addition to what Pulse puts on screen. Goes
+    /// through the menu bar's own callback, not `onChange`, which refetches.
+    var showsUsageInMenuBar = false {
+        didSet {
+            guard showsUsageInMenuBar != oldValue else { return }
+            UserDefaults.standard.set(showsUsageInMenuBar, forKey: Key.showsUsageInMenuBar)
+            onMenuBarIconChange?()
+        }
+    }
+
     /// Whether the floating panel stays out of other apps' full-screen Spaces.
     ///
     /// On by default: a usage glance is useful on the desktop, but sitting over
@@ -1553,6 +1568,7 @@ final class AppSettings {
             alertsOnFailure: defaults.object(forKey: Key.alertsOnFailure) as? Bool ?? false
         )
         settings.showsCodexResetCredits = defaults.bool(forKey: Key.showsCodexResetCredits)
+        settings.showsUsageInMenuBar = defaults.bool(forKey: Key.showsUsageInMenuBar)
         settings.balanceBases = defaults.dictionary(forKey: Key.balanceBases) as? [String: String] ?? [:]
         settings.balanceBudgets = (defaults.dictionary(forKey: Key.balanceBudgets) as? [String: Double] ?? [:])
             .filter { $0.value.isFinite && $0.value > 0 }
@@ -1658,6 +1674,7 @@ final class AppSettings {
         static let lowBalanceAlerts = "settings.lowBalanceAlerts"
         static let balanceBases = "settings.balanceBases"
         static let showsCodexResetCredits = "settings.showsCodexResetCredits"
+        static let showsUsageInMenuBar = "settings.showsUsageInMenuBar"
         static let extensionNames = "settings.extensionNames"
         static let balanceBudgets = "settings.balanceBudgets"
         static let language = "settings.language"

@@ -842,3 +842,5 @@
 "How many limit reset credits are left, and when the next one expires. Asks Codex's app server on every refresh." = "남은 한도 초기화 쿠폰 수와 가장 먼저 만료되는 쿠폰의 만료 시각. 새로 고칠 때마다 Codex app server에 묻습니다.";
 "Not available" = "제공되지 않음";
 "codex not found" = "codex를 찾을 수 없음";
+"Show usage in the menu bar" = "메뉴 막대에 사용량 표시";
+"The fullest ring's mark and figure beside the icon, red past the warning line." = "가장 많이 쓴 링의 서비스 마크와 비율을 아이콘 옆에 표시합니다. 경고선을 넘으면 빨간색이 됩니다.";

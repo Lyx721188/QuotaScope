@@ -171,20 +171,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        guard statusItem == nil else { return }
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = item.button {
-            button.image = NSImage(
-                systemSymbolName: "chart.pie.fill",
-                accessibilityDescription: "Pulse"
-            )
-            button.image?.isTemplate = true
-            button.toolTip = "Pulse"
+        if statusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            let menu = makeMenu()
+            menu.delegate = self
+            item.menu = menu
+            statusItem = item
         }
-        let menu = makeMenu()
-        menu.delegate = self
-        item.menu = menu
-        statusItem = item
+        showMenuBarReading()
+    }
+
+    /// The menu bar item's face: Pulse's mark alone, or — with
+    /// `showsUsageInMenuBar` on — the mark of the account whose ring is
+    /// fullest and that ring's percentage, red past the warning line.
+    ///
+    /// Re-read whenever anything it reads changes: the tracking is armed
+    /// again on every change, because `withObservationTracking` fires once.
+    private func showMenuBarReading() {
+        guard let button = statusItem?.button else { return }
+        let (reading, remaining) = withObservationTracking {
+            (
+                settings.showsUsageInMenuBar
+                    ? MenuBarReading.tightest(
+                        among: settings.shownAccounts,
+                        usage: store.usage(for:),
+                        pinned: settings.pinnedWindow(for:),
+                        warningAt: settings.warningThreshold.fraction
+                    )
+                    : nil,
+                settings.showsRemaining
+            )
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.showMenuBarReading() }
+        }
+
+        MenuBarReading.draw(
+            reading,
+            remaining: remaining,
+            label: reading.map { settings.label(for: $0.account) },
+            on: button
+        )
     }
 
     /// An accessory app has no Dock icon. When the panel is also hidden, a

@@ -968,6 +968,23 @@ struct SettingsView: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                 }
+
+                SettingsRowDivider()
+
+                // Greyed out rather than hidden while the icon is: it is what
+                // the icon would show, and says so.
+                SettingsRow(
+                    String.localized("Show usage in the menu bar"),
+                    subtitle: String.localized("The fullest ring's mark and figure beside the icon, red past the warning line.")
+                ) {
+                    Toggle("", isOn: Binding(
+                        get: { settings.showsUsageInMenuBar },
+                        set: { settings.showsUsageInMenuBar = $0 }
+                    ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                .disabled(settings.hidesMenuBarIcon)
             }
 
             SettingsGroup(String.localized("Shortcuts")) {

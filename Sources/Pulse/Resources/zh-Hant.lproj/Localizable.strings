@@ -842,3 +842,5 @@
 "How many limit reset credits are left, and when the next one expires. Asks Codex's app server on every refresh." = "還剩幾張額度重設券，以及最近一張什麼時候到期。每次更新都會詢問 Codex 的 app server。";
 "Not available" = "無法取得";
 "codex not found" = "找不到 codex";
+"Show usage in the menu bar" = "在選單列顯示用量";
+"The fullest ring's mark and figure beside the icon, red past the warning line." = "在圖示旁顯示用得最多的那個圓環的服務標誌和百分比，超過警示線時變紅。";
