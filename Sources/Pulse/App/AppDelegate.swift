@@ -307,6 +307,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    @objc private func togglePanelFromMenu() {
+        settings.isPanelVisible.toggle()
+    }
+
     @objc private func refreshAll() {
         store.refresh()
     }
@@ -340,6 +344,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.target = self
             menu.addItem(item)
             menu.addItem(.separator())
+        }
+
+        // Some people want the menu bar and nothing at the screen's edge. The
+        // switch lives in Settings → Position too; here it is one click from
+        // where such a person already is. Through the setting, like the
+        // shortcut, so a hidden panel stays hidden across a launch and hiding
+        // the last way back brings the menu bar icon back (`settingsChanged`).
+        if !settings.needsProviderSelection {
+            let panelItem = NSMenuItem(
+                title: .localized("Show floating panel"),
+                action: #selector(togglePanelFromMenu),
+                keyEquivalent: ""
+            )
+            panelItem.target = self
+            panelItem.state = settings.isPanelVisible ? .on : .off
+            menu.addItem(panelItem)
         }
 
         let settingsItem = NSMenuItem(

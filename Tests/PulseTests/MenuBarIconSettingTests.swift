@@ -60,7 +60,14 @@ struct MenuBarIconSettingTests {
             #expect(menu.items[0].title == String.localized("Choose services to start monitoring…"))
             #expect(menu.items[1].isSeparatorItem)
         }
-        let rest = Array(menu.items.dropFirst(lead))
+        // Once one is, the panel's switch comes first — somebody who wants
+        // only the menu bar turns the rail off from here.
+        var rest = Array(menu.items.dropFirst(lead))
+        if !delegate.settings.needsProviderSelection {
+            #expect(rest.first?.title == String.localized("Show floating panel"))
+            #expect(rest.first?.state == (delegate.settings.isPanelVisible ? .on : .off))
+            rest.removeFirst()
+        }
         #expect(rest.map(\.keyEquivalent) == [",", "", "q"])
         #expect(rest[0].keyEquivalentModifierMask == .command)
         #expect(rest[2].keyEquivalentModifierMask == .command)
