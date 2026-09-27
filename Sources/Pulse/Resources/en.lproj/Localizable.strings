@@ -843,4 +843,11 @@
 "Not available" = "Not available";
 "codex not found" = "codex not found";
 "Show usage in the menu bar" = "Show usage in the menu bar";
-"The fullest ring's mark and figure beside the icon, red past the warning line." = "The fullest ring's mark and figure beside the icon, red past the warning line.";
+"A ring's mark and figure beside the icon, red past the warning line." = "A ring's mark and figure beside the icon, red past the warning line.";
+"Usage" = "Usage";
+"Menu bar shows" = "Menu bar shows";
+"An account switched off falls back to the fullest ring." = "An account switched off falls back to the fullest ring.";
+"Fullest ring" = "Fullest ring";
+"Menu bar style" = "Menu bar style";
+"Figure" = "Figure";
+"Ring" = "Ring";

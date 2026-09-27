@@ -295,6 +295,9 @@ struct UsageDetailCard: View {
         }
     }
 
+    /// The card's line under a limit, for the menu bar's list too.
+    static func resetDescription(_ window: UsageWindow) -> String { resetText(window) }
+
     private static func resetText(_ window: UsageWindow) -> String {
         // **Whichever happens first.** Credits lapsing before a reset hands
         // the allowance back are the thing to know; after it, the reset is.

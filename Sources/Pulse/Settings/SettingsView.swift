@@ -975,7 +975,7 @@ struct SettingsView: View {
                 // the icon would show, and says so.
                 SettingsRow(
                     String.localized("Show usage in the menu bar"),
-                    subtitle: String.localized("The fullest ring's mark and figure beside the icon, red past the warning line.")
+                    subtitle: String.localized("A ring's mark and figure beside the icon, red past the warning line.")
                 ) {
                     Toggle("", isOn: Binding(
                         get: { settings.showsUsageInMenuBar },
@@ -985,6 +985,44 @@ struct SettingsView: View {
                         .toggleStyle(.switch)
                 }
                 .disabled(settings.hidesMenuBarIcon)
+
+                // Only once there is a figure to shape. Offered even with the
+                // icon hidden would be two controls for nothing on screen.
+                if settings.showsUsageInMenuBar, !settings.hidesMenuBarIcon {
+                    SettingsRowDivider()
+
+                    SettingsRow(
+                        String.localized("Menu bar shows"),
+                        subtitle: String.localized("An account switched off falls back to the fullest ring.")
+                    ) {
+                        Picker("", selection: Binding(
+                            get: { settings.menuBarAccount },
+                            set: { settings.menuBarAccount = $0 }
+                        )) {
+                            Text(localized: "Fullest ring").tag(String?.none)
+                            ForEach(settings.shownAccounts, id: \.id) { account in
+                                Text(verbatim: settings.label(for: account)).tag(String?.some(account.id))
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: SettingsLayout.controlWidth, alignment: .trailing)
+                    }
+
+                    SettingsRowDivider()
+
+                    SettingsRow(String.localized("Menu bar style")) {
+                        Picker("", selection: Binding(
+                            get: { settings.menuBarShowsRing },
+                            set: { settings.menuBarShowsRing = $0 }
+                        )) {
+                            Text(localized: "Figure").tag(false)
+                            Text(localized: "Ring").tag(true)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .fixedSize()
+                    }
+                }
             }
 
             SettingsGroup(String.localized("Shortcuts")) {

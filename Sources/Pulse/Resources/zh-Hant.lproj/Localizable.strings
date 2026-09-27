@@ -843,4 +843,11 @@
 "Not available" = "無法取得";
 "codex not found" = "找不到 codex";
 "Show usage in the menu bar" = "在選單列顯示用量";
-"The fullest ring's mark and figure beside the icon, red past the warning line." = "在圖示旁顯示用得最多的那個圓環的服務標誌和百分比，超過警示線時變紅。";
+"A ring's mark and figure beside the icon, red past the warning line." = "在圖示旁顯示一個圓環的服務標誌和用量，超過警示線時變紅。";
+"Usage" = "用量";
+"Menu bar shows" = "選單列顯示";
+"An account switched off falls back to the fullest ring." = "選中的帳號被關掉後，改回顯示用得最多的那個。";
+"Fullest ring" = "用得最多的那個";
+"Menu bar style" = "選單列樣式";
+"Figure" = "數字";
+"Ring" = "圓環";

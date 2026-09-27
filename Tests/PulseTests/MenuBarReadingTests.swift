@@ -37,7 +37,7 @@ struct MenuBarReadingTests {
             codex: live(codex, [window("week", 0.45)]),
         ], order: [claude, codex])
         #expect(reading?.account == claude)
-        #expect(reading?.window.id == "week")
+        #expect(reading?.window?.id == "week")
         #expect(reading?.text(remaining: false) == "60%")
         #expect(reading?.text(remaining: true) == "40%")
         #expect(reading?.isAlert == false)
@@ -83,5 +83,59 @@ struct MenuBarReadingTests {
     func alert(fraction: Double, exhausted: Bool, alert: Bool) {
         let reading = tightest([claude: live(claude, [window("week", fraction, exhausted: exhausted)])], order: [claude])
         #expect(reading?.isAlert == alert)
+    }
+
+    @Test("A chosen account is shown even when another is fuller")
+    func chosenAccountWins() {
+        let readings = [
+            claude: live(claude, [window("week", 0.9)]),
+            codex: live(codex, [window("week", 0.2)]),
+        ]
+        let reading = MenuBarReading.choose(
+            among: [claude, codex], chosen: codex,
+            usage: { readings[$0]! }, pinned: { _ in nil }, warningAt: 0.8
+        )
+        #expect(reading?.account == codex)
+        #expect(reading?.text(remaining: false) == "20%")
+    }
+
+    @Test("A chosen account taken off the rail falls back to the fullest ring")
+    func chosenOffRailFallsBack() {
+        let readings = [claude: live(claude, [window("week", 0.9)])]
+        let reading = MenuBarReading.choose(
+            among: [claude], chosen: codex,
+            usage: { readings[$0] ?? .unavailable($0, reason: .loading) }, pinned: { _ in nil }, warningAt: 0.8
+        )
+        #expect(reading?.account == claude)
+    }
+
+    @Test("A chosen account with no reading says so with a dash, not a zero")
+    func chosenWithoutReading() {
+        let reading = MenuBarReading.choose(
+            among: [claude], chosen: claude,
+            usage: { .unavailable($0, reason: .serverError) }, pinned: { _ in nil }, warningAt: 0.8
+        )
+        #expect(reading?.window == nil)
+        #expect(reading?.text(remaining: false) == "–")
+        #expect(reading?.ringFraction(remaining: false) == nil)
+    }
+
+    @Test("An inferred ring shows the money instead of its percentage")
+    func inferredShowsMoney() {
+        var usage = live(codex, [window("balance", 0.6, estimate: .sinceTopUp)])
+        usage.creditRemaining = .init(amount: 12.5, currency: "USD")
+        let reading = MenuBarReading.of(codex, usage: usage, pinned: nil, warningAt: 0.8)
+        #expect(reading.window == nil)
+        #expect(reading.money == usage.creditRemaining?.railText())
+        #expect(reading.text(remaining: false) == reading.money)
+    }
+
+    @Test("The ring draws what the rail draws: left while left is on, full when spent")
+    func ringFraction() {
+        let partly = MenuBarReading.of(claude, usage: live(claude, [window("week", 0.3)]), pinned: nil, warningAt: 0.8)
+        #expect(partly.ringFraction(remaining: false) == 0.3)
+        #expect(abs((partly.ringFraction(remaining: true) ?? 0) - 0.7) < 1e-9)
+        let spent = MenuBarReading.of(claude, usage: live(claude, [window("week", 1, exhausted: true)]), pinned: nil, warningAt: 0.8)
+        #expect(spent.ringFraction(remaining: true) == 1)
     }
 }

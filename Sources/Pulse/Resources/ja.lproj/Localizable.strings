@@ -843,4 +843,11 @@
 "Not available" = "取得できません";
 "codex not found" = "codex が見つかりません";
 "Show usage in the menu bar" = "メニューバーに使用量を表示";
-"The fullest ring's mark and figure beside the icon, red past the warning line." = "いちばん使っているリングのサービスマークと割合をアイコンの横に表示します。警告ラインを超えると赤になります。";
+"A ring's mark and figure beside the icon, red past the warning line." = "リングのサービスマークと使用量をアイコンの横に表示します。警告ラインを超えると赤になります。";
+"Usage" = "使用量";
+"Menu bar shows" = "メニューバーの表示";
+"An account switched off falls back to the fullest ring." = "選んだアカウントをオフにすると、いちばん使っているリングに戻ります。";
+"Fullest ring" = "いちばん使っているリング";
+"Menu bar style" = "メニューバーのスタイル";
+"Figure" = "数字";
+"Ring" = "リング";

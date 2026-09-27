@@ -43,6 +43,27 @@ final class AppSettings {
         }
     }
 
+    /// The account the menu bar speaks for, by id. Nil — the default — is
+    /// whichever ring is fullest. An account taken off the rail falls back to
+    /// that too (`MenuBarReading.choose`) rather than leaving the bar blank.
+    var menuBarAccount: String? {
+        didSet {
+            guard menuBarAccount != oldValue else { return }
+            UserDefaults.standard.set(menuBarAccount, forKey: Key.menuBarAccount)
+            onMenuBarIconChange?()
+        }
+    }
+
+    /// A small ring beside the mark instead of the figure. Narrower, and drawn
+    /// the way the rail draws.
+    var menuBarShowsRing = false {
+        didSet {
+            guard menuBarShowsRing != oldValue else { return }
+            UserDefaults.standard.set(menuBarShowsRing, forKey: Key.menuBarShowsRing)
+            onMenuBarIconChange?()
+        }
+    }
+
     /// Whether the floating panel stays out of other apps' full-screen Spaces.
     ///
     /// On by default: a usage glance is useful on the desktop, but sitting over
@@ -1569,6 +1590,8 @@ final class AppSettings {
         )
         settings.showsCodexResetCredits = defaults.bool(forKey: Key.showsCodexResetCredits)
         settings.showsUsageInMenuBar = defaults.bool(forKey: Key.showsUsageInMenuBar)
+        settings.menuBarAccount = defaults.string(forKey: Key.menuBarAccount)
+        settings.menuBarShowsRing = defaults.bool(forKey: Key.menuBarShowsRing)
         settings.balanceBases = defaults.dictionary(forKey: Key.balanceBases) as? [String: String] ?? [:]
         settings.balanceBudgets = (defaults.dictionary(forKey: Key.balanceBudgets) as? [String: Double] ?? [:])
             .filter { $0.value.isFinite && $0.value > 0 }
@@ -1650,6 +1673,7 @@ final class AppSettings {
         botColours[account.id] = nil
         botShapes[account.id] = nil
         splitAccounts.remove(account.id)
+        if menuBarAccount == account.id { menuBarAccount = nil }
     }
 
     func rename(_ account: AccountKey, to label: String) {
@@ -1675,6 +1699,8 @@ final class AppSettings {
         static let balanceBases = "settings.balanceBases"
         static let showsCodexResetCredits = "settings.showsCodexResetCredits"
         static let showsUsageInMenuBar = "settings.showsUsageInMenuBar"
+        static let menuBarAccount = "settings.menuBarAccount"
+        static let menuBarShowsRing = "settings.menuBarShowsRing"
         static let extensionNames = "settings.extensionNames"
         static let balanceBudgets = "settings.balanceBudgets"
         static let language = "settings.language"

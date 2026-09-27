@@ -189,17 +189,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// again on every change, because `withObservationTracking` fires once.
     private func showMenuBarReading() {
         guard let button = statusItem?.button else { return }
-        let (reading, remaining) = withObservationTracking {
+        let (reading, remaining, asRing) = withObservationTracking {
             (
                 settings.showsUsageInMenuBar
-                    ? MenuBarReading.tightest(
+                    ? MenuBarReading.choose(
                         among: settings.shownAccounts,
+                        chosen: settings.menuBarAccount.flatMap(AccountKey.init(id:)),
                         usage: store.usage(for:),
                         pinned: settings.pinnedWindow(for:),
                         warningAt: settings.warningThreshold.fraction
                     )
                     : nil,
-                settings.showsRemaining
+                settings.showsRemaining,
+                settings.menuBarShowsRing
             )
         } onChange: { [weak self] in
             Task { @MainActor in self?.showMenuBarReading() }
@@ -208,6 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MenuBarReading.draw(
             reading,
             remaining: remaining,
+            asRing: asRing,
             label: reading.map { settings.label(for: $0.account) },
             on: button
         )
@@ -238,7 +241,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        // Only the menu bar's menu: the rail's own menu opens beside the rings
+        // it would be repeating.
+        if menu === statusItem?.menu { addUsage(to: menu) }
         populateMenu(menu)
+    }
+
+    /// Every account on the rail, one row each: its mark, its name and figure,
+    /// and under them the limit and when it resets. The panel steps aside for
+    /// full-screen apps and can be hidden; the menu bar cannot, so this is the
+    /// whole rail where it is always reachable. A row opens that account's
+    /// settings.
+    private func addUsage(to menu: NSMenu) {
+        guard !settings.needsProviderSelection else { return }
+        let accounts = settings.shownAccounts
+        guard !accounts.isEmpty else { return }
+        let remaining = settings.showsRemaining
+        let threshold = settings.warningThreshold.fraction
+
+        menu.addItem(.sectionHeader(title: .localized("Usage")))
+        for account in accounts {
+            let usage = store.usage(for: account)
+            let reading = MenuBarReading.of(
+                account, usage: usage, pinned: settings.pinnedWindow(for: account), warningAt: threshold
+            )
+            let item = NSMenuItem(title: settings.label(for: account), action: #selector(openAccountSettings(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = account.id
+            item.image = MenuBarReading.markImage(for: account.provider, size: 16)
+            item.attributedTitle = MenuBarReading.menuTitle(
+                name: settings.label(for: account),
+                figure: reading.text(remaining: remaining),
+                detail: reading.window.map { window in
+                    [window.name, UsageDetailCard.resetDescription(window)].filter { !$0.isEmpty }.joined(separator: " · ")
+                } ?? (reading.money == nil ? String.localized("No reading") : nil),
+                alert: reading.isAlert
+            )
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+    }
+
+    @objc private func openAccountSettings(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let account = AccountKey(id: id) else { return }
+        showSettings(link: .account(account))
     }
 
     private func makeMenu() -> NSMenu {

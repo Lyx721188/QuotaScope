@@ -36,6 +36,7 @@ struct AppSettingsRemoveAccountTests {
             settings.botColours[kept.id] = nil
             settings.botShapes[kept.id] = nil
             settings.splitAccounts.remove(kept.id)
+            settings.menuBarAccount = nil
         }
 
         for account in [removed, kept] {
@@ -58,7 +59,10 @@ struct AppSettingsRemoveAccountTests {
         #expect(settings.pinnedWindow(for: removed) == "weekly")
         #expect(settings.pinnedWindow(for: kept) == "weekly")
 
+        settings.menuBarAccount = removed.id
         settings.removeAccount(removed)
+        // The menu bar no longer names an account that is gone.
+        #expect(settings.menuBarAccount == nil)
 
         // The removed account's id is gone from every per-account store.
         #expect(settings.pinnedWindows[removed.id] == nil)
