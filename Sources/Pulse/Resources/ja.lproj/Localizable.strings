@@ -855,7 +855,6 @@
 "Overview" = "概要";
 "Updated just now" = "たった今更新";
 "Updated %@" = "%@に更新";
-"Last 30 days" = "過去 30 日";
 "Estimated from token counts at API prices — not your subscription bill." = "API 料金でトークン数から見積もった金額です。サブスクリプションの請求額ではありません。";
 "Reading local records…" = "ローカルの記録を読み込み中…";
 "Usage credits" = "クレジット";

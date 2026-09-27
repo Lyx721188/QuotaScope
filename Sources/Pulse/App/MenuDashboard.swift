@@ -330,16 +330,28 @@ private struct MenuAccountDetail: View {
     @ViewBuilder
     private var spend: some View {
         if let ledger = model.ledgers[account.provider], !ledger.days.isEmpty {
+            // The same four figures, over the same span, as the account's
+            // usage history in Settings — one set of numbers, two places.
+            let span = 31
             let today = ledger.today
-            let month = ledger.total(overLast: 30)
+            let recent = ledger.total(overLast: span)
+            let busiest = ledger.busiestDay(overLast: span)
+            let all = ledger.allTime
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
-                    figure(String.localized("Today"), cost: today?.cost ?? 0, tokens: today?.tokens ?? 0)
+                    VStack(alignment: .leading, spacing: 10) {
+                        figure(String.localized("Today"), cost: today?.cost ?? 0, tokens: today?.tokens ?? 0)
+                        figure(String.localized("Busiest day"), cost: busiest?.cost ?? 0, tokens: busiest?.tokens ?? 0)
+                    }
                     Spacer(minLength: 12)
-                    figure(String.localized("Last 30 days"), cost: month.cost, tokens: month.tokens)
+                    VStack(alignment: .leading, spacing: 10) {
+                        figure(String.localized("Last 31 days"), cost: recent.cost, tokens: recent.tokens)
+                        figure(String.localized("All time"), cost: all.cost, tokens: all.tokens)
+                    }
+                    .frame(width: 120, alignment: .leading)
                 }
                 if ledger.days.count > 1 {
-                    DailyTokensChart(days: ledger.recent(30))
+                    DailyTokensChart(days: ledger.recent(span))
                         .frame(height: 44)
                 }
                 Text(localized: "Estimated from token counts at API prices — not your subscription bill.")
@@ -367,7 +379,7 @@ private struct MenuAccountDetail: View {
                 .currency(code: "USD").precision(.fractionLength(cost >= 1000 ? 0 : 2)).locale(LocalizationSource.locale)
             ))
             .font(.system(size: 15, weight: .semibold).monospacedDigit())
-            Text(verbatim: TokenCount.short(tokens))
+            Text(verbatim: String.localized("\(TokenCount.short(tokens)) tokens"))
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
         }
