@@ -7,6 +7,38 @@ shows in the update window — see [Scripts/changelog.py](Scripts/changelog.py).
 Add the entry **before** tagging, in the small grammar the converter knows:
 bullets, `**bold**`, `` `code` `` and `[links](https://example.com)`.
 
+## 1.6.0
+
+**中文**
+
+**新功能**
+
+- **菜单栏显示用量。** 在 设置 › 通用 打开「在菜单栏显示用量」，菜单栏图标旁会显示用得最多的那个圆环，也可以指定某个账号。样式可选数字、迷你圆环，或「分项」并排显示 5 小时与每周额度（`5h/9%  周/15%`）；超过警示线时变红。默认关闭。
+- **菜单栏用量面板。** 点开菜单栏图标，顶部是「概览」和每个账号的标签：概览列出所有账号的用量与重置时间；账号标签里有各项额度的进度条、套餐、更新时间、Codex 重置券与额度余额，开启「Token 消耗」后还有今天、最近 31 天、单日最多、累计的花费估算和每日柱状图。还可以一键打开服务方的官方用量页，或按 ⌘R 立即刷新。
+- **只用菜单栏。** 菜单里新增「显示悬浮面板」开关，不喜欢屏幕边上胶囊的可以直接关掉。
+- **再次打开 Pulse 会弹出设置。** Pulse 在后台运行时，从「应用程序」或聚焦搜索再打开它，会直接弹出设置窗口；就算面板和菜单栏图标都隐藏了，也不会找不到。
+
+**改进与修复**
+
+- **液态玻璃下，卡片的尾巴和卡片融为一体。** 此前尾巴在花哨背景上会像单独贴上去的一块水晶。
+- **Grok 额度用到 100% 时会算作已用完**，和其他服务一致，会发出「额度用完」的通知。
+- **删除额外账号时，会清掉它的所有设置**（小机器人外观、余额提醒等），不再残留。
+
+**English**
+
+**New**
+
+- **Usage in the menu bar.** Turn on Show usage in the menu bar in Settings › General, and the menu bar icon shows the fullest ring — or an account you pick — as a figure, a small ring, or Split: the five-hour and weekly limits side by side (`5h/9%  Wk/15%`), red past the warning line. Off by default.
+- **A dashboard in the menu bar menu.** Tabs across the top: an Overview of every account's figure and reset, and one tab per account with each limit's bar, the plan, how fresh the reading is, Codex's reset credits and credits left, and — with Token spend on — today, the last 31 days, the busiest day and all time as estimated cost, with a daily chart. Plus a link to the provider's own usage page and Refresh (⌘R).
+- **Menu bar only.** Show floating panel is now in the menu, so the rail can be switched off in one click.
+- **Opening Pulse again opens Settings.** A double-click in Applications or Spotlight while Pulse runs brings up Settings, so hiding both the panel and the menu bar icon is never a dead end.
+
+**Changed and fixed**
+
+- **With Liquid Glass, the card's tail is part of the card.** It used to read as a separate crystal over a busy backdrop.
+- **Grok's pool counts as spent at 100%**, like every other provider, so the spent notification fires.
+- **Removing an added account clears all of its settings**, including its animated mark and low-balance alert.
+
 ## 1.5.2
 
 **中文**
