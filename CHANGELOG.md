@@ -7,6 +7,30 @@ shows in the update window — see [Scripts/changelog.py](Scripts/changelog.py).
 Add the entry **before** tagging, in the small grammar the converter knows:
 bullets, `**bold**`, `` `code` `` and `[links](https://example.com)`.
 
+## 1.6.1
+
+**中文**
+
+**新功能**
+
+- **额度重置后自动开始新窗口（可选）。** Claude Code 和 Codex 的用量窗口，要等重置后你发出第一条消息才开始计时。在账号设置里打开「自动开始新窗口」，Pulse 会在每次重置后不久、你设定的时间段内，通过服务商自己的命令行工具发一句「hi」，让窗口从那一刻起算。默认关闭；这不是 Anthropic 或 OpenAI 提供的功能，可能被视为绕过用量限制，打开前会请你确认。
+
+**改进与修复**
+
+- **新图标。** 一笔画成的 P：竖笔是面板贴着的屏幕边，荧光绿的圆肚子是一个还没合上的用量环。在 macOS 26 上带液态玻璃效果，并跟随深色、透明和着色图标样式。
+- **开着液态玻璃、面板吸附在屏幕边时，圆环之间的空白处也能拖动了。** 此前只能按住圆环拖。设置里「开启后只能按住圆环拖动」这句提示也随之去掉。感谢 [@annsyun](https://github.com/qunqin24/Pulse/issues/68) 反馈。
+
+**English**
+
+**New**
+
+- **Start usage windows after a reset (optional).** Claude Code's and Codex's windows only start at your first message after a reset. Turn on Start windows automatically in the account's settings and Pulse sends a single "hi" through the provider's own command-line tool just after each reset, within the hours you choose, so the window starts then. Off by default. It is not a feature of Anthropic or OpenAI and may be treated as getting around usage limits, so it asks you to confirm first.
+
+**Changed and fixed**
+
+- **A new icon.** A P drawn in one stroke: the stem is the screen edge the panel docks to, the lime bowl a usage ring not yet closed. On macOS 26 it is Liquid Glass and follows the dark, clear and tinted icon styles.
+- **With Liquid Glass on and the panel docked to an edge, it can be dragged from between its rings**, not only by a ring. The settings caption saying so is gone. Thanks to [@annsyun](https://github.com/qunqin24/Pulse/issues/68) for reporting it.
+
 ## 1.6.0
 
 **中文**
