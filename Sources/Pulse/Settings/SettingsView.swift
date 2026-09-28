@@ -1332,14 +1332,8 @@ struct SettingsView: View {
         return .localized("Notify when a limit passes this, and again when it is spent.")
     }
 
-    /// The catch only applies while it is on, so it is only said then.
     private var glassSubtitle: String {
-        let base = String.localized("Clear glass that shows what is behind the panel, instead of solid black.")
-        guard settings.usesGlass else { return base }
-        // A full stop in Chinese is full-width and carries its own trailing
-        // space; adding another leaves a visible gap mid-sentence.
-        let gap = base.hasSuffix("。") ? "" : " "
-        return base + gap + .localized("Drag it by a ring while this is on.")
+        .localized("Clear glass that shows what is behind the panel, instead of solid black.")
     }
 
     /// On automatic the cadence is decided at each tick, so the setting says
