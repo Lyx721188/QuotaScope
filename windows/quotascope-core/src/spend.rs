@@ -191,6 +191,13 @@ impl Snapshot {
                 ".gjc/agent/sessions",
                 crate::ledger::gjc_ledger(),
             ),
+            (
+                "codebuff",
+                "Codebuff",
+                ".config/manicode",
+                crate::ledger::codebuff_ledger(),
+            ),
+            ("fx", "FX", ".fx/sessions", crate::ledger::fx_ledger()),
         ] {
             let path = crate::model::home_path(root);
             sources.push(Source {

@@ -2734,6 +2734,396 @@ pub fn gjc_ledger() -> UsageLedger {
     ledger_from_slot_buckets(&buckets, KEY)
 }
 
+/// Codebuff's chat logs under its manicode trees. The same provider counts
+/// are copied into several places; each field is taken from the first
+/// non-zero source, so a duplicate never doubles and a zero never masks.
+pub fn codebuff_ledger() -> UsageLedger {
+    const KEY: &str = "codebuff";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let home = crate::home_dir();
+    let roots = match std::env::var("CODEBUFF_DATA_DIR")
+        .ok()
+        .and_then(|raw| environment_path(&raw, &home))
+    {
+        Some(overridden) => vec![overridden],
+        None => vec![
+            home.join(".config/manicode"),
+            home.join(".config/manicode-dev"),
+            home.join(".config/manicode-staging"),
+        ],
+    };
+    let mut files = Vec::new();
+    for root in &roots {
+        collect_json(root, &mut files);
+    }
+    files.retain(|file| {
+        file.file_name()
+            .map(|name| name == std::ffi::OsStr::new("chat-messages.json"))
+            == Some(true)
+    });
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        let Ok(messages) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(messages) = messages.as_array() else {
+            continue;
+        };
+        let (channel, project, chat_id) = codebuff_location(&file);
+        let session = format!("{channel}/{project}/{chat_id}");
+        for (index, message) in messages.iter().enumerate() {
+            let variant = json_text(message, &["variant"]).map(str::to_ascii_lowercase);
+            let role = json_text(message, &["role"]).map(str::to_ascii_lowercase);
+            if !matches!(
+                variant.as_deref(),
+                Some("ai") | Some("agent") | Some("assistant")
+            ) && !matches!(
+                role.as_deref(),
+                Some("ai") | Some("agent") | Some("assistant")
+            ) {
+                continue;
+            }
+            let Some(sources) = codebuff_usage_sources(message) else {
+                continue;
+            };
+            let merged = |aliases: &[&str]| -> i64 {
+                aliases
+                    .iter()
+                    .find_map(|alias| {
+                        sources.iter().find_map(|source| {
+                            json_count(source.get(*alias)).filter(|value| *value > 0)
+                        })
+                    })
+                    .unwrap_or(0)
+            };
+            let mut cache_read = merged(&[
+                "cacheReadInputTokens",
+                "cache_read_input_tokens",
+                "cachedTokensCreated",
+                "cached_tokens_created",
+            ]);
+            if cache_read == 0 {
+                cache_read = sources
+                    .iter()
+                    .find_map(|source| {
+                        ["promptTokensDetails", "prompt_tokens_details"]
+                            .iter()
+                            .find_map(|key| {
+                                let details = source.get(*key)?;
+                                json_count(details.get("cachedTokens"))
+                                    .or_else(|| json_count(details.get("cached_tokens")))
+                                    .filter(|value| *value > 0)
+                            })
+                    })
+                    .unwrap_or(0);
+            }
+            let tally = TokenTally {
+                input: merged(&[
+                    "inputTokens",
+                    "input_tokens",
+                    "promptTokens",
+                    "prompt_tokens",
+                ]),
+                cache_write: merged(&[
+                    "cacheCreationInputTokens",
+                    "cache_creation_input_tokens",
+                    "cacheCreationTokens",
+                    "cache_creation_tokens",
+                ]),
+                cache_read,
+                output: merged(&[
+                    "outputTokens",
+                    "output_tokens",
+                    "completionTokens",
+                    "completion_tokens",
+                ]),
+            };
+            if tally.total() == 0 {
+                continue;
+            }
+            let Some(model) = codebuff_model(message, &sources) else {
+                continue;
+            };
+            let Some(at) = codebuff_timestamp(message, &chat_id) else {
+                continue;
+            };
+            let identity = json_text(message, &["id"])
+                .map(|id| format!("{KEY}:{session}:{id}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "{KEY}:{session}:{index}:{at}:{model}:{}:{}:{}:{}",
+                        tally.input, tally.cache_write, tally.cache_read, tally.output
+                    )
+                });
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += tally;
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+fn codebuff_location(file: &Path) -> (String, String, String) {
+    let chat_id = file
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let components: Vec<String> = file
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if let Some(index) = components.iter().rposition(|segment| segment == "projects") {
+        if index > 0 && index + 1 < components.len() {
+            let channel = components[index - 1].clone();
+            let project = components[index + 1].clone();
+            return (channel, project, chat_id);
+        }
+    }
+    let chats = file.parent().unwrap_or(Path::new(""));
+    let project = chats
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let channel = chats
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    (channel, project, chat_id)
+}
+
+fn codebuff_usage_sources(message: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    let metadata = message.get("metadata")?;
+    let mut sources = Vec::new();
+    if let Some(usage) = metadata.get("usage") {
+        sources.push(usage.clone());
+    }
+    if let Some(usage) = metadata
+        .get("codebuff")
+        .and_then(|codebuff| codebuff.get("usage"))
+    {
+        sources.push(usage.clone());
+    }
+    if let Some(history) = metadata
+        .get("runState")
+        .and_then(|state| state.get("sessionState"))
+        .and_then(|state| state.get("mainAgentState"))
+        .and_then(|agent| agent.get("messageHistory"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for row in history.iter().rev() {
+            if let Some(usage) = row
+                .get("providerOptions")
+                .and_then(|options| options.get("usage"))
+            {
+                sources.push(usage.clone());
+            }
+            if let Some(usage) = row
+                .get("providerOptions")
+                .and_then(|options| options.get("codebuff"))
+                .and_then(|codebuff| codebuff.get("usage"))
+            {
+                sources.push(usage.clone());
+            }
+        }
+    }
+    (!sources.is_empty()).then_some(sources)
+}
+
+fn codebuff_model(message: &serde_json::Value, sources: &[serde_json::Value]) -> Option<String> {
+    if let Some(model) = message
+        .get("metadata")
+        .and_then(|metadata| json_text(metadata, &["model"]).map(str::to_string))
+    {
+        return Some(model);
+    }
+    if let Some(model) = message
+        .get("metadata")
+        .and_then(|metadata| metadata.get("runState"))
+        .and_then(|state| state.get("sessionState"))
+        .and_then(|state| state.get("mainAgentState"))
+        .and_then(|agent| agent.get("messageHistory"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|history| {
+            history.iter().rev().find_map(|row| {
+                row.get("providerOptions")
+                    .and_then(|options| options.get("codebuff"))
+                    .and_then(|codebuff| json_text(codebuff, &["model"]).map(str::to_string))
+            })
+        })
+    {
+        return Some(model);
+    }
+    sources
+        .iter()
+        .find_map(|source| json_text(source, &["model"]).map(str::to_string))
+}
+
+fn codebuff_timestamp(message: &serde_json::Value, chat_id: &str) -> Option<i64> {
+    json_timestamp(message.get("timestamp"), false)
+        .filter(|at| *at > 0)
+        .or_else(|| json_timestamp(message.get("createdAt"), false).filter(|at| *at > 0))
+        .or_else(|| {
+            message
+                .get("metadata")
+                .and_then(|metadata| json_timestamp(metadata.get("timestamp"), false))
+                .filter(|at| *at > 0)
+        })
+        .or_else(|| iso_from_chat_id(chat_id))
+}
+
+/// An ISO 8601 chat id whose time separators were written as dashes.
+fn iso_from_chat_id(chat_id: &str) -> Option<i64> {
+    let marker = chat_id.find('T')?;
+    let head = &chat_id[..marker];
+    let tail = chat_id[marker + 1..].replace('-', ":");
+    parse_iso8601(&format!("{head}T{tail}"))
+}
+
+/// Fx's per-session cumulative snapshot: one record per model, timestamped by
+/// the session sidecar. Reasoning beside output without a total stays out.
+pub fn fx_ledger() -> UsageLedger {
+    const KEY: &str = "fx";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let sidecars = collect_sidecars(crate::model::home_path(".fx/sessions").as_path());
+    for (session_dir, sidecar) in sidecars {
+        let usage_file = session_dir.join("usage-v2.json");
+        let Ok(bytes) = std::fs::read(&usage_file) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(snapshot) = value.get("snapshot") else {
+            continue;
+        };
+        let session = json_text(&value, &["session_id"])
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                session_dir
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        let Some(at) = json_timestamp(sidecar.get("updated_at_ms"), true)
+            .filter(|at| *at > 0)
+            .or_else(|| json_timestamp(sidecar.get("created_at_ms"), true).filter(|at| *at > 0))
+        else {
+            continue;
+        };
+        let count =
+            |object: &serde_json::Value, name: &str| json_count(object.get(name)).unwrap_or(0);
+        let models = snapshot.get("models").and_then(serde_json::Value::as_array);
+        if let Some(models) = models.filter(|models| !models.is_empty()) {
+            for entry in models {
+                let tally = TokenTally {
+                    input: count(entry, "input_tokens"),
+                    cache_write: count(entry, "cache_write_tokens"),
+                    cache_read: count(entry, "cache_read_tokens"),
+                    output: count(entry, "output_tokens"),
+                };
+                if tally.total() == 0 {
+                    continue;
+                }
+                let model = json_text(entry, &["model"])
+                    .unwrap_or("fx-unknown")
+                    .to_string();
+                let identity = format!("{KEY}:{session}:{model}");
+                if seen.insert(identity) {
+                    *buckets
+                        .entry(slot_key_from_ms(at))
+                        .or_default()
+                        .entry(model)
+                        .or_default() += tally;
+                }
+            }
+        } else {
+            let tally = TokenTally {
+                input: count(snapshot, "input_tokens"),
+                cache_write: count(snapshot, "cache_write_tokens"),
+                cache_read: count(snapshot, "cache_read_tokens"),
+                output: count(snapshot, "output_tokens"),
+            };
+            if tally.total() > 0 {
+                let identity = format!("{KEY}:{session}:fx-unknown");
+                if seen.insert(identity) {
+                    *buckets
+                        .entry(slot_key_from_ms(at))
+                        .or_default()
+                        .entry("fx-unknown".to_string())
+                        .or_default() += tally;
+                }
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+/// A session directory with its parsed `session.json` sidecar, where one
+/// exists and is an object.
+fn collect_sidecars(root: &Path) -> Vec<(PathBuf, serde_json::Value)> {
+    let mut sidecars = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return sidecars;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path.join("session.json")) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if value.is_object() {
+            sidecars.push((path, value));
+        }
+    }
+    sidecars.sort_by(|left, right| left.0.cmp(&right.0));
+    sidecars
+}
+
 /// Gemini CLI's chat JSON and headless JSONL shapes. Session JSON's cache
 /// overlap is proven only by a total equal to the non-cache sum; headless
 /// prompt-style inputs are cache-inclusive. A bare total is not assigned to
