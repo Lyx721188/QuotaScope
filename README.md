@@ -50,6 +50,9 @@ cargo build --release
 输出位于 `windows/target/release/quotascope.exe`。`quotascope.exe --json` 只读取缓存，不发起
 网络请求；JSON 字段约定见 [`Docs/json-output.md`](Docs/json-output.md)。
 
+本地 EXE 安装包可通过 Inno Setup 6 构建，提供当前用户安装、开始菜单入口和系统卸载入口。
+安装及打包步骤见 [`Docs/installing-windows.md`](Docs/installing-windows.md)。
+
 ## 隐私与安全性
 
 - QuotaScope 不提供自有服务器、账号或遥测服务。

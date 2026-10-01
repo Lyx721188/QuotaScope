@@ -146,11 +146,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TITLE="QuotaScope for Windows ${GITHUB_REF_NAME#windows-v}"
-          BODY="Windows x64 build of quotascope.exe. Requires Windows 10 1809+ or Windows 11."
+          BODY="Windows x64 release of QuotaScope ${GITHUB_REF_NAME#windows-v}. Requires Windows 10 1809+ or Windows 11."
           BODY="$BODY
 
-          Unzip and run \`quotascope.exe\` — the WinAppSDK runtime DLLs it needs travel
-          alongside it in the zip. Right-click the tray icon for settings."
+          **Install:** run \`QuotaScope-${GITHUB_REF_NAME#windows-v}-windows-x64-Setup.exe\` for a per-user installation with Start menu shortcuts and an uninstaller. The installer is unsigned; Windows may show an unknown-publisher prompt.
+
+          **Portable:** unzip \`quotascope-windows-x64.zip\` and run \`quotascope.exe\`. WinAppSDK runtime files are included.
+
+          Right-click the tray icon to open settings. The SHA-256 checksum is included beside the installer."
 
           # Re-runnable: a re-tag or a re-run replaces the asset in place
           # instead of failing on an existing release.
