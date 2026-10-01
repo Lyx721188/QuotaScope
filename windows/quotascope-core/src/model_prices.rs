@@ -5,6 +5,13 @@
 //! a model with no price is left out of the total and counted separately, so
 //! a figure on screen is never part guesswork.
 //!
+//! What an agent writes for a model is often not the id models.dev publishes,
+//! and an unmatched spelling reads to the user as a model with no price at all.
+//! [`aliases`] therefore covers a documented list of those spellings — a
+//! provider's display name, a vendor written in front of the id, an effort or a
+//! serving arm written on the end — and stops there. Only the *spelling* is
+//! normalised; the rate always comes from the published entry.
+//!
 //! The table is refreshed on the next read after 24 hours, and the cached copy
 //! keeps the estimate working offline. Failed downloads may retry after five
 //! minutes. Prices are the base rates: some models charge more above a
@@ -245,12 +252,26 @@ pub fn aliases(model: &str) -> Vec<String> {
 
     // Devin's CLI writes the version with dashes and an effort on the end:
     // `gpt-5-6-sol-medium` is OpenAI's `gpt-5.6-sol`.
-    for effort in ["-medium", "-high", "-low", "-minimal"] {
-        if let Some(base) = model.strip_suffix(effort) {
-            candidates.push(base.to_string());
-            candidates.push(dotted(base));
-        }
+    for effort in ["-extra-low", "-medium", "-high", "-low", "-minimal"] {
+        push_bases(&mut candidates, model, effort);
     }
+
+    // What served the turn, written onto the model rather than beside it.
+    // Antigravity's own conversation databases record
+    // `gemini-3.8-flash-control` with the same `model_enum` as
+    // `gemini-3.8-flash`, so the arm is that model spelling one of its
+    // channels. Thinking is billed at the model's own token rates — the rates
+    // models.dev publishes for `gemini-3.5-flash-thinking` are
+    // `gemini-3.5-flash`'s — and Antigravity writes
+    // `claude-opus-4-6-thinking` for the turn its label calls
+    // "Claude Opus 4.6 (Thinking)".
+    //
+    // An experimental build is not a spelling: `gemini-3.7-flash-exp-b` stays
+    // unpriced, because no published rate covers a model nobody has priced.
+    for arm in ["-thinking", "-control"] {
+        push_bases(&mut candidates, model, arm);
+    }
+
     candidates.push(dotted(model));
 
     // A context window on the end is the same model with more room:
@@ -258,6 +279,27 @@ pub fn aliases(model: &str) -> Vec<String> {
     if let Some(base) = strip_context_tag(model) {
         candidates.push(base.clone());
         candidates.extend(aliases(&base));
+    }
+
+    // Local servers and HuggingFace-style clients name the vendor inside the
+    // id: LM Studio logs `deepseek/deepseek-v4-flash` for the model DeepSeek
+    // publishes. The vendor half is decoration; the rate is the model's.
+    if let Some(tail) = model.rsplit_once('/').map(|(_, tail)| tail) {
+        if !tail.is_empty() {
+            candidates.push(tail.to_string());
+            candidates.extend(aliases(tail));
+        }
+    }
+
+    // The provider's own display name, where a client writes that instead of
+    // the id. Names keep a version's dot ("Claude Opus 4.6") while ids may spell
+    // the same version with a dash ("claude-opus-4-6"), so both separators are
+    // tried before the name is called a model nobody prices.
+    if let Some(slug) = display_name_slug(model) {
+        for form in [slug.clone(), dashed(&slug)] {
+            candidates.push(form.clone());
+            candidates.extend(aliases(&form));
+        }
     }
 
     // Kimi's CLI abbreviates: `k2p6` is `kimi-k2.6`, `k3` is `kimi-k3`.
@@ -270,7 +312,56 @@ pub fn aliases(model: &str) -> Vec<String> {
     }
 
     candidates.retain(|c| c != model);
+    candidates.dedup();
     candidates
+}
+
+/// The id left when one known suffix is dropped, its dotted spelling, and the
+/// aliases of that id.
+fn push_bases(candidates: &mut Vec<String>, model: &str, suffix: &str) {
+    let Some(base) = model.strip_suffix(suffix) else {
+        return;
+    };
+    if base.is_empty() {
+        return;
+    }
+    candidates.push(base.to_string());
+    candidates.push(dotted(base));
+    candidates.extend(aliases(base));
+}
+
+/// `Gemini 3.7 Flash (High)` → `gemini-3.7-flash`: a provider's display name is
+/// its id with capitals, spaces, and on the end a qualifier the published rate
+/// does not answer to. Anything that does not read as a name returns `None`, so
+/// a published id never reaches this rule by accident.
+fn display_name_slug(model: &str) -> Option<String> {
+    if !model.contains(' ') && !model.contains('(') {
+        return None;
+    }
+    let mut slug = String::with_capacity(model.len());
+    let mut parenthesised = 0usize;
+    for character in model.chars() {
+        match character {
+            '(' => parenthesised += 1,
+            ')' => parenthesised = parenthesised.saturating_sub(1),
+            c if parenthesised == 0 && c.is_alphanumeric() => slug.extend(c.to_lowercase()),
+            // A version number keeps its dot: the id is `gemini-3.8-flash`, not
+            // `gemini-38-flash`.
+            '.' if parenthesised == 0 => slug.push('.'),
+            c if parenthesised == 0
+                && matches!(c, ' ' | '-' | '_' | ':' | '/')
+                && !slug.is_empty()
+                && !slug.ends_with('-') =>
+            {
+                slug.push('-');
+            }
+            _ => {}
+        }
+    }
+    let slug = slug.trim_matches(['-', '.']).to_string();
+    // A single word is not a model id, and a name with no separator between its
+    // version and its tier would be a coincidence rather than a match.
+    (slug.contains('-') && slug.len() > 3).then_some(slug)
 }
 
 /// `k3-256k` → `k3`: a dash, digits, and one of k/K/m/M on the very end.
@@ -292,19 +383,26 @@ fn strip_context_tag(model: &str) -> Option<String> {
 /// number somebody spelled with the wrong separator. Two words joined by a
 /// dash are left alone.
 fn dotted(model: &str) -> String {
+    flip_version_separator(model, '-', '.')
+}
+
+/// `claude-opus-4.6` → `claude-opus-4-6`: the other direction of the same
+/// mistake. Providers publish both shapes — Anthropic dashes its versions,
+/// Google dots them — so a name has to be asked in both.
+fn dashed(model: &str) -> String {
+    flip_version_separator(model, '.', '-')
+}
+
+fn flip_version_separator(model: &str, from: char, to: char) -> String {
     let chars: Vec<char> = model.chars().collect();
     let mut out = String::with_capacity(model.len());
     for (index, &character) in chars.iter().enumerate() {
-        if character == '-'
+        let version_mark = character == from
             && index > 0
             && index + 1 < chars.len()
             && chars[index - 1].is_ascii_digit()
-            && chars[index + 1].is_ascii_digit()
-        {
-            out.push('.');
-        } else {
-            out.push(character);
-        }
+            && chars[index + 1].is_ascii_digit();
+        out.push(if version_mark { to } else { character });
     }
     out
 }
@@ -435,6 +533,78 @@ mod tests {
             Some(prices["kimi-k3"].clone())
         );
         assert_eq!(price_for("unknown-model", &prices, None), None);
+    }
+
+    /// Spellings taken from this machine's own records on 2026-10-01: the ids
+    /// agents write, and the names Antigravity's databases store beside them.
+    #[test]
+    fn documented_spellings_reach_the_published_rate() {
+        let prices = table(&[
+            ("gemini-3.8-flash", 0.75, 3.75),
+            ("gemini-3.7-flash", 0.75, 3.75),
+            ("gemini-3.5-flash", 1.5, 9.0),
+            ("claude-opus-4-6", 5.0, 25.0),
+            ("deepseek-v4-flash", 0.2, 0.4),
+            ("MiniMax-M2.7", 0.3, 1.2),
+        ]);
+        for (spelling, id) in [
+            // Antigravity writes the arm that served the turn onto the id.
+            ("gemini-3.8-flash-control", "gemini-3.8-flash"),
+            ("claude-opus-4-6-thinking", "claude-opus-4-6"),
+            // … or keeps only the provider's display name in its label field.
+            ("Gemini 3.7 Flash (High)", "gemini-3.7-flash"),
+            ("Claude Opus 4.6 (Thinking)", "claude-opus-4-6"),
+            ("Gemini 3.8 Flash", "gemini-3.8-flash"),
+            ("MiniMax M2.7", "MiniMax-M2.7"),
+            // Antigravity's own spelling of the low effort tier.
+            ("gemini-3.5-flash-extra-low", "gemini-3.5-flash"),
+            // A local server names the vendor inside the id.
+            ("deepseek/deepseek-v4-flash", "deepseek-v4-flash"),
+        ] {
+            assert_eq!(
+                price_for(spelling, &prices, None),
+                Some(prices[id].clone()),
+                "{spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_model_nobody_has_priced_is_not_reached_by_a_spelling_rule() {
+        let prices = table(&[
+            ("gemini-3.7-flash", 0.75, 3.75),
+            ("deepseek-v4-flash", 0.2, 0.4),
+        ]);
+        // An experimental build is a different model, not an arm of one.
+        assert_eq!(price_for("gemini-3.7-flash-exp-b", &prices, None), None);
+        // A speed tier is billed on its own: Veo 3.1 fast is not Veo 3.1.
+        assert_eq!(
+            price_for("deepseek/deepseek-v4-flash-fast", &prices, None),
+            None
+        );
+        assert_eq!(price_for("codex-auto-review", &prices, None), None);
+    }
+
+    #[test]
+    fn display_names_slug_to_ids_and_plain_ids_are_left_alone() {
+        assert_eq!(
+            display_name_slug("Gemini 3.7 Flash (High)"),
+            Some("gemini-3.7-flash".to_string())
+        );
+        // A name keeps the version's dot; `dashed` is what turns it into
+        // Anthropic's published spelling.
+        assert_eq!(
+            display_name_slug("Claude Opus 4.6"),
+            Some("claude-opus-4.6".to_string())
+        );
+        assert_eq!(dashed("claude-opus-4.6"), "claude-opus-4-6");
+        assert_eq!(dotted("claude-opus-4-6"), "claude-opus-4.6");
+        assert_eq!(
+            display_name_slug("MiniMax M2.7"),
+            Some("minimax-m2.7".to_string())
+        );
+        assert_eq!(display_name_slug("gemini-3.7-flash"), None);
+        assert_eq!(display_name_slug("Grok"), None);
     }
 
     #[test]
