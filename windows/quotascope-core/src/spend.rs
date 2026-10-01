@@ -79,6 +79,20 @@ impl Snapshot {
             present: path.is_dir(),
             ledger: crate::ledger::qwen_ledger(),
         });
+        for client in [crate::ledger::PiClient::Pi, crate::ledger::PiClient::Omp] {
+            let path = client.root();
+            sources.push(Source {
+                id: client.id().into(),
+                title: match client {
+                    crate::ledger::PiClient::Pi => "Pi",
+                    crate::ledger::PiClient::Omp => "Oh My Pi",
+                }
+                .into(),
+                location: path.display().to_string(),
+                present: path.is_dir(),
+                ledger: crate::ledger::pi_ledger(client),
+            });
+        }
         Self { sources }
     }
 

@@ -1205,6 +1205,252 @@ pub fn qwen_ledger() -> UsageLedger {
     built
 }
 
+/// A JSON timestamp in either epoch milliseconds or RFC3339 text.
+fn json_timestamp(value: Option<&serde_json::Value>, milliseconds: bool) -> Option<i64> {
+    let value = value?;
+    match value {
+        serde_json::Value::Number(number) => {
+            let raw = if milliseconds {
+                number.as_i64()?
+            } else {
+                let seconds = number.as_f64()?;
+                if !seconds.is_finite() || seconds < 0.0 {
+                    return None;
+                }
+                (seconds * 1000.0).round() as i64
+            };
+            Some(raw)
+        }
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(seconds) = trimmed.parse::<f64>() {
+                if !seconds.is_finite() || seconds < 0.0 {
+                    return None;
+                }
+                let millis = if milliseconds {
+                    seconds
+                } else {
+                    seconds * 1000.0
+                };
+                return Some((millis).round() as i64);
+            }
+            parse_iso8601(trimmed)
+        }
+        _ => None,
+    }
+}
+
+/// The first non-blank JSON string among candidates.
+fn json_text<'a>(row: &'a serde_json::Value, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|name| {
+        row.get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    })
+}
+
+/// A JSON integer. Strings carrying whole numbers are accepted; booleans,
+/// fractions and missing fields are not.
+fn json_count(value: Option<&serde_json::Value>) -> Option<i64> {
+    match value? {
+        serde_json::Value::Number(number) => number.as_i64(),
+        serde_json::Value::String(text) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PiClient {
+    Pi,
+    Omp,
+}
+
+impl PiClient {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Pi => "pi",
+            Self::Omp => "omp",
+        }
+    }
+
+    pub fn root(self) -> PathBuf {
+        crate::model::home_path(match self {
+            Self::Pi => ".pi/agent/sessions",
+            Self::Omp => ".omp/agent/sessions",
+        })
+    }
+}
+
+/// Decodes the Pi transcript's four independent buckets. A total larger than
+/// the named kinds stays unclassified here as a record remainder; only a
+/// total standing alone is usable at all in the current ledger shape.
+fn pi_usage(object: &serde_json::Value) -> Option<(TokenTally, i64)> {
+    let object = object.as_object()?;
+    let count = |name: &str| json_count(object.get(name));
+    let input = count("input");
+    let output = count("output");
+    let cache_read = count("cacheRead");
+    let cache_write = count("cacheWrite");
+    let total = count("totalTokens");
+    if input.is_none() && output.is_none() && cache_read.is_none() && cache_write.is_none() {
+        return None;
+    }
+
+    let tally = TokenTally {
+        input: input.unwrap_or(0),
+        cache_write: cache_write.unwrap_or(0),
+        cache_read: cache_read.unwrap_or(0),
+        output: output.unwrap_or(0),
+    };
+    if [
+        tally.input,
+        tally.cache_write,
+        tally.cache_read,
+        tally.output,
+    ]
+    .iter()
+    .copied()
+    .any(|value| value < 0)
+    {
+        return None;
+    }
+    if let Some(total) = total {
+        if total < 0 {
+            return None;
+        }
+        let remainder = total.checked_sub(tally.total())?;
+        if remainder > 0 {
+            // The ledger currently carries classified kinds only. Rather than
+            // putting the remainder into input, skip an object whose own total
+            // disagrees with the buckets it named.
+            return None;
+        }
+    }
+    Some((tally, 0))
+}
+
+/// Reads Pi and Oh My Pi transcripts. Branch copies fold by response id, or by
+/// the message's own fields when a provider response id was not recorded.
+pub fn pi_ledger(client: PiClient) -> UsageLedger {
+    let key = client.id();
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(key) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect_jsonl(&client.root(), &mut files);
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let mut session: Option<(String, Option<String>)> = None;
+        for (index, line) in text.lines().enumerate() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let row_type = row.get("type").and_then(serde_json::Value::as_str);
+            match row_type {
+                Some("title") => {}
+                Some("session") => {
+                    session = json_text(&row, &["id"]).map(|id| {
+                        (
+                            id.to_string(),
+                            json_text(&row, &["cwd"]).map(str::to_string),
+                        )
+                    });
+                }
+                Some("message") => {
+                    let Some((_session_id, _project)) = session.as_ref() else {
+                        continue;
+                    };
+                    let Some(message) = row.get("message").filter(|value| value.is_object()) else {
+                        continue;
+                    };
+                    if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant")
+                    {
+                        continue;
+                    }
+                    let Some(usage) = message.get("usage") else {
+                        continue;
+                    };
+                    let Some((tally, _)) = pi_usage(usage) else {
+                        continue;
+                    };
+                    if tally.total() == 0 {
+                        continue;
+                    }
+                    let Some(model) = json_text(message, &["model"]).map(str::to_string) else {
+                        continue;
+                    };
+                    let Some(at) = json_timestamp(
+                        row.get("timestamp").or_else(|| message.get("timestamp")),
+                        false,
+                    ) else {
+                        continue;
+                    };
+                    let provider = json_text(message, &["provider"]).unwrap_or("");
+                    let response_id = json_text(message, &["responseId"]).map(str::to_string);
+                    let identity = match response_id {
+                        Some(id) => format!("{key}:response:{id}"),
+                        None => format!(
+                            "{key}:message:{}:{}:{provider}:{model}:{}",
+                            json_text(&row, &["id"]).unwrap_or(""),
+                            at,
+                            tally.total()
+                        ),
+                    };
+                    if !seen.insert(identity) {
+                        continue;
+                    }
+                    *buckets
+                        .entry(slot_key_from_ms(at))
+                        .or_default()
+                        .entry(model)
+                        .or_default() += tally;
+                }
+                _ => {}
+            }
+            let _ = index;
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, key)
+}
+
+fn ledger_from_slot_buckets(
+    buckets: &BTreeMap<String, BTreeMap<String, TokenTally>>,
+    cache_key: &str,
+) -> UsageLedger {
+    let built = if buckets.is_empty() {
+        UsageLedger::empty()
+    } else {
+        priced(buckets, &model_prices::prices(), None)
+    };
+    let mut guard = MEMORY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = guard.get_or_insert_with(|| (Instant::now(), HashMap::new()));
+    entry.1.insert(cache_key.to_string(), built.clone());
+    built
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1617,5 +1863,48 @@ mod tests {
             "totalTokenCount": 999
         });
         assert_eq!(qwen_usage(&usage), None);
+    }
+
+    #[test]
+    fn pi_usage_keeps_named_buckets_and_refuses_a_disagreeing_total() {
+        let usage = serde_json::json!({
+            "input": 10,
+            "output": 20,
+            "cacheRead": 30,
+            "cacheWrite": 5,
+            "totalTokens": 65
+        });
+        assert_eq!(
+            pi_usage(&usage),
+            Some((
+                TokenTally {
+                    input: 10,
+                    cache_write: 5,
+                    cache_read: 30,
+                    output: 20
+                },
+                0
+            ))
+        );
+        let disagreeing = serde_json::json!({
+            "input": 10,
+            "output": 20,
+            "totalTokens": 99
+        });
+        assert_eq!(pi_usage(&disagreeing), None);
+    }
+
+    #[test]
+    fn pi_timestamps_accept_milliseconds_rfc3339_and_reject_booleans() {
+        let expected = parse_iso8601("2026-10-01T10:02:03.000Z");
+        assert_eq!(
+            json_timestamp(Some(&serde_json::json!(expected.unwrap())), true),
+            expected
+        );
+        assert_eq!(
+            json_timestamp(Some(&serde_json::json!("2026-10-01T10:02:03.000Z")), false),
+            expected
+        );
+        assert_eq!(json_timestamp(Some(&serde_json::json!(true)), true), None);
     }
 }
