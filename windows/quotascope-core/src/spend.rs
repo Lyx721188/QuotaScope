@@ -165,6 +165,30 @@ impl Snapshot {
             present: path.is_dir(),
             ledger: crate::ledger::openclaw_ledger(),
         });
+        for (id, title, root, ledger) in [
+            ("mux", "Mux", ".mux/sessions", crate::ledger::mux_ledger()),
+            (
+                "junie",
+                "Junie",
+                ".junie/sessions",
+                crate::ledger::junie_ledger(),
+            ),
+            (
+                "augment",
+                "Augment",
+                ".augment/sessions",
+                crate::ledger::augment_ledger(),
+            ),
+        ] {
+            let path = crate::model::home_path(root);
+            sources.push(Source {
+                id: id.into(),
+                title: title.into(),
+                location: path.display().to_string(),
+                present: path.is_dir(),
+                ledger,
+            });
+        }
         Self { sources }
     }
 

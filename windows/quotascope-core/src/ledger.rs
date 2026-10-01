@@ -2091,6 +2091,337 @@ fn provider_placeholder(provider: &str) -> Option<String> {
     Some(format!("{provider}-unknown"))
 }
 
+/// Mux's cumulative per-workspace snapshot. One record per model key; the
+/// snapshot is a whole reading, not an increment to be summed across copies.
+pub fn mux_ledger() -> UsageLedger {
+    const KEY: &str = "mux";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect_json(
+        crate::model::home_path(".mux/sessions").as_path(),
+        &mut files,
+    );
+    files.retain(|file| {
+        file.file_name()
+            .map(|name| name == std::ffi::OsStr::new("session-usage.json"))
+            == Some(true)
+    });
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(at) = value
+            .get("lastRequest")
+            .and_then(|request| json_timestamp(request.get("timestamp"), true))
+            .filter(|at| *at > 0)
+        else {
+            continue;
+        };
+        let Some(by_model) = value.get("byModel").and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        let session = file
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let fallback_model = value
+            .get("lastRequest")
+            .and_then(|request| json_text(request, &["model"]).map(str::to_string));
+        for (key, entry) in by_model {
+            let bucket = |name: &str| {
+                entry
+                    .get(name)
+                    .and_then(|bucket| json_count(bucket.get("tokens")))
+                    .unwrap_or(0)
+            };
+            // Reasoning sits beside output with no total to prove containment,
+            // so the reported output is kept and reasoning is not counted.
+            let tally = TokenTally {
+                input: bucket("input"),
+                cache_write: bucket("cacheCreate"),
+                cache_read: bucket("cached"),
+                output: bucket("output"),
+            };
+            if tally.total() == 0 {
+                continue;
+            }
+            let Some(model) = key
+                .split_once(':')
+                .map(|(_, model)| model.trim().to_string())
+                .filter(|model| !model.is_empty())
+                .or_else(|| fallback_model.clone())
+            else {
+                continue;
+            };
+            let identity = format!("{KEY}:{session}:{key}");
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += tally;
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+/// JetBrains Junie's event stream. Only `LlmResponseMetadataEvent` rows with
+/// `modelUsage` count; a positive latency dates the row at the call's start.
+pub fn junie_ledger() -> UsageLedger {
+    const KEY: &str = "junie";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect_jsonl(
+        crate::model::home_path(".junie/sessions").as_path(),
+        &mut files,
+    );
+    files.retain(|file| {
+        file.file_name()
+            .map(|name| name == std::ffi::OsStr::new("events.jsonl"))
+            == Some(true)
+    });
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let session = file
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let session_start = junie_session_time(&session);
+        for row in text.lines() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(row) else {
+                continue;
+            };
+            let Some(agent_event) = row.get("event").and_then(|event| event.get("agentEvent"))
+            else {
+                continue;
+            };
+            if json_text(agent_event, &["kind"]) != Some("LlmResponseMetadataEvent") {
+                continue;
+            }
+            let Some(usages) = agent_event
+                .get("modelUsage")
+                .and_then(serde_json::Value::as_array)
+            else {
+                continue;
+            };
+            let end = json_timestamp(row.get("timestampMs"), true).filter(|at| *at > 0);
+            for (index, entry) in usages.iter().enumerate() {
+                let Some(model) = json_text(entry, &["model"]).map(str::to_string) else {
+                    continue;
+                };
+                let latency = json_count(entry.get("time")).unwrap_or(0);
+                let at = match end {
+                    Some(end) if latency > 0 => end.saturating_sub(latency).max(end.min(1)),
+                    Some(end) => end,
+                    None => session_start.unwrap_or_default(),
+                };
+                if at <= 0 {
+                    continue;
+                }
+                let merged = |aliases: &[&str]| -> i64 {
+                    aliases
+                        .iter()
+                        .find_map(|alias| json_count(entry.get(*alias)).filter(|value| *value > 0))
+                        .unwrap_or(0)
+                };
+                let tally = TokenTally {
+                    input: merged(&["inputTokens", "input"]),
+                    cache_write: merged(&[
+                        "cacheCreateTokens",
+                        "cacheCreationInputTokens",
+                        "cacheWrite",
+                    ]),
+                    cache_read: merged(&["cacheInputTokens", "cacheReadInputTokens", "cacheRead"]),
+                    output: merged(&["outputTokens", "output"]),
+                };
+                if tally.total() == 0 {
+                    continue;
+                }
+                let identity = format!(
+                    "{KEY}:{session}:{at}:{model}:{}:{}:{}:{}:{index}",
+                    tally.input, tally.cache_write, tally.cache_read, tally.output
+                );
+                if seen.insert(identity) {
+                    *buckets
+                        .entry(slot_key_from_ms(at))
+                        .or_default()
+                        .entry(model)
+                        .or_default() += tally;
+                }
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+fn junie_session_time(id: &str) -> Option<i64> {
+    let marker = id.find("session-")?;
+    let stamp = &id[marker + "session-".len()..];
+    let stamp = stamp.get(..13)?;
+    let at = chrono::Local.with_ymd_and_hms(0, 1, 1, 0, 0, 0).single()?;
+    let _ = at;
+    let parsed = chrono::NaiveDateTime::parse_from_str(stamp, "%y%m%d-%H%M%S").ok()?;
+    use chrono::TimeZone;
+    let at = chrono::Local
+        .from_local_datetime(&parsed)
+        .single()
+        .or_else(|| chrono::Local.from_local_datetime(&parsed).earliest())?;
+    Some(at.timestamp_millis())
+}
+
+/// Augment's completed chat turns. A streamed turn is cumulative across its
+/// response nodes, so the last non-empty `token_usage` is the turn total.
+pub fn augment_ledger() -> UsageLedger {
+    const KEY: &str = "augment";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect_json(
+        crate::model::home_path(".augment/sessions").as_path(),
+        &mut files,
+    );
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        let Ok(session_value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let session = json_text(&session_value, &["sessionId"])
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                file.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        let agent_model = session_value
+            .get("agentState")
+            .and_then(|state| json_text(state, &["modelId"]).map(str::to_string));
+        let Some(turns) = session_value
+            .get("chatHistory")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for (index, turn) in turns.iter().enumerate() {
+            if turn.get("completed").and_then(serde_json::Value::as_bool) != Some(true) {
+                continue;
+            }
+            let Some(exchange) = turn.get("exchange") else {
+                continue;
+            };
+            let Some(at) = json_timestamp(turn.get("finishedAt"), false).filter(|at| *at > 0)
+            else {
+                continue;
+            };
+            let Some(nodes) = exchange
+                .get("response_nodes")
+                .and_then(serde_json::Value::as_array)
+            else {
+                continue;
+            };
+            let usage = nodes.iter().rev().find_map(|node| {
+                let usage = node.get("token_usage")?;
+                let count = |name: &str| json_count(usage.get(name)).unwrap_or(0);
+                let total = count("input_tokens")
+                    + count("cache_creation_input_tokens")
+                    + count("cache_read_input_tokens")
+                    + count("output_tokens");
+                (total > 0).then(|| usage.clone())
+            });
+            let Some(usage) = usage else {
+                continue;
+            };
+            let count = |name: &str| json_count(usage.get(name)).unwrap_or(0);
+            let tally = TokenTally {
+                input: count("input_tokens"),
+                cache_write: count("cache_creation_input_tokens"),
+                cache_read: count("cache_read_input_tokens"),
+                output: count("output_tokens"),
+            };
+            if tally.total() == 0 {
+                continue;
+            }
+            let Some(model) = json_text(exchange, &["model_id"])
+                .map(str::to_string)
+                .or_else(|| agent_model.clone())
+            else {
+                continue;
+            };
+            let identity = json_text(exchange, &["request_id"])
+                .or(json_text(turn, &["sequenceId"]))
+                .map(|id| format!("{KEY}:{session}:{id}"))
+                .unwrap_or_else(|| format!("{KEY}:{session}:{index}"));
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += tally;
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
 /// Gemini CLI's chat JSON and headless JSONL shapes. Session JSON's cache
 /// overlap is proven only by a total equal to the non-cache sum; headless
 /// prompt-style inputs are cache-inclusive. A bare total is not assigned to
@@ -3423,5 +3754,22 @@ mod tests {
         // Prime rules: a total that names no kind is skipped rather than
         // filed as a fabricated zero.
         assert!(openclaw_message(&bare).is_none());
+    }
+
+    #[test]
+    fn junie_session_time_parses_local_stamps() {
+        let at = junie_session_time("session-261001-120000").expect("parses");
+        let day = day_of_ms(at);
+        assert_eq!(day.to_string(), "2026-10-01");
+        assert!(junie_session_time("other").is_none());
+    }
+
+    #[test]
+    fn mux_model_key_strips_the_provider_prefix() {
+        let key = "anthropic:claude-opus-4.6";
+        assert_eq!(
+            key.split_once(':').map(|(_, model)| model.to_string()),
+            Some("claude-opus-4.6".to_string())
+        );
     }
 }
