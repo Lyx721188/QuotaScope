@@ -18,7 +18,11 @@
   用户按物理 Esc 停止 computer-use，随即停止界面输入；左/顶收起与唤回、间距动态变化的真实 UI 验收仍未完成，不能用几何测试代替。
 - 已 fetch 上游：`a3415cc7c8265152646015680e80329c09f2f62f`。完整差距与建议顺序见 [UPSTREAM_PARITY.md](UPSTREAM_PARITY.md)。
   更正旧数量：上游本机来源实际 54 项，Windows 两项；图标映射实际覆盖 17 个 provider，60 个仍用回退。
-- 新修复的推送/Actions 结果将在构建完成后补充；下文的“没有推送”等描述是先前阶段记录。
+- 修复提交 `5bc6fc05a305000568bf4ee3429bf41bb5466c09` 已推送 main。
+  [第二轮 Windows 构建](https://github.com/Lyx721188/QuotaScope/actions/runs/36839678580) 成功；
+  fmt、Clippy、tests、release、JSON smoke、打包 settings smoke 与 artifact upload 均成功。
+  Artifact `quotascope-windows-x64`，ID `11151426095`。Release job 因非 tag 推送而跳过，符合本轮范围。
+  下文的“没有推送”等描述是先前阶段记录。
 
 ## 恢复来源与当前范围
 
