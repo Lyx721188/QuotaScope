@@ -1,5 +1,5 @@
-//! A provider's history, worked out from the logs its own CLI leaves on this
-//! machine — ported from `UsageLedger.swift`.
+//! A provider's history, worked out from the local logs and databases its
+//! client leaves on this machine — ported from `UsageLedger.swift`.
 //!
 //! Worth being clear about what this is and isn't. The providers report
 //! *limits*, not spending, and neither publishes a per-day history — so the
@@ -187,6 +187,8 @@ pub struct UsageLedger {
     pub model_names: BTreeMap<String, String>,
     /// Ascending by start time. Only slots with work in them.
     pub slots: Vec<Slot>,
+    /// At least one source omits token fields whose meaning is not established.
+    pub has_partial_records: bool,
 }
 
 impl UsageLedger {
@@ -738,8 +740,32 @@ fn data_dir() -> PathBuf {
     crate::data_dir()
 }
 
-/// The transcript root a provider's CLI writes, when it writes one.
+/// The local history store a provider leaves on this machine, when it has one.
+// The CLI uses a separate directory and is deliberately not mixed in.
+fn antigravity_roots() -> Vec<PathBuf> {
+    let root = std::env::var_os("GEMINI_CLI_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| crate::model::home_path(".gemini"));
+    let current = root.join("antigravity").join("conversations");
+    let roots: Vec<_> = [
+        current.clone(),
+        root.join("antigravity-ide").join("conversations"),
+    ]
+    .into_iter()
+    .filter(|path| path.is_dir())
+    .collect();
+    if roots.is_empty() {
+        vec![current]
+    } else {
+        roots
+    }
+}
+
 pub fn transcript_root(provider: Provider) -> Option<PathBuf> {
+    if provider == Provider::Antigravity {
+        return antigravity_roots().into_iter().next();
+    }
     let written = match provider {
         Provider::ClaudeCode => ".claude/projects",
         Provider::Codex => ".codex/sessions",
@@ -785,6 +811,371 @@ fn parse_file(path: &Path, provider: Provider) -> Scanned {
         Provider::Codex => parse_codex(lines),
         _ => Scanned::default(),
     }
+}
+
+const ANTIGRAVITY_MAX_BLOB_BYTES: i64 = 1_048_576;
+const ANTIGRAVITY_ROUTING_MODEL: &str = "gemini-default";
+// These usage fields have observed meanings; field 1 is intentionally omitted.
+
+#[derive(Clone)]
+enum AntigravityWireValue {
+    Varint(u64),
+    Fixed64,
+    Bytes(Vec<u8>),
+    Fixed32,
+}
+
+#[derive(Default)]
+struct AntigravityMessage {
+    fields: BTreeMap<u32, Vec<AntigravityWireValue>>,
+}
+
+impl AntigravityMessage {
+    fn first(&self, field: u32) -> Option<&AntigravityWireValue> {
+        self.fields.get(&field)?.first()
+    }
+
+    fn varint(&self, field: u32) -> Option<u64> {
+        match self.first(field)? {
+            AntigravityWireValue::Varint(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn text(&self, field: u32) -> Option<String> {
+        let AntigravityWireValue::Bytes(bytes) = self.first(field)? else {
+            return None;
+        };
+        let text = std::str::from_utf8(bytes).ok()?.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    }
+
+    fn nested(&self, field: u32) -> Option<AntigravityMessage> {
+        let AntigravityWireValue::Bytes(bytes) = self.first(field)? else {
+            return None;
+        };
+        decode_antigravity_message(bytes)
+    }
+}
+
+fn read_antigravity_varint(bytes: &[u8], offset: &mut usize) -> Option<u64> {
+    let mut value = 0_u64;
+    for shift in (0..=63).step_by(7) {
+        let byte = *bytes.get(*offset)?;
+        *offset += 1;
+        if shift == 63 && byte > 1 {
+            return None;
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn decode_antigravity_message(bytes: &[u8]) -> Option<AntigravityMessage> {
+    if bytes.len() > ANTIGRAVITY_MAX_BLOB_BYTES as usize {
+        return None;
+    }
+    let mut message = AntigravityMessage::default();
+    let mut offset = 0;
+    let mut field_count = 0;
+    while offset < bytes.len() {
+        field_count += 1;
+        if field_count > 4096 {
+            return None;
+        }
+        let tag = read_antigravity_varint(bytes, &mut offset)?;
+        let field = u32::try_from(tag >> 3).ok()?;
+        if field == 0 {
+            return None;
+        }
+        let value = match tag & 7 {
+            0 => AntigravityWireValue::Varint(read_antigravity_varint(bytes, &mut offset)?),
+            1 => {
+                let end = offset.checked_add(8)?;
+                bytes.get(offset..end)?;
+                offset = end;
+                AntigravityWireValue::Fixed64
+            }
+            2 => {
+                let length = usize::try_from(read_antigravity_varint(bytes, &mut offset)?).ok()?;
+                let end = offset.checked_add(length)?;
+                let value = bytes.get(offset..end)?.to_vec();
+                offset = end;
+                AntigravityWireValue::Bytes(value)
+            }
+            5 => {
+                let end = offset.checked_add(4)?;
+                bytes.get(offset..end)?;
+                offset = end;
+                AntigravityWireValue::Fixed32
+            }
+            // Groups and unknown wire types are rejected as a whole message.
+            _ => return None,
+        };
+        message.fields.entry(field).or_default().push(value);
+    }
+    Some(message)
+}
+
+fn antigravity_timestamp(message: &AntigravityMessage) -> Option<i64> {
+    let seconds = message.varint(1)?;
+    let nanos = message.varint(2).unwrap_or(0);
+    if seconds == 0 || nanos >= 1_000_000_000 {
+        return None;
+    }
+    let millis = i64::try_from(seconds)
+        .ok()?
+        .checked_mul(1_000)?
+        .checked_add(i64::try_from(nanos / 1_000_000).ok()?)?;
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis)?;
+    Some(millis)
+}
+
+#[derive(Default)]
+struct AntigravityStepTimes {
+    by_response: HashMap<String, i64>,
+    by_index: HashMap<i64, i64>,
+}
+
+struct AntigravityGeneration {
+    index: i64,
+    model: Option<String>,
+    label: Option<String>,
+    tally: Option<TokenTally>,
+    response_id: Option<String>,
+    timestamp_ms: Option<i64>,
+}
+
+fn antigravity_count(message: &AntigravityMessage, field: u32) -> i64 {
+    message.varint(field).unwrap_or(0).min(i64::MAX as u64) as i64
+}
+
+fn antigravity_generation(index: i64, bytes: &[u8]) -> Option<AntigravityGeneration> {
+    let root = decode_antigravity_message(bytes)?;
+    let chat = root.nested(1)?;
+    let usage = chat.nested(4);
+    let tally = usage.as_ref().map(|usage| TokenTally {
+        input: antigravity_count(usage, 2),
+        cache_write: 0,
+        cache_read: antigravity_count(usage, 5),
+        output: antigravity_count(usage, 9).saturating_add(antigravity_count(usage, 10)),
+    });
+    let timestamp_ms = chat
+        .nested(9)
+        .and_then(|response| response.nested(4))
+        .and_then(|timestamp| antigravity_timestamp(&timestamp));
+    Some(AntigravityGeneration {
+        index,
+        model: chat.text(19),
+        label: chat.text(21),
+        tally,
+        response_id: usage.as_ref().and_then(|usage| usage.text(11)),
+        timestamp_ms,
+    })
+}
+
+fn antigravity_steps(connection: &rusqlite::Connection) -> AntigravityStepTimes {
+    let mut times = AntigravityStepTimes::default();
+    let Ok(mut statement) = connection.prepare(
+        "SELECT metadata FROM steps \
+         WHERE step_type = 15 AND length(metadata) <= ?1",
+    ) else {
+        return times;
+    };
+    let Ok(rows) =
+        statement.query_map([ANTIGRAVITY_MAX_BLOB_BYTES], |row| row.get::<_, Vec<u8>>(0))
+    else {
+        return times;
+    };
+    for bytes in rows.flatten() {
+        let Some(step) = decode_antigravity_message(&bytes) else {
+            continue;
+        };
+        let Some(timestamp_ms) = step
+            .nested(1)
+            .and_then(|timestamp| antigravity_timestamp(&timestamp))
+        else {
+            continue;
+        };
+        if let Some(response_id) = step.nested(9).and_then(|response| response.text(11)) {
+            times.by_response.insert(response_id, timestamp_ms);
+        }
+        if let Some(index) = step.nested(20).and_then(|generation| generation.varint(3)) {
+            if let Ok(index) = i64::try_from(index) {
+                times.by_index.insert(index, timestamp_ms);
+            }
+        }
+    }
+    times
+}
+
+fn antigravity_anchor(connection: &rusqlite::Connection) -> Option<i64> {
+    let bytes = connection
+        .query_row(
+            "SELECT data FROM trajectory_metadata_blob \
+             WHERE length(data) <= ?1 LIMIT 1",
+            [ANTIGRAVITY_MAX_BLOB_BYTES],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .ok()?;
+    decode_antigravity_message(&bytes)?
+        .nested(2)
+        .and_then(|timestamp| antigravity_timestamp(&timestamp))
+}
+
+fn antigravity_generations(connection: &rusqlite::Connection) -> Vec<AntigravityGeneration> {
+    let Ok(mut statement) = connection.prepare(
+        "SELECT idx, data FROM gen_metadata \
+         WHERE length(data) <= ?1 ORDER BY idx",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([ANTIGRAVITY_MAX_BLOB_BYTES], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+    }) else {
+        return Vec::new();
+    };
+    rows.flatten()
+        .filter_map(|(index, bytes)| antigravity_generation(index, &bytes))
+        .collect()
+}
+
+fn antigravity_model(
+    generation: &AntigravityGeneration,
+    labels: &HashMap<String, HashSet<String>>,
+    sole_model: Option<&str>,
+) -> String {
+    if let Some(model) = generation
+        .model
+        .as_deref()
+        .filter(|model| *model != ANTIGRAVITY_ROUTING_MODEL)
+    {
+        return model.to_string();
+    }
+    if let Some(model) = generation
+        .label
+        .as_ref()
+        .and_then(|label| labels.get(label))
+        .filter(|models| models.len() == 1)
+        .and_then(|models| models.iter().next())
+    {
+        return model.clone();
+    }
+    if let Some(model) = sole_model {
+        return model.to_string();
+    }
+    // The label is Antigravity's own name for what it called — "Gemini 3.7
+    // Flash (High)" — so it reaches the price table as a name, and the row
+    // keeps the tier the interface showed rather than folding several models
+    // into one bucket. A label that is not a name says nothing about the
+    // model, and is recorded as such.
+    generation
+        .label
+        .clone()
+        .filter(|label| label.contains(' '))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn parse_antigravity_database(path: &Path, seen: &mut HashSet<String>) -> Scanned {
+    let Ok(connection) =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return Scanned::default();
+    };
+    let _ = connection.busy_timeout(Duration::from_millis(250));
+    let anchor = antigravity_anchor(&connection);
+    let steps = antigravity_steps(&connection);
+    let generations = antigravity_generations(&connection);
+
+    let mut labels: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut models = HashSet::new();
+    for generation in &generations {
+        if let Some(model) = generation
+            .model
+            .as_ref()
+            .filter(|model| *model != ANTIGRAVITY_ROUTING_MODEL)
+        {
+            models.insert(model.clone());
+            if let Some(label) = &generation.label {
+                labels
+                    .entry(label.clone())
+                    .or_default()
+                    .insert(model.clone());
+            }
+        }
+    }
+    let sole_model = (models.len() == 1)
+        .then(|| models.iter().next().map(String::as_str))
+        .flatten();
+    let session = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    let mut days = BTreeMap::new();
+
+    for generation in generations {
+        let Some(tally) = generation.tally.filter(|tally| tally.total() > 0) else {
+            continue;
+        };
+        if let Some(response_id) = &generation.response_id {
+            let key = format!("{session}:{response_id}");
+            if !seen.insert(key) {
+                continue;
+            }
+        }
+        let event_time = generation
+            .timestamp_ms
+            .or_else(|| {
+                generation
+                    .response_id
+                    .as_ref()
+                    .and_then(|response| steps.by_response.get(response).copied())
+            })
+            .or_else(|| steps.by_index.get(&generation.index).copied());
+        let Some(timestamp_ms) = event_time.or(anchor) else {
+            continue;
+        };
+        let model = antigravity_model(&generation, &labels, sole_model);
+        *days
+            .entry(slot_key_from_ms(timestamp_ms))
+            .or_insert_with(BTreeMap::new)
+            .entry(model)
+            .or_insert_with(TokenTally::default) += tally;
+    }
+
+    Scanned {
+        days,
+        title: None,
+        cwd: None,
+    }
+}
+
+fn scan_antigravity() -> BTreeMap<String, BTreeMap<String, TokenTally>> {
+    let mut files = Vec::new();
+    for root in antigravity_roots() {
+        collect_files(&root, "db", &mut files);
+    }
+    files.sort();
+
+    // An open database can append to its WAL while the main database's size
+    // and modification time stay put, so scan SQLite files without file stamps.
+    let mut seen = HashSet::new();
+    let mut buckets = BTreeMap::new();
+    for file in files {
+        for (slot, models) in parse_antigravity_database(&file, &mut seen).days {
+            for (model, tally) in models {
+                *buckets
+                    .entry(slot.clone())
+                    .or_insert_with(BTreeMap::new)
+                    .entry(model)
+                    .or_insert_with(TokenTally::default) += tally;
+            }
+        }
+    }
+    buckets
 }
 
 /// Reads every transcript under the provider's root, reusing the on-disk cache
@@ -950,6 +1341,7 @@ pub fn priced(
         unpriced_models: unpriced.into_iter().collect(),
         model_names: names,
         slots,
+        has_partial_records: false,
     }
 }
 
@@ -988,12 +1380,18 @@ pub fn ledger(provider: Provider) -> UsageLedger {
 }
 
 fn build(provider: Provider) -> UsageLedger {
-    let (buckets, _) = scan(provider);
+    let buckets = if provider == Provider::Antigravity {
+        scan_antigravity()
+    } else {
+        scan(provider).0
+    };
     if buckets.is_empty() {
         return UsageLedger::empty();
     }
     let prices = model_prices::prices();
-    priced(&buckets, &prices, None)
+    let mut ledger = priced(&buckets, &prices, None);
+    ledger.has_partial_records = provider == Provider::Antigravity;
+    ledger
 }
 
 /// Qwen Code's transcript root. It follows the client's own documented
@@ -4159,6 +4557,43 @@ mod tests {
             cache_write: None,
             name: None,
         }
+    }
+
+    #[test]
+    fn antigravity_keeps_the_name_it_records_and_says_unknown_otherwise() {
+        let generation = |model: Option<&str>, label: Option<&str>| AntigravityGeneration {
+            index: 0,
+            model: model.map(str::to_string),
+            label: label.map(str::to_string),
+            tally: None,
+            response_id: None,
+            timestamp_ms: None,
+        };
+        let labels = HashMap::new();
+        // The label is the provider's own display name, which the price table
+        // reaches; folding it into "unknown" would drop a priced model.
+        assert_eq!(
+            antigravity_model(
+                &generation(Some("gemini-default"), Some("Gemini 3.7 Flash (High)")),
+                &labels,
+                None
+            ),
+            "Gemini 3.7 Flash (High)"
+        );
+        // A routing placeholder answers with the conversation's one model.
+        assert_eq!(
+            antigravity_model(
+                &generation(Some("gemini-default"), None),
+                &labels,
+                Some("gemini-3.8-flash")
+            ),
+            "gemini-3.8-flash"
+        );
+        // Nothing named at all stays the honest bucket.
+        assert_eq!(
+            antigravity_model(&generation(None, None), &labels, None),
+            "unknown"
+        );
     }
 
     fn claude_line(

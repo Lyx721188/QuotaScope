@@ -225,7 +225,7 @@ fn activity(data: &CardData) -> Option<Activity> {
             ledger,
             account_wide,
         }) => {
-            if !account_wide {
+            if !account_wide && !ledger.has_partial_records {
                 if let Some(rate) =
                     ledger.cache_hit_rate_calendar(30, chrono::Local::now().date_naive())
                 {
@@ -234,6 +234,12 @@ fn activity(data: &CardData) -> Option<Activity> {
                         &[&format!("{:.0}", rate * 100.0)],
                     ));
                 }
+            }
+            if ledger.has_partial_records {
+                lines.push(
+                    t("Antigravity omits unclassified token counts; records without a turn time use the conversation start time.")
+                        .into(),
+                );
             }
             let days = recent_days(ledger);
             if days.is_empty() {

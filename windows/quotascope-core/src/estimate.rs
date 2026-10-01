@@ -163,6 +163,7 @@ mod tests {
             unpriced_models: vec![],
             model_names: BTreeMap::new(),
             slots,
+            has_partial_records: false,
         }
     }
 

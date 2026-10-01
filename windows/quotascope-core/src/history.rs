@@ -18,7 +18,7 @@ pub enum HistoryRead {
 
 pub fn read(provider: Provider) -> HistoryRead {
     match provider {
-        Provider::ClaudeCode | Provider::Codex => HistoryRead::Answered {
+        Provider::ClaudeCode | Provider::Codex | Provider::Antigravity => HistoryRead::Answered {
             ledger: crate::ledger::ledger(provider),
             account_wide: false,
         },

@@ -536,7 +536,11 @@ impl Provider {
     pub fn provides_history(&self) -> bool {
         matches!(
             self,
-            Provider::ClaudeCode | Provider::Codex | Provider::Zai | Provider::GlmCoding
+            Provider::ClaudeCode
+                | Provider::Codex
+                | Provider::Antigravity
+                | Provider::Zai
+                | Provider::GlmCoding
         )
     }
 

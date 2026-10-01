@@ -128,6 +128,11 @@ const TABLE: &[Entry] = &[
     Entry { key: "{tokens} tokens have no published price", en: "{tokens} tokens have no published price", zh: "{tokens} token 无公开价格" },
     Entry { key: "Provider statistics · all machines · no price breakdown", en: "Provider statistics · all machines · no price breakdown", zh: "服务商统计 · 所有设备 · 无价格明细" },
     Entry { key: "Local records · API value is an estimate, not a bill", en: "API value is an estimate, not a bill", zh: "API 价值估算，非实际账单" },
+    Entry {
+        key: "Antigravity omits unclassified token counts; records without a turn time use the conversation start time.",
+        en: "Antigravity omits unclassified token counts; records without a turn time use the conversation start time.",
+        zh: "Antigravity 会省略含义未确认的 token 计数；缺少调用时间的记录按会话开始时间归日。",
+    },
     Entry { key: "On this PC", en: "On this PC", zh: "本机活动" },
     Entry { key: "Whole account", en: "Whole account", zh: "全账户活动" },
     Entry { key: "Today", en: "Today", zh: "今日" },
@@ -181,9 +186,9 @@ const TABLE: &[Entry] = &[
         zh: "读取 token 花费",
     },
     Entry {
-        key: "Read this machine's Claude Code and Codex transcripts and price them at the providers' published API rates, so a limit's window can show what it is worth. The transcripts never leave this machine.",
-        en: "Read this machine's Claude Code and Codex transcripts and price them at the providers' published API rates, so a limit's window can show what it is worth. The transcripts never leave this machine.",
-        zh: "读本机的 Claude Code 与 Codex 记录，按公开的 API 价目计价，让限额窗口能显示它值多少钱。记录不会离开这台电脑。",
+        key: "Read this machine's Claude Code and Codex transcripts and Antigravity conversation databases, then price known token counts at published API rates. These records never leave this machine.",
+        en: "Read this machine's Claude Code and Codex transcripts and Antigravity conversation databases, then price known token counts at published API rates. These records never leave this machine.",
+        zh: "读取本机的 Claude Code、Codex 会话记录和 Antigravity 会话数据库，按公开 API 价格估算已知 token 的价值。记录不会离开这台电脑。",
     },
     Entry {
         key: "Hide the tray icon",

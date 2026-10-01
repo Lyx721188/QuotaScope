@@ -1655,7 +1655,7 @@ impl SettingsApp {
                     context,
                 ),
                 self.muted(&quotascope_core::localization::t(
-                    "Read this machine's Claude Code and Codex transcripts and price them at the providers' published API rates, so a limit's window can show what it is worth. The transcripts never leave this machine.",
+                    "Read this machine's Claude Code and Codex transcripts and Antigravity conversation databases, then price known token counts at published API rates. These records never leave this machine.",
                 )))).into()),
             ))
             .into()
