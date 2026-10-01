@@ -55,24 +55,31 @@ impl Snapshot {
         if !crate::settings::with(|s| s.reads_token_spend) {
             return Self::default();
         }
-        Self {
-            sources: [Provider::ClaudeCode, Provider::Codex]
-                .into_iter()
-                .map(|p| {
-                    let path = crate::ledger::transcript_root(p);
-                    Source {
-                        id: p.raw().into(),
-                        title: p.display_name().into(),
-                        location: path
-                            .as_ref()
-                            .map(|v| v.display().to_string())
-                            .unwrap_or_default(),
-                        present: path.as_ref().is_some_and(|v| v.is_dir()),
-                        ledger: crate::ledger::ledger(p),
-                    }
-                })
-                .collect(),
-        }
+        let mut sources: Vec<Source> = [Provider::ClaudeCode, Provider::Codex]
+            .into_iter()
+            .map(|p| {
+                let path = crate::ledger::transcript_root(p);
+                Source {
+                    id: p.raw().into(),
+                    title: p.display_name().into(),
+                    location: path
+                        .as_ref()
+                        .map(|v| v.display().to_string())
+                        .unwrap_or_default(),
+                    present: path.as_ref().is_some_and(|v| v.is_dir()),
+                    ledger: crate::ledger::ledger(p),
+                }
+            })
+            .collect();
+        let path = crate::ledger::qwen_root();
+        sources.push(Source {
+            id: "qwen".into(),
+            title: "Qwen Code".into(),
+            location: path.display().to_string(),
+            present: path.is_dir(),
+            ledger: crate::ledger::qwen_ledger(),
+        });
+        Self { sources }
     }
 
     pub fn analyze(

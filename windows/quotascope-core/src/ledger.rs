@@ -984,6 +984,227 @@ fn build(provider: Provider) -> UsageLedger {
     priced(&buckets, &prices, None)
 }
 
+/// Qwen Code's transcript root. It follows the client's own documented
+/// `~/.qwen/projects` layout; nothing is discovered by guessing.
+pub fn qwen_root() -> PathBuf {
+    crate::model::home_path(".qwen/projects")
+}
+
+/// Decodes Qwen Code's normalized Gemini usage object.
+///
+/// Google documents `promptTokenCount` as including cached content, so the
+/// fresh input is prompt minus cache read. A stated total is authoritative:
+/// it can prove the cache sits inside or beside the prompt, and a total that
+/// proves neither is skipped rather than split on a guess.
+fn qwen_usage(metadata: &serde_json::Value) -> Option<TokenTally> {
+    let object = metadata.as_object()?;
+    let integer = |name: &str| -> Option<i64> {
+        match object.get(name)? {
+            serde_json::Value::Number(value) => value.as_i64(),
+            _ => None,
+        }
+    };
+    let prompt = integer("promptTokenCount");
+    let candidates = integer("candidatesTokenCount");
+    let thoughts = integer("thoughtsTokenCount");
+    let cached = integer("cachedContentTokenCount");
+    let total = integer("totalTokenCount")
+        .or_else(|| integer("total"))
+        .or_else(|| integer("total_tokens"));
+    if prompt.is_none()
+        && candidates.is_none()
+        && thoughts.is_none()
+        && cached.is_none()
+        && total.is_none()
+    {
+        return None;
+    }
+
+    let prompt = prompt.unwrap_or(0);
+    let cached = cached.unwrap_or(0);
+    let output = candidates
+        .unwrap_or(0)
+        .saturating_add(thoughts.unwrap_or(0));
+    if [prompt, cached, output]
+        .iter()
+        .copied()
+        .any(|value| value < 0)
+    {
+        return None;
+    }
+
+    if let Some(total) = total {
+        if total < 0 {
+            return None;
+        }
+        let included = prompt.checked_add(output)?;
+        let disjoint = included.checked_add(cached)?;
+        if cached == 0 {
+            return if total == included {
+                Some(TokenTally {
+                    input: prompt,
+                    cache_write: 0,
+                    cache_read: 0,
+                    output,
+                })
+            } else {
+                None
+            };
+        }
+        if total == included && total != disjoint {
+            return Some(TokenTally {
+                input: prompt.checked_sub(cached)?,
+                cache_write: 0,
+                cache_read: cached,
+                output,
+            });
+        }
+        if total == disjoint && total != included {
+            return Some(TokenTally {
+                input: prompt,
+                cache_write: 0,
+                cache_read: cached,
+                output,
+            });
+        }
+        return None;
+    }
+
+    Some(TokenTally {
+        input: prompt.saturating_sub(cached),
+        cache_write: 0,
+        cache_read: cached,
+        output,
+    })
+}
+
+/// The `<projectPath>` segment Qwen keeps between `projects` and `chats`.
+fn qwen_project(path: &Path) -> Option<String> {
+    let mut components = path.components().map(|component| component.as_os_str());
+    while let Some(component) = components.next() {
+        if component == std::ffi::OsStr::new("projects") {
+            return components
+                .next()
+                .filter(|segment| !segment.is_empty())
+                .map(|segment| segment.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Reads Qwen Code transcripts through the same five-minute ledger cache as
+/// the provider readers. Only classified usage is counted; an unreconciled
+/// total contributes nothing rather than inventing token kinds.
+pub fn qwen_ledger() -> UsageLedger {
+    const KEY: &str = "qwen";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let root = qwen_root();
+    let mut files = Vec::new();
+    collect_jsonl(&root, &mut files);
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let project = qwen_project(&file).unwrap_or_else(|| {
+            file.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "qwen".into())
+        });
+        let stem = file
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for (index, line) in text.lines().enumerate() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if row.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+                continue;
+            }
+            let Some(metadata) = row.get("usageMetadata") else {
+                continue;
+            };
+            let Some(tally) = qwen_usage(metadata) else {
+                continue;
+            };
+            if tally.total() == 0 {
+                continue;
+            }
+            let Some(model) = row
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(at) = row
+                .get("timestamp")
+                .and_then(serde_json::Value::as_str)
+                .and_then(parse_iso8601)
+            else {
+                continue;
+            };
+            let session_id = row
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{project}-{stem}"));
+            let message_id = row
+                .get("id")
+                .or_else(|| row.get("messageId"))
+                .and_then(|id| {
+                    id.as_str()
+                        .map(str::to_string)
+                        .or_else(|| id.as_i64().map(|value| value.to_string()))
+                });
+            let identity = match message_id {
+                Some(id) => format!("{session_id}:{id}"),
+                None => format!("{session_id}:{index}"),
+            };
+            if !seen.insert(identity) {
+                continue;
+            }
+            *buckets
+                .entry(slot_key_from_ms(at))
+                .or_default()
+                .entry(model)
+                .or_default() += tally;
+        }
+    }
+
+    let built = if buckets.is_empty() {
+        UsageLedger::empty()
+    } else {
+        priced(&buckets, &model_prices::prices(), None)
+    };
+    let mut guard = MEMORY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = guard.get_or_insert_with(|| (Instant::now(), HashMap::new()));
+    entry.1.insert(KEY.to_string(), built.clone());
+    built
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1365,5 +1586,36 @@ mod tests {
                 println!("  top model (31d): {model} at {:.0}%", share * 100.0);
             }
         }
+    }
+
+    #[test]
+    fn qwen_cache_read_is_subtracted_from_prompt_when_included() {
+        let usage = serde_json::json!({
+            "promptTokenCount": 120,
+            "candidatesTokenCount": 30,
+            "thoughtsTokenCount": 5,
+            "cachedContentTokenCount": 80,
+            "totalTokenCount": 155
+        });
+        assert_eq!(
+            qwen_usage(&usage),
+            Some(TokenTally {
+                input: 40,
+                cache_write: 0,
+                cache_read: 80,
+                output: 35
+            })
+        );
+    }
+
+    #[test]
+    fn qwen_unreconciled_total_is_not_assigned_to_a_kind() {
+        let usage = serde_json::json!({
+            "promptTokenCount": 100,
+            "cachedContentTokenCount": 20,
+            "outputTokens": 30,
+            "totalTokenCount": 999
+        });
+        assert_eq!(qwen_usage(&usage), None);
     }
 }
