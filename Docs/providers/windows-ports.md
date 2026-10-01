@@ -11,7 +11,7 @@ API key/Cookie header 由设置保存到 DPAPI 加密文件。浏览器导入仅
 | Provider | raw id | Windows 路由 | 配置/来源 | 实现 |
 |---|---|---|---|---|
 | Claude Code | `claudeCode` | 已实现；需配置/登录 | CLI OAuth；Status Line / 桌面会话回退未移植 | [claude_code.rs](../../windows/quotascope-core/src/providers/claude_code.rs) |
-| Codex | `codex` | 已实现；需配置/登录 | CLI OAuth | [codex.rs](../../windows/quotascope-core/src/providers/codex.rs) |
+| Codex | `codex` | 已实现；需配置/登录 | CLI OAuth + app-server 回退；账户统计与重置次数读取 | [codex.rs](../../windows/quotascope-core/src/providers/codex.rs) |
 | Kiro | `kiro` | 未移植 | 未实现 | — |
 | Antigravity | `antigravity` | 已实现；需配置/登录 | 正在运行的本机语言服务器 | [antigravity.rs](../../windows/quotascope-core/src/providers/antigravity.rs) |
 | Cursor | `cursor` | 已实现；需配置/登录 | Cursor 本机登录数据库 | [cursor.rs](../../windows/quotascope-core/src/providers/cursor.rs) |

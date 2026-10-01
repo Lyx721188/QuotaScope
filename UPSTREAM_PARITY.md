@@ -21,9 +21,9 @@
 | 10 个 provider | **未移植**：Kiro、Ollama Cloud、Grok Bot、Volcengine、Devin、Alibaba Token Plan、Gemini、JetBrains AI、Windsurf、Nous Portal | [Windows 路由表](Docs/providers/windows-ports.md)、[支持标志](windows/quotascope-core/src/model.rs) |
 | Token spend 数据源 | **部分实现**：上游 `SpendAgent` 实际 54 项；Windows 只有 Claude Code/Codex 两个本机 reader，另外 52 个数据源未移植。上游也区分原生计数、导出/捕获、仅费用及无法计数，并非 54 项都有同等验证 | [上游 SpendAgent](https://github.com/qunqin24/Pulse/blob/a3415cc7c8265152646015680e80329c09f2f62f/Sources/Pulse/Usage/SpendAgent.swift)、[Windows ledger](windows/quotascope-core/src/ledger.rs) |
 | Token spend 分析页 | **未移植**：专门页面、时间范围选择、按 agent/model 下钻、可排序/分页的汇总表、来源覆盖与不可计价分类。现在只有详细卡的近 30 天活动摘要 | [上游 TokenSpendView](https://github.com/qunqin24/Pulse/blob/a3415cc7c8265152646015680e80329c09f2f62f/Sources/Pulse/Settings/TokenSpendView.swift)、[Windows 设置页](windows/quotascope-win/src/settings_app.rs) |
-| 详细卡缓存功能 | **未移植**：缓存命中率、Claude 提示词缓存的 5 分钟/1 小时倒计时、会话数量及过期提示。上游最新提交明确增加了这些功能 | [上游 UsageDetailCard](https://github.com/qunqin24/Pulse/blob/a3415cc7c8265152646015680e80329c09f2f62f/Sources/Pulse/Panel/UsageDetailCard.swift)、[Windows card](windows/quotascope-win/src/card.rs) |
+| 详细卡缓存功能 | **P2 本地回归通过**：30 个日历日缓存命中率、Claude 5 分钟/1 小时 TTL、主会话数量与过期提示；后台有界扫描，缺少 token 分类或 TTL 不猜测。新增 UI 尚待真实交互验收 | [上游 UsageDetailCard](https://github.com/qunqin24/Pulse/blob/a3415cc7c8265152646015680e80329c09f2f62f/Sources/Pulse/Panel/UsageDetailCard.swift)、[Windows card](windows/quotascope-win/src/card.rs) |
 | 其他账户的历史 | **部分实现**：Windows 历史只接入 Claude、Codex、z.ai、智谱；上游还能将其他 agent 的账本映射到账户详细卡 | [上游 CardLedgers](https://github.com/qunqin24/Pulse/blob/a3415cc7c8265152646015680e80329c09f2f62f/Sources/Pulse/Panel/CardLedgers.swift)、[Windows history](windows/quotascope-core/src/history.rs) |
-| Codex app-server | **未移植**：app-server 凭据/用量回退、账户累计 token、峰值日、连续使用天数、reset credits 数量/有效期 | [上游 CodexAccountUsage](https://github.com/qunqin24/Pulse/blob/a3415cc7c8265152646015680e80329c09f2f62f/Sources/Pulse/Providers/CodexAccountUsage.swift)、[Windows Codex](windows/quotascope-core/src/providers/codex.rs) |
+| Codex app-server | **P2 读取已验证**：用量回退、账户累计 token、峰值日、连续使用天数及 reset credits 数量/有效期，独立设置开关；本机真实只读限额与账户统计方法成功。缺失值保留未知；尚未接入服务端推送通知的即时更新 | [上游 CodexAccountUsage](https://github.com/qunqin24/Pulse/blob/a3415cc7c8265152646015680e80329c09f2f62f/Sources/Pulse/Providers/CodexAccountUsage.swift)、[Windows Codex](windows/quotascope-core/src/providers/codex.rs) |
 | Claude 登录回退 | **部分实现**：CLI OAuth 已有；Status Line 与桌面 session 回退未移植。已修正文档中容易被误读为支持 Status Line 的来源栏 | [Windows Claude](windows/quotascope-core/src/providers/claude_code.rs) |
 | 多账户 | **未移植**：同一内置 provider 的附加账号创建/登录/切换。现在只启用主账号；扩展 account slot 不能替代完整内置多账户体验 | [Windows settings](windows/quotascope-core/src/settings.rs)、[上游 AppSettings](https://github.com/qunqin24/Pulse/blob/a3415cc7c8265152646015680e80329c09f2f62f/Sources/Pulse/App/AppSettings.swift) |
 | 账户外观与窗口选择 | **有底层、缺入口**：provider 顺序、固定 headline 窗口、环颜色均有存储或绘制支持，设置 UI 尚未提供重排、选择窗口与颜色工具；标签上下位置等也未完整暴露 | [Windows settings](windows/quotascope-core/src/settings.rs)、[panel](windows/quotascope-win/src/panel.rs)、[settings_app](windows/quotascope-win/src/settings_app.rs) |
@@ -46,4 +46,4 @@ macOS 缺口屏幕、菜单栏位置、Liquid Glass、钥匙串与 Spaces 不列
 4. **账号配置体验**：顺序/固定窗口/颜色入口，随后多账户与诊断/来源选择。
 5. **剩余 provider 与体验**：按实际使用需求推进 10 个路由；补图标、语言、快捷键、集成与 Windows 更新能力。
 
-这个清单是源码差距审计，不代表本轮已经承诺或完成后续全部移植。
+用户随后要求继续实现全部可移植差距；持续进度与验收证据见 `PORT_PLAN.md`。本清单不会把尚未完成的阶段视为已经支持。

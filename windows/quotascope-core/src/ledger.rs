@@ -190,6 +190,43 @@ pub struct UsageLedger {
 }
 
 impl UsageLedger {
+    pub fn cache_hit_rate_calendar(&self, days: i64, today: NaiveDate) -> Option<f64> {
+        if days <= 0 {
+            return None;
+        }
+        let start = today.checked_sub_days(chrono::Days::new((days - 1) as u64))?;
+        let selected: Vec<_> = self
+            .days
+            .iter()
+            .filter(|d| d.date >= start && d.date <= today)
+            .collect();
+        let tokens = selected
+            .iter()
+            .try_fold(0_i64, |sum, d| sum.checked_add(d.tokens))?;
+        let tally = selected.iter().try_fold(TokenTally::default(), |sum, d| {
+            Some(TokenTally {
+                input: sum.input.checked_add(d.tally.input)?,
+                cache_write: sum.cache_write.checked_add(d.tally.cache_write)?,
+                cache_read: sum.cache_read.checked_add(d.tally.cache_read)?,
+                output: sum.output.checked_add(d.tally.output)?,
+            })
+        })?;
+        let input = tally
+            .input
+            .checked_add(tally.cache_write)?
+            .checked_add(tally.cache_read)?;
+        if input <= 0
+            || tally.input < 0
+            || tally.cache_write < 0
+            || tally.cache_read < 0
+            || tally.output < 0
+            || input.checked_add(tally.output)? != tokens
+        {
+            return None;
+        }
+        Some(tally.cache_read as f64 / input as f64)
+    }
+
     pub fn empty() -> UsageLedger {
         UsageLedger::default()
     }
@@ -1278,6 +1315,24 @@ mod tests {
         assert!((share - 10_000.0 / 15_000.0).abs() < 1e-9);
         // 12M cache reads over 15M input tokens.
         assert!((ledger.cache_hit_rate(7).expect("rate") - 0.8).abs() < 1e-9);
+        assert!(
+            (ledger
+                .cache_hit_rate_calendar(30, NaiveDate::from_ymd_opt(2026, 10, 1).unwrap())
+                .unwrap()
+                - 0.8)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(
+            ledger.cache_hit_rate_calendar(30, NaiveDate::from_ymd_opt(2026, 12, 1).unwrap()),
+            None
+        );
+        ledger.days[0].tokens += 1;
+        assert_eq!(
+            ledger.cache_hit_rate_calendar(30, NaiveDate::from_ymd_opt(2026, 10, 1).unwrap()),
+            None
+        );
+        ledger.days[0].tokens -= 1;
     }
 
     #[test]

@@ -36,6 +36,7 @@ pub struct AppSettings {
     pub shows_remaining: bool,
     pub shows_forecast: bool,
     pub shows_second_ring: bool,
+    pub shows_codex_reset_credits: bool,
     /// Account ids whose hover card includes the plan, clock and history.
     pub detailed_cards: HashSet<String>,
     /// Where a card's figure turns warning-red: 60..90, the picker's steps.
@@ -108,6 +109,7 @@ impl Default for AppSettings {
             shows_remaining: false,
             shows_forecast: false,
             shows_second_ring: false,
+            shows_codex_reset_credits: false,
             detailed_cards: HashSet::new(),
             warning_threshold: 75,
             hides_tray_icon: false,

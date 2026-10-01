@@ -39,6 +39,61 @@ pub struct CardData {
     pub detailed: bool,
     pub history_enabled: bool,
     pub history: Option<quotascope_core::history::HistoryRead>,
+    pub prompt_cache: Option<quotascope_core::prompt_cache::CacheReading>,
+    pub codex_details: Option<quotascope_core::codex_account::AccountDetails>,
+    pub shows_codex_reset_credits: bool,
+}
+
+fn account_notes(data: &CardData) -> Vec<String> {
+    use quotascope_core::codex_account::ResetCredits;
+    use quotascope_core::localization::{t, t_fmt};
+    if data.usage.provider() != quotascope_core::model::Provider::Codex {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    if data.shows_codex_reset_credits {
+        match data.codex_details.as_ref().map(|d| &d.reset_credits) {
+            Some(ResetCredits::Available {
+                count,
+                next_expiry_ms,
+            }) => {
+                lines.push(t_fmt("Reset credits: {count}", &[&count.to_string()]));
+                if *count > 0 {
+                    if let Some(at) = next_expiry_ms {
+                        lines.push(t_fmt(
+                            "Next expiry: {time}",
+                            &[&quotascope_core::timeutil::reset_text(*at)],
+                        ));
+                    }
+                }
+            }
+            Some(ResetCredits::CodexMissing) => {
+                lines.push(t("Install Codex CLI to read reset credits.").into())
+            }
+            Some(ResetCredits::Unreported) => lines.push(t("Reset credits: not available.").into()),
+            None => lines.push(t("Reading reset credits…").into()),
+        }
+    }
+    if data.detailed {
+        if let Some(usage) = data.codex_details.as_ref().and_then(|d| d.usage.as_ref()) {
+            if let Some(tokens) = usage.lifetime_tokens {
+                lines.push(t_fmt(
+                    "Account lifetime: {tokens} tokens",
+                    &[&short_tokens(tokens)],
+                ));
+            }
+            if let Some(tokens) = usage.peak_daily_tokens {
+                lines.push(t_fmt("Peak day: {tokens} tokens", &[&short_tokens(tokens)]));
+            }
+            if let Some(days) = usage.current_streak_days {
+                lines.push(t_fmt("Current streak: {days} days", &[&days.to_string()]));
+            }
+            if let Some(days) = usage.longest_streak_days {
+                lines.push(t_fmt("Longest streak: {days} days", &[&days.to_string()]));
+            }
+        }
+    }
+    lines
 }
 
 fn detail_header(data: &CardData) -> Vec<String> {
@@ -170,6 +225,16 @@ fn activity(data: &CardData) -> Option<Activity> {
             ledger,
             account_wide,
         }) => {
+            if !account_wide {
+                if let Some(rate) =
+                    ledger.cache_hit_rate_calendar(30, chrono::Local::now().date_naive())
+                {
+                    lines.push(t_fmt(
+                        "Cache hit rate: {percent}%",
+                        &[&format!("{:.0}", rate * 100.0)],
+                    ));
+                }
+            }
             let days = recent_days(ledger);
             if days.is_empty() {
                 lines.push(
@@ -227,6 +292,44 @@ fn activity(data: &CardData) -> Option<Activity> {
             } else {
                 "Local records · API value is an estimate, not a bill"
             }));
+        }
+    }
+    if data.usage.provider() == quotascope_core::model::Provider::ClaudeCode {
+        let now = quotascope_core::timeutil::now_ms();
+        if let Some(reading) = &data.prompt_cache {
+            let alive = reading.alive(now);
+            if let Some(first) = alive.first() {
+                section.notes.push(t_fmt(
+                    "Prompt cache: {count} chats",
+                    &[&alive.len().to_string()],
+                ));
+                let minutes =
+                    ((first.lapse.expires_at().saturating_sub(now) + 59_999) / 60_000).max(1);
+                let tier = if first.lapse.lifetime_ms == 3_600_000 {
+                    "1h"
+                } else {
+                    "5m"
+                };
+                section.notes.push(t_fmt(
+                    "{tier} cache · expires in {minutes} min",
+                    &[tier, &minutes.to_string()],
+                ));
+            } else if reading.latest_lapsed(now).is_some() {
+                section.notes.push(t("Prompt cache has expired.").into());
+                section
+                    .notes
+                    .push(t("The next message will rebuild the cache.").into());
+            } else {
+                section.notes.push(t("No active prompt cache.").into());
+                section
+                    .notes
+                    .push(t("No recent cache tier was reported.").into());
+            }
+        } else {
+            section.notes.push(t("Reading prompt cache…").into());
+            section
+                .notes
+                .push(t("Cache lifetime comes from local records.").into());
         }
     }
     Some(section)
@@ -484,6 +587,7 @@ pub fn body_size(m: &Metrics, data: &CardData) -> (f64, f64) {
             }
         }
     }
+    h += account_notes(data).len() as f64 * m.s(card::ROW_INTERNAL_SPACING + 4.0 + 13.0);
     if let Some(section) = activity(data) {
         h += section.height(m);
     }
@@ -648,6 +752,10 @@ pub fn draw_card(
         }
     }
 
+    for note in account_notes(data) {
+        cy += m.s(card::ROW_INTERNAL_SPACING);
+        draw_detail_line(painter, m, inset_x, &mut cy, inset_w, &note, alpha)?;
+    }
     draw_history(painter, m, inset_x, &mut cy, inset_w, data, alpha)?;
 
     // The "as of" line: how much to trust the figures.
@@ -1095,7 +1203,36 @@ mod tests {
             detailed: true,
             history_enabled: true,
             history: Some(history),
+            prompt_cache: None,
+            codex_details: None,
+            shows_codex_reset_credits: false,
         }
+    }
+
+    #[test]
+    fn reset_credit_metadata_is_visible_without_reading_local_transcripts() {
+        use quotascope_core::codex_account::{AccountDetails, ResetCredits};
+        let mut payload = data(HistoryRead::NotConfigured);
+        payload.usage.account = AccountKey::primary(Provider::Codex);
+        payload.history_enabled = false;
+        payload.detailed = false;
+        payload.shows_codex_reset_credits = true;
+        let m = Metrics::from_settings(&Default::default());
+        let loading_height = body_size(&m, &payload).1;
+        payload.codex_details = Some(AccountDetails {
+            usage: None,
+            reset_credits: ResetCredits::Available {
+                count: 3,
+                next_expiry_ms: Some(1_900_000_000_000),
+            },
+        });
+        assert_eq!(account_notes(&payload).len(), 2);
+        assert!((body_size(&m, &payload).1 - loading_height - m.s(24.0)).abs() < 1e-8);
+        assert!(activity(&payload).is_none());
+        payload.codex_details.as_mut().unwrap().reset_credits = ResetCredits::Unreported;
+        assert_eq!(account_notes(&payload).len(), 1);
+        payload.shows_codex_reset_credits = false;
+        assert!(account_notes(&payload).is_empty());
     }
 
     #[test]

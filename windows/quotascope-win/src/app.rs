@@ -27,6 +27,8 @@ pub enum AppMsg {
     /// the UI path: account id -> window id -> the card's estimate line.
     Estimates(std::collections::HashMap<String, std::collections::HashMap<String, String>>),
     Histories(u64, HashMap<String, quotascope_core::history::HistoryRead>),
+    PromptCache(u64, quotascope_core::prompt_cache::CacheReading),
+    CodexDetails(u64, quotascope_core::codex_account::AccountDetails),
 }
 
 pub struct App {
@@ -50,6 +52,12 @@ pub struct App {
     histories_dirty: bool,
     histories_generation: u64,
     histories_at: Option<std::time::Instant>,
+    prompt_cache: Option<quotascope_core::prompt_cache::CacheReading>,
+    prompt_cache_running: bool,
+    prompt_cache_at: Option<std::time::Instant>,
+    codex_details: Option<quotascope_core::codex_account::AccountDetails>,
+    codex_details_running: bool,
+    codex_details_at: Option<std::time::Instant>,
 }
 
 /// Long enough that moving between rings does not rescan, short enough that
@@ -164,6 +172,12 @@ impl App {
             histories_dirty: true,
             histories_generation: 0,
             histories_at: None,
+            prompt_cache: None,
+            prompt_cache_running: false,
+            prompt_cache_at: None,
+            codex_details: None,
+            codex_details_running: false,
+            codex_details_at: None,
         };
 
         // Paint the rail from the cache before the first round trip, so it
@@ -200,6 +214,7 @@ impl App {
             }
         }
         self.store.send(Command::Shutdown);
+        quotascope_core::codex_rpc::shutdown();
     }
 
     fn drain(&mut self) {
@@ -221,6 +236,22 @@ impl App {
                     if generation == self.histories_generation {
                         self.histories_at = Some(std::time::Instant::now());
                         self.histories = map;
+                        self.rebuild_entries();
+                    }
+                }
+                AppMsg::PromptCache(generation, reading) => {
+                    self.prompt_cache_running = false;
+                    if generation == self.histories_generation {
+                        self.prompt_cache = Some(reading);
+                        self.prompt_cache_at = Some(std::time::Instant::now());
+                        self.rebuild_entries();
+                    }
+                }
+                AppMsg::CodexDetails(generation, reading) => {
+                    self.codex_details_running = false;
+                    if generation == self.histories_generation {
+                        self.codex_details = Some(reading);
+                        self.codex_details_at = Some(std::time::Instant::now());
                         self.rebuild_entries();
                     }
                 }
@@ -393,13 +424,71 @@ impl App {
         self.update_settings_status();
         self.maybe_refresh_estimates();
         self.maybe_refresh_histories();
+        self.maybe_refresh_prompt_cache();
+        self.maybe_refresh_codex_details();
     }
 
     fn invalidate_histories(&mut self) {
         self.histories_dirty = true;
         self.histories_generation = self.histories_generation.wrapping_add(1);
         self.histories.clear();
+        self.prompt_cache = None;
+        self.prompt_cache_at = None;
+        self.codex_details = None;
+        self.codex_details_at = None;
         self.rebuild_entries();
+    }
+
+    fn maybe_refresh_prompt_cache(&mut self) {
+        let enabled = quotascope_core::settings::with(|s| {
+            s.reads_token_spend
+                && s.enabled_accounts.contains("claudeCode")
+                && s.detailed_cards.contains("claudeCode")
+        });
+        if !enabled
+            || !self.panel.needs_prompt_cache()
+            || self.prompt_cache_running
+            || self
+                .prompt_cache_at
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(5))
+        {
+            return;
+        }
+        self.prompt_cache_running = true;
+        let generation = self.histories_generation;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let reading = quotascope_core::prompt_cache::read(
+                &quotascope_core::home_dir(),
+                quotascope_core::timeutil::now_ms(),
+            );
+            let _ = tx.send(AppMsg::PromptCache(generation, reading));
+        });
+    }
+
+    fn maybe_refresh_codex_details(&mut self) {
+        let (enabled, detailed) = quotascope_core::settings::with(|s| {
+            let detailed = s.detailed_cards.contains("codex");
+            (
+                s.enabled_accounts.contains("codex") && (s.shows_codex_reset_credits || detailed),
+                detailed,
+            )
+        });
+        if !enabled
+            || self.codex_details_running
+            || self
+                .codex_details_at
+                .is_some_and(|at| at.elapsed() < ESTIMATES_LIFETIME)
+        {
+            return;
+        }
+        self.codex_details_running = true;
+        let generation = self.histories_generation;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let reading = quotascope_core::codex_account::fetch(detailed);
+            let _ = tx.send(AppMsg::CodexDetails(generation, reading));
+        });
     }
 
     /// Reading records and querying statistics must never block a hover or
@@ -521,6 +610,12 @@ impl App {
                     .cloned()
                     .unwrap_or_default();
                 entry.history = self.histories.get(&account.id()).cloned();
+                if account.provider == Provider::ClaudeCode {
+                    entry.prompt_cache = self.prompt_cache.clone();
+                }
+                if account.provider == Provider::Codex {
+                    entry.codex_details = self.codex_details.clone();
+                }
                 entry
             })
             .collect();

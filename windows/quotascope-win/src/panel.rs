@@ -72,6 +72,8 @@ pub struct RailEntry {
     /// Empty unless token spend is on and the ledger can price the window.
     pub value_lines: HashMap<String, String>,
     pub history: Option<quotascope_core::history::HistoryRead>,
+    pub prompt_cache: Option<quotascope_core::prompt_cache::CacheReading>,
+    pub codex_details: Option<quotascope_core::codex_account::AccountDetails>,
 }
 
 impl RailEntry {
@@ -148,6 +150,8 @@ impl RailEntry {
             usage: Some(usage.clone()),
             value_lines: HashMap::new(),
             history: None,
+            prompt_cache: None,
+            codex_details: None,
         }
     }
 
@@ -169,6 +173,8 @@ impl RailEntry {
             usage: None,
             value_lines: HashMap::new(),
             history: None,
+            prompt_cache: None,
+            codex_details: None,
         }
     }
 }
@@ -735,6 +741,9 @@ impl PanelWindow {
             detailed,
             history_enabled,
             history: entry.history.clone(),
+            prompt_cache: entry.prompt_cache.clone(),
+            codex_details: entry.codex_details.clone(),
+            shows_codex_reset_credits: settings.shows_codex_reset_credits,
         };
         let size = card_body_size(&self.m, &data);
         Some((data, size))
@@ -1317,6 +1326,16 @@ impl PanelWindow {
 
     pub fn is_visible(&self) -> bool {
         unsafe { IsWindowVisible(self.hwnd).as_bool() }
+    }
+
+    pub fn needs_prompt_cache(&self) -> bool {
+        self.card_shown()
+            && self
+                .card_slot
+                .and_then(|i| self.entries.get(i))
+                .is_some_and(|entry| {
+                    entry.account.provider == quotascope_core::model::Provider::ClaudeCode
+                })
     }
 }
 

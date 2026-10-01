@@ -2,9 +2,7 @@
 //! CLI's own client makes, with the OAuth credentials Codex stored in
 //! `~/.codex/auth.json`.
 //!
-//! The `codex app-server` fallback is a macOS convenience for a token that
-//! has aged out; on Windows the stored token either works or the account is
-//! reported as needing a sign-in, which is the truth of it.
+//! Missing/refused CLI OAuth falls back to Codex's own resident app-server.
 
 use super::{KeyRing, ProviderService};
 use crate::http::{number, object_field, string_field, HttpClient};
@@ -35,7 +33,7 @@ impl ProviderService for CodexService {
     fn fetch(&self, _keys: &KeyRing) -> ProviderUsage {
         let account = AccountKey::primary(Provider::Codex);
         let Some(credentials) = load_credentials() else {
-            return ProviderUsage::unavailable(account, Unavailability::SignInRequired);
+            return fetch_app_server(account);
         };
 
         let mut headers: Vec<(String, String)> = vec![
@@ -59,9 +57,7 @@ impl ProviderService for CodexService {
                 .fetch_json(crate::http::Method::Get, ENDPOINT, &header_refs, None)
             {
                 Ok(v) => v,
-                Err(Unavailability::ApiKeyRefused) => {
-                    return ProviderUsage::unavailable(account, Unavailability::SignInRequired)
-                }
+                Err(Unavailability::ApiKeyRefused) => return fetch_app_server(account),
                 Err(reason) => return ProviderUsage::unavailable(account, reason),
             };
 
@@ -72,6 +68,113 @@ impl ProviderService for CodexService {
         }
         usage
     }
+}
+
+fn fetch_app_server(account: AccountKey) -> ProviderUsage {
+    match crate::codex_rpc::request("account/rateLimits/read") {
+        Ok(root) => parse_app_server_response(&root),
+        Err(error) => ProviderUsage::unavailable(
+            account,
+            match error {
+                crate::codex_rpc::RpcError::Missing => Unavailability::CodexNotInstalled,
+                crate::codex_rpc::RpcError::Refused => Unavailability::SignInRequired,
+                _ => Unavailability::CodexServerFailed,
+            },
+        ),
+    }
+}
+
+pub fn parse_app_server_response(root: &serde_json::Value) -> ProviderUsage {
+    let fallback;
+    let groups = if let Some(groups) = root
+        .get("rateLimitsByLimitId")
+        .and_then(serde_json::Value::as_object)
+    {
+        groups
+    } else {
+        fallback = root
+            .get("rateLimits")
+            .filter(|v| v.is_object())
+            .map(|v| {
+                [("codex".to_string(), v.clone())]
+                    .into_iter()
+                    .collect::<serde_json::Map<String, serde_json::Value>>()
+            })
+            .unwrap_or_default();
+        &fallback
+    };
+    let mut ordered: Vec<_> = groups.iter().collect();
+    ordered.sort_by_key(|(key, group)| {
+        (
+            group
+                .get("limitName")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            key.as_str(),
+        )
+    });
+    let ordinary_refused = root
+        .get("ordinaryUsageAllowed")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false);
+    let mut windows = Vec::new();
+    let mut plan = None;
+    let mut credits = None;
+    for (key, group) in ordered {
+        let scope = string_field(group, "limitName").map(str::to_string);
+        let group_windows = ["primary", "secondary"]
+            .into_iter()
+            .filter_map(|slot| {
+                let node = group.get(slot)?;
+                let percent = node
+                    .get("usedPercent")
+                    .and_then(number)
+                    .filter(|p| *p >= 0.0)?;
+                let seconds = node
+                    .get("windowDurationMins")
+                    .and_then(number)
+                    .filter(|m| *m > 0.0 && *m <= i64::MAX as f64 / 60.0)
+                    .map(|m| (m * 60.0) as i64);
+                let resets = node
+                    .get("resetsAt")
+                    .and_then(number)
+                    .map(crate::timeutil::epoch_to_ms);
+                Some(UsageWindow::new(
+                    &format!("{key}.{slot}"),
+                    seconds.map(kind_from_seconds).unwrap_or(Kind::Other(0)),
+                    scope.clone(),
+                    percent / 100.0,
+                    seconds.unwrap_or(0),
+                    resets,
+                ))
+            })
+            .collect();
+        let spent = ordinary_refused
+            || group
+                .get("spendControlReached")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            || group
+                .get("rateLimitReachedType")
+                .is_some_and(|v| !v.is_null());
+        windows.extend(marking_spent(group_windows, spent));
+        plan = plan.or_else(|| string_field(group, "planType").map(str::to_string));
+        if credits.is_none() {
+            if let Some(node) = group.get("credits") {
+                if node.get("unlimited").and_then(serde_json::Value::as_bool) != Some(true) {
+                    credits = string_field(node, "balance").map(str::to_string);
+                }
+            }
+        }
+    }
+    let mut usage = ProviderUsage::live_now(AccountKey::primary(Provider::Codex), windows);
+    usage.plan = plan;
+    usage.credit_balance = credits;
+    usage.origin = Some("appServer".into());
+    if usage.windows.is_empty() && usage.credit_balance.is_none() {
+        usage.state = State::Unavailable(Unavailability::NoLimitsReported);
+    }
+    usage
 }
 
 /// (access token, account id)

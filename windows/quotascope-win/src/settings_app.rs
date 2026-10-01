@@ -212,6 +212,7 @@ enum ToggleKey {
     FollowDisplay,
     HideTrayIcon,
     TokenSpend,
+    CodexResetCredits,
     Startup,
     Alerts,
     AlertReset,
@@ -819,6 +820,7 @@ impl SettingsApp {
             ToggleKey::FollowDisplay => s.follows_active_display = value,
             ToggleKey::HideTrayIcon => s.hides_tray_icon = value,
             ToggleKey::TokenSpend => s.reads_token_spend = value,
+            ToggleKey::CodexResetCredits => s.shows_codex_reset_credits = value,
             ToggleKey::Alerts => s.wants_alerts = value,
             ToggleKey::AlertReset => s.alerts_on_reset = value,
             ToggleKey::AlertFailure => s.alerts_on_failure = value,
@@ -1104,6 +1106,12 @@ impl SettingsApp {
                     context,
                 ))).into()),
                 self.surface(StackPanel::new().spacing(14.0).children((section("Token spend"),
+                self.toggle(
+                    ToggleKey::CodexResetCredits,
+                    "Show Codex reset credits",
+                    s.shows_codex_reset_credits,
+                    context,
+                ),
                 self.toggle(
                     ToggleKey::TokenSpend,
                     "Read token spend",
