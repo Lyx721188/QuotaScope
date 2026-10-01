@@ -10,6 +10,7 @@
 //! `card::PADDING` on all sides.
 
 use quotascope_core::model::{ProviderUsage, State, Unavailability};
+use std::collections::HashMap;
 use windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL;
 
 use crate::d2d::{point, Painter, Rgba};
@@ -28,15 +29,30 @@ pub struct CardData {
     pub icon: Option<String>,
     pub shows_remaining: bool,
     pub shows_forecast: bool,
+    /// Where a figure stops being calm and starts warning: the reader's own
+    /// line, not a constant.
+    pub warning_fraction: f64,
+    /// Per window id, the value estimate the transcript ledger supports —
+    /// "Estimated value ≈$220 · ≈$57 used". Absent wherever the inputs
+    /// cannot support the figure.
+    pub value_lines: HashMap<String, String>,
 }
 
 /// The card's total size for a reading of this shape — what the flyout
 /// window has to be, in design units.
-pub fn body_size(m: &Metrics, windows_count: usize, footnote: bool, forecast: bool) -> (f64, f64) {
+pub fn body_size(
+    m: &Metrics,
+    windows_count: usize,
+    footnote: bool,
+    forecast: bool,
+    estimate_lines: usize,
+) -> (f64, f64) {
     let w = m.s(card::WIDTH) + m.s(card::PADDING) * 2.0;
     let h = m.s(card::PADDING) * 2.0
         + m.s(card::HEADER_HEIGHT)
         + windows_count as f64 * (m.s(card::CONTENT_SPACING) + card::row_height(m, forecast))
+        + estimate_lines as f64
+            * (m.s(card::ROW_INTERNAL_SPACING) + m.s(card::ROW_TEXT_LINE_HEIGHT))
         + if footnote {
             m.s(card::CONTENT_SPACING) + m.s(card::ROW_TEXT_LINE_HEIGHT)
         } else {
@@ -309,6 +325,10 @@ fn draw_progress_row(
     };
     let figure_brush = painter.brush(if spent_color {
         faded(Rgba::from(usage_tint::EXHAUSTED), alpha)
+    } else if window.used_fraction >= data.warning_fraction {
+        // Past the reader's line the figure itself carries the warning —
+        // the bar stays the system accent either way.
+        faded(Rgba::from(usage_tint::WARNING), alpha)
     } else {
         faded(palette.text_secondary, alpha)
     })?;
@@ -346,6 +366,29 @@ fn draw_progress_row(
         );
     }
     *cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
+
+    // The value estimate, when this machine's own records can price the
+    // window. Labelled an estimate because it is the one figure here that
+    // was inferred rather than reported.
+    if let Some(text) = data.value_lines.get(&window.id) {
+        *cy += m.s(card::ROW_INTERNAL_SPACING);
+        let estimate_brush = painter.brush(faded(palette.text_disabled, alpha))?;
+        painter.text(
+            text,
+            crate::d2d::rect(
+                x as f32,
+                *cy as f32,
+                width as f32,
+                m.s(card::ROW_TEXT_LINE_HEIGHT) as f32,
+            ),
+            m.s(card::FOOTNOTE_FONT) as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            &estimate_brush,
+            0,
+            0,
+        );
+        *cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
+    }
 
     // The forecast: the one line the provider did not say, dimmer than the
     // figures above it, absent far more often than present — and the
@@ -471,9 +514,11 @@ fn draw_value_row(
 }
 
 /// The reset line, or the length when the provider actually stated one —
-/// never a sort key dressed as a measurement.
+/// never a sort key dressed as a measurement. A bought pack's expiry rides
+/// the same line when there is one: a balance that will shrink is a fact
+/// about the future worth the space.
 fn reset_text(window: &quotascope_core::model::UsageWindow) -> String {
-    match window.resets_at {
+    let base = match window.resets_at {
         Some(at) => quotascope_core::localization::t_fmt(
             "Resets {time}",
             &[&quotascope_core::timeutil::reset_text(at)],
@@ -485,6 +530,20 @@ fn reset_text(window: &quotascope_core::model::UsageWindow) -> String {
                 String::new()
             }
         }
+    };
+    match window.next_expiry_ms {
+        Some(at) => {
+            let expiry = quotascope_core::localization::t_fmt(
+                "expires {time}",
+                &[&quotascope_core::timeutil::reset_text(at)],
+            );
+            if base.is_empty() {
+                expiry
+            } else {
+                format!("{base} · {expiry}")
+            }
+        }
+        None => base,
     }
 }
 

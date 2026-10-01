@@ -214,14 +214,18 @@ fn pool_window(config: &serde_json::Value) -> Option<UsageWindow> {
         None => return None,
     };
 
-    Some(UsageWindow::new(
+    // Grok reporting the pool at 100% is the provider's own "spent" — the
+    // same rule every percentage-reported limit follows.
+    let mut window = UsageWindow::new(
         "grok-pool",
         kind_for_seconds(seconds),
         None,
         (percent / 100.0).clamp(0.0, 1.0),
         seconds,
         Some(end),
-    ))
+    );
+    window.is_exhausted = percent >= 100.0;
+    Some(window)
 }
 
 /// Named from the length the reply gave, not from its `type` string: the
@@ -234,5 +238,36 @@ fn kind_for_seconds(seconds: i64) -> Kind {
         Kind::Monthly
     } else {
         Kind::Other(seconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_pool_reported_at_100_percent_is_spent() {
+        let start = "2026-09-21T00:00:00Z";
+        let end = "2026-09-28T00:00:00Z";
+        let config = json!({
+            "currentPeriod": { "start": start, "end": end },
+            "creditUsagePercent": 100.0,
+        });
+        let window = pool_window(&config).expect("window");
+        assert!(window.is_exhausted);
+    }
+
+    #[test]
+    fn a_partial_pool_is_not_spent() {
+        let start = "2026-09-21T00:00:00Z";
+        let end = "2026-09-28T00:00:00Z";
+        let config = json!({
+            "currentPeriod": { "start": start, "end": end },
+            "creditUsagePercent": 41.5,
+        });
+        let window = pool_window(&config).expect("window");
+        assert!(!window.is_exhausted);
+        assert!((window.used_fraction - 0.415).abs() < 1e-9);
     }
 }

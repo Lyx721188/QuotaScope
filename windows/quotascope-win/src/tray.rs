@@ -29,6 +29,10 @@ const ID_EXIT: u32 = 1004;
 pub struct TrayIcon {
     pub hwnd: HWND,
     data: NOTIFYICONDATAW,
+    /// Whether the icon is currently in the tray. `hides_tray_icon` removes
+    /// it and puts it back without recreating the window the menu and the
+    /// balloons live on.
+    added: bool,
     commands: Sender<TrayCommand>,
     /// The app's poll tick: the tray window carries the slow timer, and its
     /// firings become store polls.
@@ -152,6 +156,7 @@ impl TrayIcon {
         let mut tray = Box::new(TrayIcon {
             hwnd: HWND::default(),
             data: NOTIFYICONDATAW::default(),
+            added: false,
             commands,
             poll: None,
         });
@@ -188,9 +193,37 @@ impl TrayIcon {
             data.szTip[..tip.len()].copy_from_slice(&tip);
             if Shell_NotifyIconW(NIM_ADD, &mut data).as_bool() {
                 tray.data = data;
+                tray.added = true;
             }
         }
         tray
+    }
+
+    /// Puts the icon in the tray, or takes it out. The setting's promise is
+    /// kept honestly: the menu and the balloons go with the icon, and the
+    /// way back is the next launch — of the app, or of Settings itself.
+    pub fn set_hidden(&mut self, hidden: bool) {
+        unsafe {
+            if hidden {
+                if self.added {
+                    let _ = Shell_NotifyIconW(NIM_DELETE, &mut self.data);
+                    self.added = false;
+                }
+            } else if !self.added {
+                let mut data = self.data;
+                data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+                if Shell_NotifyIconW(NIM_ADD, &mut data).as_bool() {
+                    self.data = data;
+                    self.added = true;
+                }
+            }
+        }
+    }
+
+    /// Balloons need the icon; with it hidden they are dropped rather than
+    /// silently re-adding the icon the reader asked to remove.
+    pub fn shows_icon(&self) -> bool {
+        self.added
     }
 
     pub fn set_poll(&mut self, poll: Sender<()>) {
@@ -198,6 +231,9 @@ impl TrayIcon {
     }
 
     pub fn show_balloon(&mut self, title: &str, text: &str, warning: bool) {
+        if !self.added {
+            return;
+        }
         unsafe {
             let mut data = self.data;
             data.uFlags = NIF_INFO;

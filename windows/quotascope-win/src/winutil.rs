@@ -97,6 +97,44 @@ pub fn acquire_single_instance() -> bool {
     }
 }
 
+/// A second launch is not an accident to be dismissed: opening the app
+/// while it is already running opens Settings — the same answer the macOS
+/// app gives on reopen. The mutex says "already running"; this named event
+/// carries the request across to the first instance.
+pub fn signal_open_settings() {
+    use windows::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+    unsafe {
+        if let Ok(event) = OpenEventW(
+            EVENT_MODIFY_STATE,
+            false,
+            w!("QuotaScope.Windows.OpenSettings"),
+        ) {
+            let _ = SetEvent(event);
+        }
+    }
+}
+
+/// Creates the named event and waits on it in the background, turning each
+/// signal into a message on `tx`. The handle lives for the process
+/// lifetime on purpose.
+pub fn listen_for_open_settings(tx: std::sync::mpsc::Sender<()>) {
+    use windows::Win32::Foundation::WAIT_OBJECT_0;
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
+    std::thread::spawn(move || unsafe {
+        let event = CreateEventW(None, false, false, w!("QuotaScope.Windows.OpenSettings"));
+        let Ok(event) = event else { return };
+        loop {
+            let wait = WaitForSingleObject(event, INFINITE);
+            if wait != WAIT_OBJECT_0 {
+                return;
+            }
+            if tx.send(()).is_err() {
+                return;
+            }
+        }
+    });
+}
+
 /// A NUL-terminated UTF-16 buffer; the vec outlives the calls it feeds.
 pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()

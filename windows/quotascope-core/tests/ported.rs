@@ -452,3 +452,27 @@ fn a_deepseek_window_has_no_length_and_no_reset_ever() {
         Some("sinceTopUp")
     );
 }
+
+#[test]
+fn the_window_clock_can_run_in_either_direction() {
+    let now = 10_000_000_000_000;
+    let mut w = window_with(0.4, "w", Kind::FiveHour, None);
+    w.window_seconds = 5 * 3_600;
+    // The reset sits 2 500 s out; the window is 18 000 s long, so 86% has
+    // gone by and 14% is left.
+    w.resets_at = Some(now + 2_500 * 1_000);
+    let elapsed = w.window_clock_fraction(false, now).expect("elapsed");
+    let remaining = w.window_clock_fraction(true, now).expect("remaining");
+    assert!((elapsed + remaining - 1.0).abs() < 1e-9);
+    assert!((elapsed - (1.0 - 2_500.0 / 18_000.0)).abs() < 1e-9);
+    assert!(remaining < elapsed);
+}
+
+#[test]
+fn the_window_clock_still_needs_a_stated_length() {
+    let mut w = window_with(0.4, "w", Kind::Weekly, None);
+    w.reports_length = false;
+    w.resets_at = Some(0);
+    assert_eq!(w.window_clock_fraction(false, 1_000), None);
+    assert_eq!(w.window_clock_fraction(true, 1_000), None);
+}

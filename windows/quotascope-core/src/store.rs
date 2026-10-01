@@ -85,6 +85,11 @@ fn worker(cmd_rx: Receiver<Command>, upd_tx: Sender<Update>) {
     let mut alerts = crate::alerts::AlertMemory::new();
     let mut state: HashMap<String, AccountState> = HashMap::new();
     let mut keys = KeyRing::load();
+    let mut extensions = crate::extension::Catalog::default();
+    let mut peaks = crate::balance_ring::Peaks::load();
+    // Extensions are found once and re-found when Settings changes: a
+    // folder dropped in between passes should not wait for a restart.
+    extensions.rescan();
     let mut next_pass_at = crate::timeutil::now_ms();
 
     loop {
@@ -100,6 +105,8 @@ fn worker(cmd_rx: Receiver<Command>, upd_tx: Sender<Update>) {
                     &mut alerts,
                     &mut state,
                     &keys,
+                    &extensions,
+                    &mut peaks,
                     &upd_tx,
                     None,
                 );
@@ -112,6 +119,8 @@ fn worker(cmd_rx: Receiver<Command>, upd_tx: Sender<Update>) {
                     &mut alerts,
                     &mut state,
                     &keys,
+                    &extensions,
+                    &mut peaks,
                     &upd_tx,
                     Some(vec![account]),
                 );
@@ -119,6 +128,7 @@ fn worker(cmd_rx: Receiver<Command>, upd_tx: Sender<Update>) {
             }
             Ok(Command::SettingsChanged) => {
                 keys = KeyRing::load();
+                extensions.rescan();
                 // Something happening is a reason to look now, whatever the
                 // cadence says — switching DeepSeek's basis changes what the
                 // reading means, and a pass that skipped the provider left
@@ -138,6 +148,8 @@ fn worker(cmd_rx: Receiver<Command>, upd_tx: Sender<Update>) {
                 &mut alerts,
                 &mut state,
                 &keys,
+                &extensions,
+                &mut peaks,
                 &upd_tx,
                 None,
             );
@@ -221,6 +233,8 @@ fn run_pass(
     alerts: &mut crate::alerts::AlertMemory,
     state: &mut HashMap<String, AccountState>,
     keys: &KeyRing,
+    extensions: &crate::extension::Catalog,
+    peaks: &mut crate::balance_ring::Peaks,
     upd_tx: &Sender<Update>,
     only: Option<Vec<AccountKey>>,
 ) {
@@ -257,14 +271,25 @@ fn run_pass(
     for account in &accounts {
         let ring = KeyRing {
             api_keys: keys.api_keys.clone(),
+            addresses: keys.addresses.clone(),
             copilot_token: keys.copilot_token.clone(),
         };
         let account = account.clone();
         let basis = deepseek_basis.clone();
         let services = services.clone();
+        // An extension runs its own program; the manifest is looked up in
+        // the catalog the worker rescans, then moved to the fetch thread.
+        let extension = if account.provider == Provider::Extension {
+            extensions.get(&account.slot).cloned()
+        } else {
+            None
+        };
         handles.push((
             account.clone(),
             std::thread::spawn(move || {
+                if let Some(extension) = extension {
+                    return crate::extension::fetch(&extension);
+                }
                 if account.provider == Provider::DeepSeek {
                     return services.deepseek.fetch_with_basis(&ring, &basis);
                 }
@@ -284,6 +309,12 @@ fn run_pass(
         let fetched = handle.join().unwrap_or_else(|_| {
             ProviderUsage::unavailable(account.clone(), crate::model::Unavailability::Unreachable)
         });
+
+        // A prepaid account's reading gets its one balance window here,
+        // before the cache banks it: the denominator is a setting, so the
+        // reading carries it wherever it goes next.
+        let mut fetched = fetched;
+        crate::balance_ring::apply(&mut fetched, peaks);
 
         // Every fetched reading goes through the cache: a refusal shows the
         // last good figures with a date, and a live reading banks.

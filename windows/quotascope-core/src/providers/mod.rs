@@ -2,19 +2,54 @@
 //! that product actually offers — documented or borrowed — and invents
 //! nothing on the way.
 
+pub mod aixy;
+pub mod alibaba_coding_plan;
+pub mod amp;
 pub mod antigravity;
+pub mod atlas_cloud;
+pub mod bifrost;
+pub mod chutes;
 pub mod claude_code;
+pub mod claw_router;
+pub mod cline_pass;
+pub mod codebuff;
 pub mod codex;
 pub mod command_code;
 pub mod copilot;
 pub mod cursor;
+pub mod deepinfra;
 pub mod deepseek;
 pub mod device_login;
+pub mod devpass;
+pub mod elevenlabs;
+pub mod factory;
+pub mod gitkraken;
 pub mod grok;
+pub mod huggingface;
+pub mod hyper;
+pub mod ibm_bob;
+pub mod kilo_code;
 pub mod kimi;
+pub mod litellm;
+pub mod llm_proxy;
 pub mod minimax;
+pub mod moonshot;
+pub mod neuralwatt;
+pub mod new_api;
+pub mod openai_platform;
 pub mod opencode;
+pub mod poe;
+pub mod sub2api;
+pub mod synthetic;
+pub mod v0;
+pub mod v2ex;
+pub mod venice;
+pub mod vercel_ai_gateway;
+pub mod warp;
+pub mod xaiapi;
+pub mod xkiro;
 pub mod zai;
+pub mod zenmux;
 
 use crate::http::HttpClient;
 use crate::model::{AccountKey, Provider, ProviderUsage, Unavailability};
@@ -25,6 +60,7 @@ use std::sync::Arc;
 #[derive(Default)]
 pub struct KeyRing {
     pub api_keys: std::collections::HashMap<String, String>,
+    pub addresses: std::collections::HashMap<String, String>,
     pub copilot_token: Option<String>,
 }
 
@@ -40,12 +76,17 @@ impl KeyRing {
         }
         KeyRing {
             api_keys,
+            addresses: crate::settings::with(|settings| settings.server_addresses.clone()),
             copilot_token: crate::secrets::key_for("copilot"),
         }
     }
 
     pub fn api_key(&self, provider: Provider) -> Option<String> {
         self.api_keys.get(provider.raw()).cloned()
+    }
+
+    pub fn address(&self, provider: Provider) -> Option<String> {
+        self.addresses.get(provider.raw()).cloned()
     }
 }
 
@@ -117,6 +158,43 @@ impl Services {
             Arc::new(minimax::MinimaxService::for_mainland(http.clone())),
             deepseek.clone(),
             Arc::new(command_code::CommandCodeService::new(http.clone())),
+            Arc::new(v2ex::V2exService::new(http.clone())),
+            Arc::new(moonshot::MoonshotService::new(http.clone())),
+            Arc::new(huggingface::HuggingFaceService::new(http.clone())),
+            Arc::new(venice::VeniceService::new(http.clone())),
+            Arc::new(deepinfra::DeepInfraService::new(http.clone())),
+            Arc::new(sub2api::Sub2ApiService::new(http.clone())),
+            Arc::new(new_api::NewApiService::new(http.clone())),
+            Arc::new(kilo_code::KiloCodeService::new(http.clone())),
+            Arc::new(synthetic::SyntheticService::new(http.clone())),
+            Arc::new(elevenlabs::ElevenLabsService::new(http.clone())),
+            Arc::new(ibm_bob::IbmBobService::new(http.clone())),
+            Arc::new(vercel_ai_gateway::VercelAiGatewayService::new(http.clone())),
+            Arc::new(amp::AmpService::new(http.clone())),
+            Arc::new(codebuff::CodebuffService::new(http.clone())),
+            Arc::new(claw_router::ClawRouterService::new(http.clone())),
+            Arc::new(devpass::DevPassService::new(http.clone())),
+            Arc::new(cline_pass::ClinePassService::new(http.clone())),
+            Arc::new(poe::PoeService::new(http.clone())),
+            Arc::new(chutes::ChutesService::new(http.clone())),
+            Arc::new(v0::V0Service::new(http.clone())),
+            Arc::new(aixy::AixyService::new(http.clone())),
+            Arc::new(atlas_cloud::AtlasCloudService::new(http.clone())),
+            Arc::new(bifrost::BifrostService::new(http.clone())),
+            Arc::new(llm_proxy::LlmProxyService::new(http.clone())),
+            Arc::new(litellm::LiteLlmService::new(http.clone())),
+            Arc::new(factory::FactoryService::new(http.clone())),
+            Arc::new(gitkraken::GitKrakenService::new(http.clone())),
+            Arc::new(hyper::HyperService::new(http.clone())),
+            Arc::new(neuralwatt::NeuralwattService::new(http.clone())),
+            Arc::new(zenmux::ZenMuxService::new(http.clone())),
+            Arc::new(xaiapi::XaiApiService::new(http.clone())),
+            Arc::new(xkiro::XKiroService::new(http.clone())),
+            Arc::new(openai_platform::OpenAiPlatformService::new(http.clone())),
+            Arc::new(warp::WarpService::new(http.clone())),
+            Arc::new(alibaba_coding_plan::AlibabaCodingPlanService::new(
+                http.clone(),
+            )),
         ];
         Services {
             list,

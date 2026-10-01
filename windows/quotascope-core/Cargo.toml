@@ -9,6 +9,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
+url = { workspace = true }
 base64 = "0.22"
 # Only the one table is read, but it is Cursor's, while the editor holds it
 # open — the bundled engine keeps the read self-contained.

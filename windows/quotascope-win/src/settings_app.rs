@@ -210,6 +210,8 @@ enum ToggleKey {
     Forecast,
     AutoCollapse,
     FollowDisplay,
+    HideTrayIcon,
+    TokenSpend,
     Startup,
     Alerts,
     AlertReset,
@@ -221,6 +223,8 @@ enum ChoiceKey {
     Dock,
     PanelSize,
     RailSpacing,
+    ClockDirection,
+    WarningThreshold,
     Interval,
     AlertThreshold,
 }
@@ -231,8 +235,11 @@ enum Message {
     Nav(Option<String>),
     Toggle(ToggleKey, bool),
     ToggleEnabled(usize, bool),
+    ToggleExtension(usize, bool),
+    RescanExtensions,
     Choice(ChoiceKey, Option<usize>),
     KeyEdit(usize, String),
+    AddressEdit(usize, String),
     Save(usize),
     Refresh(usize),
     CopilotAuth,
@@ -245,8 +252,14 @@ struct SettingsApp {
     dark: bool,
     /// Draft key text per provider raw, until Saved.
     keys: HashMap<String, String>,
+    /// Draft gateway address per provider raw, until Saved.
+    addresses: HashMap<String, String>,
     /// Status lines pushed by the app, per provider raw.
     status: HashMap<String, String>,
+    /// The extensions a scan of the extensions folder found, and why the
+    /// folders it turned away were turned away.
+    extensions: Vec<quotascope_core::extension::Extension>,
+    extension_problems: Vec<quotascope_core::extension::Problem>,
     poll: Option<ComponentTask>,
 }
 
@@ -256,6 +269,7 @@ impl Component for SettingsApp {
 
     fn create(_input: &(), context: &ComponentContext<Self>) -> Self {
         let shared = SHARED.with(|cell| cell.borrow().clone().expect("settings shared state"));
+        let scan = quotascope_core::extension::scan();
         SettingsApp {
             shared: shared.clone(),
             page: Page::General,
@@ -263,7 +277,10 @@ impl Component for SettingsApp {
             // too, read once here — a reopened window re-reads.
             dark: crate::theme::panel::is_dark(),
             keys: HashMap::new(),
+            addresses: quotascope_core::settings::with(|s| s.server_addresses.clone()),
             status: HashMap::new(),
+            extensions: scan.extensions,
+            extension_problems: scan.problems,
             poll: Some(Self::spawn_watcher(&shared, context)),
         }
     }
@@ -293,6 +310,25 @@ impl Component for SettingsApp {
                     self.shared.send(SettingsAction::Changed);
                 }
             }
+            Message::ToggleExtension(index, value) => {
+                if let Some(extension) = self.extensions.get(index) {
+                    let id = extension.account().id();
+                    quotascope_core::settings::mutate(move |s| {
+                        if value {
+                            s.enabled_accounts.insert(id.clone());
+                        } else {
+                            s.enabled_accounts.remove(&id);
+                        }
+                    });
+                    self.shared.send(SettingsAction::Changed);
+                }
+            }
+            Message::RescanExtensions => {
+                let scan = quotascope_core::extension::scan();
+                self.extensions = scan.extensions;
+                self.extension_problems = scan.problems;
+                self.shared.send(SettingsAction::Changed);
+            }
             Message::Choice(key, selected) => {
                 Self::apply_choice(key, selected.unwrap_or(0));
                 self.shared.send(SettingsAction::Changed);
@@ -302,11 +338,47 @@ impl Component for SettingsApp {
                     self.keys.insert(provider.raw().to_string(), text);
                 }
             }
+            Message::AddressEdit(index, text) => {
+                if let Some(provider) = all_providers().get(index) {
+                    self.addresses.insert(provider.raw().to_string(), text);
+                }
+            }
             Message::Save(index) => {
                 if let Some(provider) = all_providers().get(index) {
-                    let value = self.keys.get(provider.raw()).cloned().unwrap_or_default();
-                    quotascope_core::secrets::set_key(provider.raw(), value.trim());
-                    self.shared.send(SettingsAction::SaveKey);
+                    if provider.needs_server_address() {
+                        let value = self
+                            .addresses
+                            .get(provider.raw())
+                            .cloned()
+                            .unwrap_or_default();
+                        if value.trim().is_empty()
+                            || quotascope_core::gateway::is_usable(value.trim())
+                        {
+                            quotascope_core::settings::mutate(|s| {
+                                if value.trim().is_empty() {
+                                    s.server_addresses.remove(provider.raw());
+                                } else {
+                                    s.server_addresses.insert(
+                                        provider.raw().to_string(),
+                                        value.trim().to_string(),
+                                    );
+                                }
+                            });
+                            self.shared.send(SettingsAction::SaveKey);
+                        } else {
+                            self.status.insert(
+                                provider.raw().to_string(),
+                                quotascope_core::localization::t(
+                                    "Enter a local or HTTPS gateway address.",
+                                )
+                                .to_string(),
+                            );
+                        }
+                    } else {
+                        let value = self.keys.get(provider.raw()).cloned().unwrap_or_default();
+                        quotascope_core::secrets::set_key(provider.raw(), value.trim());
+                        self.shared.send(SettingsAction::SaveKey);
+                    }
                 }
             }
             Message::Refresh(index) => {
@@ -463,6 +535,8 @@ impl SettingsApp {
             ToggleKey::Forecast => s.shows_forecast = value,
             ToggleKey::AutoCollapse => s.auto_collapse = value,
             ToggleKey::FollowDisplay => s.follows_active_display = value,
+            ToggleKey::HideTrayIcon => s.hides_tray_icon = value,
+            ToggleKey::TokenSpend => s.reads_token_spend = value,
             ToggleKey::Alerts => s.wants_alerts = value,
             ToggleKey::AlertReset => s.alerts_on_reset = value,
             ToggleKey::AlertFailure => s.alerts_on_failure = value,
@@ -502,6 +576,22 @@ impl SettingsApp {
                     0 => "compact".into(),
                     2 => "roomy".into(),
                     _ => "standard".into(),
+                };
+            }
+            ChoiceKey::ClockDirection => {
+                s.window_clock_direction = match selected {
+                    1 => "remaining".into(),
+                    _ => "elapsed".into(),
+                };
+            }
+            ChoiceKey::WarningThreshold => {
+                s.warning_threshold = match selected {
+                    0 => 60,
+                    1 => 70,
+                    3 => 80,
+                    4 => 85,
+                    5 => 90,
+                    _ => 75,
                 };
             }
             ChoiceKey::Interval => {
@@ -582,74 +672,116 @@ impl SettingsApp {
             1800 => 6,
             _ => 0,
         };
+        let clock_selected = match s.window_clock_direction.as_str() {
+            "remaining" => 1,
+            _ => 0,
+        };
+        let warning_selected = match s.warning_threshold {
+            60 => 0,
+            70 => 1,
+            80 => 3,
+            85 => 4,
+            90 => 5,
+            _ => 2,
+        };
         StackPanel::new()
             .spacing(10.0)
             .children((
                 heading("General"),
                 section("Panel"),
-                self.choice(
-                    ChoiceKey::Dock,
-                    "Dock to",
-                    &["Right", "Left", "Top", "Floating"],
-                    dock_selected,
-                    context,
-                ),
-                self.choice(
-                    ChoiceKey::PanelSize,
-                    "Panel size",
-                    &["Small", "Standard", "Large"],
-                    size_selected,
-                    context,
-                ),
-                self.choice(
-                    ChoiceKey::RailSpacing,
-                    "Ring spacing",
-                    &["Tight", "Standard", "Loose"],
-                    spacing_selected,
-                    context,
-                ),
-                self.toggle(
-                    ToggleKey::SidePct,
-                    "Show percent labels",
-                    s.side_rail_shows_percentages,
-                    context,
-                ),
-                self.toggle(
-                    ToggleKey::Remaining,
-                    "Show what's left",
-                    s.shows_remaining,
-                    context,
-                ),
-                self.toggle(
-                    ToggleKey::Clock,
-                    "Show window clock",
-                    s.shows_window_clock,
-                    context,
-                ),
-                self.toggle(
-                    ToggleKey::SecondRing,
-                    "Show second ring",
-                    s.shows_second_ring,
-                    context,
-                ),
-                self.toggle(
-                    ToggleKey::Forecast,
-                    "Show forecast",
-                    s.shows_forecast,
-                    context,
-                ),
-                self.toggle(
-                    ToggleKey::AutoCollapse,
-                    "Auto-collapse when idle",
-                    s.auto_collapse,
-                    context,
-                ),
-                self.toggle(
-                    ToggleKey::FollowDisplay,
-                    "Follow the active display",
-                    s.follows_active_display,
-                    context,
-                ),
+                // The panel's own controls, one level in: the row helper is
+                // a tuple, and a tuple runs out of slots before this many
+                // rows fit.
+                StackPanel::new()
+                    .spacing(10.0)
+                    .children((
+                        self.choice(
+                            ChoiceKey::Dock,
+                            "Dock to",
+                            &["Right", "Left", "Top", "Floating"],
+                            dock_selected,
+                            context,
+                        ),
+                        self.choice(
+                            ChoiceKey::PanelSize,
+                            "Panel size",
+                            &["Small", "Standard", "Large"],
+                            size_selected,
+                            context,
+                        ),
+                        self.choice(
+                            ChoiceKey::RailSpacing,
+                            "Ring spacing",
+                            &["Tight", "Standard", "Loose"],
+                            spacing_selected,
+                            context,
+                        ),
+                        self.toggle(
+                            ToggleKey::SidePct,
+                            "Show percent labels",
+                            s.side_rail_shows_percentages,
+                            context,
+                        ),
+                        self.toggle(
+                            ToggleKey::Remaining,
+                            "Show what's left",
+                            s.shows_remaining,
+                            context,
+                        ),
+                        self.toggle(
+                            ToggleKey::Clock,
+                            "Show window clock",
+                            s.shows_window_clock,
+                            context,
+                        ),
+                        self.choice(
+                            ChoiceKey::ClockDirection,
+                            "Clock shows",
+                            &["Time gone", "Time left"],
+                            clock_selected,
+                            context,
+                        ),
+                        self.toggle(
+                            ToggleKey::SecondRing,
+                            "Show second ring",
+                            s.shows_second_ring,
+                            context,
+                        ),
+                        self.toggle(
+                            ToggleKey::Forecast,
+                            "Show forecast",
+                            s.shows_forecast,
+                            context,
+                        ),
+                        self.choice(
+                            ChoiceKey::WarningThreshold,
+                            "Turn red past",
+                            &["60%", "70%", "75%", "80%", "85%", "90%"],
+                            warning_selected,
+                            context,
+                        ),
+                        self.toggle(
+                            ToggleKey::AutoCollapse,
+                            "Auto-collapse when idle",
+                            s.auto_collapse,
+                            context,
+                        ),
+                        self.toggle(
+                            ToggleKey::FollowDisplay,
+                            "Follow the active display",
+                            s.follows_active_display,
+                            context,
+                        ),
+                        self.toggle(
+                            ToggleKey::HideTrayIcon,
+                            "Hide the tray icon",
+                            s.hides_tray_icon,
+                            context,
+                        ),
+                        self.muted(&quotascope_core::localization::t(
+                            "The panel stays put and comes back at every launch; run QuotaScope again to reach Settings.",
+                        )),
+                    )),
                 section("Refresh"),
                 self.choice(
                     ChoiceKey::Interval,
@@ -665,6 +797,16 @@ impl SettingsApp {
                     crate::autostart::is_enabled(),
                     context,
                 ),
+                section("Token spend"),
+                self.toggle(
+                    ToggleKey::TokenSpend,
+                    "Read token spend",
+                    s.reads_token_spend,
+                    context,
+                ),
+                self.muted(&quotascope_core::localization::t(
+                    "Read this machine's Claude Code and Codex transcripts and price them at the providers' published API rates, so a limit's window can show what it is worth. The transcripts never leave this machine.",
+                )),
             ))
             .into()
     }
@@ -675,6 +817,33 @@ impl SettingsApp {
 
         // A route this port does not reach is named, not shown broken.
         if !provider.is_ported_to_windows() {
+            let address = if provider.needs_server_address() {
+                let value = self
+                    .addresses
+                    .get(raw)
+                    .cloned()
+                    .or_else(|| {
+                        quotascope_core::settings::with(|s| s.server_addresses.get(raw).cloned())
+                    })
+                    .unwrap_or_default();
+                StackPanel::new()
+                    .spacing(6.0)
+                    .children((
+                        TextBlock::new().text(quotascope_core::localization::t("Gateway address")),
+                        TextBox::new()
+                            .text(value)
+                            .placeholder_text("https://gateway.example")
+                            .on_text_changed(
+                                context.callback(move |text| Message::AddressEdit(index, text)),
+                            ),
+                        Button::new()
+                            .on_click(context.message(Message::Save(index)))
+                            .content(quotascope_core::localization::t("Save")),
+                    ))
+                    .into()
+            } else {
+                View::empty()
+            };
             return StackPanel::new()
                 .spacing(4.0)
                 .children((
@@ -687,6 +856,7 @@ impl SettingsApp {
                             .windows_gap()
                             .unwrap_or("Not available on Windows."),
                     )),
+                    address,
                 ))
                 .into();
         }
@@ -734,6 +904,37 @@ impl SettingsApp {
                             })),
                         self.muted(&quotascope_core::localization::t(
                             "Device-code sign-in. Requests read:user only — never your repositories. The consent page names the editor whose client it borrows; this is not an official integration.",
+                        )),
+                    ))
+                    .into()
+            }
+            _ if provider.needs_server_address() => {
+                let value = self
+                    .addresses
+                    .get(raw)
+                    .cloned()
+                    .or_else(|| quotascope_core::settings::with(|s| s.server_addresses.get(raw).cloned()))
+                    .unwrap_or_default();
+                StackPanel::new()
+                    .spacing(6.0)
+                    .children((
+                        TextBlock::new().text(quotascope_core::localization::t("API key")),
+                        PasswordBox::new()
+                            .password(key_draft.clone().or_else(|| quotascope_core::secrets::key_for(raw)).unwrap_or_default())
+                            .placeholder_text(quotascope_core::localization::t("Paste the API key"))
+                            .on_password_changed(context.callback(move |text| Message::KeyEdit(index, text))),
+                        TextBlock::new().text(quotascope_core::localization::t("Gateway address")),
+                        TextBox::new()
+                            .text(value)
+                            .placeholder_text("https://gateway.example")
+                            .on_text_changed(context.callback(move |text| Message::AddressEdit(index, text))),
+                        row((
+                            Button::new()
+                                .on_click(context.message(Message::Save(index)))
+                                .content(quotascope_core::localization::t("Save")),
+                            Button::new()
+                                .on_click(context.message(Message::Refresh(index)))
+                                .content(quotascope_core::localization::t("Refresh")),
                         )),
                     ))
                     .into()
@@ -787,8 +988,85 @@ impl SettingsApp {
             .chain(std::iter::once(("__note", note.into())))
             .chain(all_providers().iter().enumerate().map(|(index, provider)| {
                 (provider.raw(), self.provider_row(index, *provider, context))
-            }));
+            }))
+            .chain(std::iter::once((
+                "__extensions",
+                self.extensions_view(context),
+            )));
         StackPanel::new().spacing(14.0).keyed_children(rows)
+    }
+
+    /// The extensions folder's contents: what a scan found and why the
+    /// folders it turned away were turned away. A scan reads manifests and
+    /// runs nothing.
+    fn extensions_view(&self, context: &ViewContext<Self>) -> View {
+        let enabled = quotascope_core::settings::with(|s| s.enabled_accounts.clone());
+        let mut rows: Vec<(&'static str, View)> = Vec::new();
+        rows.push(("__heading", section("Extensions").into()));
+        rows.push((
+            "__note",
+            self.muted(&quotascope_core::localization::t(
+                "A program in the extensions folder reports one account's usage. It runs only while it is switched on here, and QuotaScope hands it no credential.",
+            ))
+            .into(),
+        ));
+
+        for (index, extension) in self.extensions.iter().enumerate() {
+            let is_on = enabled.contains(&extension.account().id());
+            let key: &'static str = Box::leak(format!("__ext-{index}").into_boxed_str());
+            rows.push((
+                key,
+                row((
+                    TextBlock::new()
+                        .text(extension.name.clone())
+                        .font_size(15.0)
+                        .font_weight(FontWeight::SEMI_BOLD),
+                    ToggleSwitch::new().is_on(is_on).on_toggled(
+                        context.callback(move |on| Message::ToggleExtension(index, on)),
+                    ),
+                ))
+                .into(),
+            ));
+        }
+        for (index, problem) in self.extension_problems.iter().enumerate() {
+            let key: &'static str = Box::leak(format!("__problem-{index}").into_boxed_str());
+            rows.push((
+                key,
+                self.muted(&format!(
+                    "{} — {}",
+                    problem.folder,
+                    problem.reason.message()
+                ))
+                .into(),
+            ));
+        }
+        if self.extensions.is_empty() && self.extension_problems.is_empty() {
+            rows.push((
+                "__empty",
+                self.muted(&quotascope_core::localization::t("No extensions found."))
+                    .into(),
+            ));
+        }
+
+        rows.push((
+            "__folder",
+            row((
+                Button::new()
+                    .on_click(context.message(Message::RescanExtensions))
+                    .content(quotascope_core::localization::t("Look again")),
+                TextBlock::new()
+                    .text(
+                        quotascope_core::extension::folder()
+                            .to_string_lossy()
+                            .to_string(),
+                    )
+                    .font_size(12.0)
+                    .is_text_selection_enabled(true),
+            ))
+            .into(),
+        ));
+
+        StackPanel::new().spacing(8.0).keyed_children(rows)
     }
 
     fn notifications_view(&self, context: &ViewContext<Self>) -> View {

@@ -246,7 +246,13 @@ fn standing(reason: Unavailability) -> Standing {
         | Unavailability::UnreadableReply
         | Unavailability::RateLimited
         | Unavailability::ServerError
-        | Unavailability::CodexServerFailed => Standing::Failure,
+        | Unavailability::CodexServerFailed
+        // A program that stops answering is a fault like any other; its
+        // own "signed out" is the account's state, which is a failure the
+        // reader has to act on.
+        | Unavailability::ExtensionTimedOut
+        | Unavailability::ExtensionFailed
+        | Unavailability::ExtensionSignedOut => Standing::Failure,
 
         // "No limits on this plan" is a complete answer. Classed neutral it
         // cleared nothing, so an earlier outage's announcement stayed armed
@@ -268,6 +274,10 @@ fn standing(reason: Unavailability) -> Standing {
         | Unavailability::GrokSignInRequired
         | Unavailability::NotSignedIn
         | Unavailability::ApiKeyMissing
+        | Unavailability::ServerAddressMissing
+        | Unavailability::ServerAddressRefused
+        // A folder whose program has gone is a setup step, not news.
+        | Unavailability::ExtensionMissing
         | Unavailability::NotOnWindows => Standing::Neutral,
     }
 }

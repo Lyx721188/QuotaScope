@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use crate::model::AccountKey;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
@@ -29,9 +31,20 @@ pub struct AppSettings {
     pub top_rail_shows_percentages: bool,
     pub label_above_ring: bool,
     pub shows_window_clock: bool,
+    /// elapsed | remaining — which way the clock arc fills.
+    pub window_clock_direction: String,
     pub shows_remaining: bool,
     pub shows_forecast: bool,
     pub shows_second_ring: bool,
+    /// Where a card's figure turns warning-red: 60..90, the picker's steps.
+    pub warning_threshold: i64,
+    /// The tray icon can stand down once the panel is trusted — it comes
+    /// back at the next launch, which is also how Settings is reached again.
+    pub hides_tray_icon: bool,
+    /// Local records are read only after this pane is explicitly enabled.
+    /// Off by default, as upstream's `readsTokenSpend` is: reading the CLIs'
+    /// transcripts is an act worth consenting to.
+    pub reads_token_spend: bool,
     /// Collapse to the 6pt sliver while docked and unhovered.
     pub auto_collapse: bool,
     pub follows_active_display: bool,
@@ -60,6 +73,15 @@ pub struct AppSettings {
     pub deepseek_basis: String,
     pub deepseek_budget: Option<f64>,
     pub deepseek_currency: Option<String>,
+    /// The same choice for every other prepaid account, per account id.
+    pub balance_bases: HashMap<String, String>,
+    /// Account id -> the figure its "budget" basis measures against.
+    pub balance_budgets: HashMap<String, f64>,
+    /// Account id -> a user supplied self-hosted gateway address.
+    pub server_addresses: HashMap<String, String>,
+    /// Extension account id -> the manifest's name for it. The rail's card
+    /// and Settings call an extension by its own word for itself.
+    pub extension_names: HashMap<String, String>,
     /// First-run bookkeeping.
     pub has_run: bool,
     pub offered_providers: Vec<String>,
@@ -79,9 +101,13 @@ impl Default for AppSettings {
             top_rail_shows_percentages: false,
             label_above_ring: false,
             shows_window_clock: false,
+            window_clock_direction: "elapsed".into(),
             shows_remaining: false,
             shows_forecast: false,
             shows_second_ring: false,
+            warning_threshold: 75,
+            hides_tray_icon: false,
+            reads_token_spend: false,
             auto_collapse: true,
             follows_active_display: false,
             dock_side: "right".into(),
@@ -98,6 +124,10 @@ impl Default for AppSettings {
             deepseek_basis: "sinceTopUp".into(),
             deepseek_budget: None,
             deepseek_currency: None,
+            balance_bases: HashMap::new(),
+            balance_budgets: HashMap::new(),
+            server_addresses: HashMap::new(),
+            extension_names: HashMap::new(),
             has_run: false,
             offered_providers: Vec::new(),
         }
@@ -123,7 +153,7 @@ impl AppSettings {
 
     /// The enabled accounts, in the order the rail draws them: stored order
     /// first, then any provider the order has not heard of, appended in name
-    /// order.
+    /// order — then the enabled extensions, in the name their manifest gave.
     pub fn ordered_enabled(&self) -> Vec<crate::model::AccountKey> {
         use crate::model::Provider;
         let all = crate::model::ALL_PROVIDERS;
@@ -143,12 +173,27 @@ impl AppSettings {
         order.extend(others);
         let _ = known;
 
-        order
+        let mut accounts: Vec<AccountKey> = order
             .into_iter()
             .filter(|p| p.is_ported_to_windows())
             .filter(|p| self.enabled_accounts.contains(p.raw()))
-            .map(crate::model::AccountKey::primary)
-            .collect()
+            .map(AccountKey::primary)
+            .collect();
+
+        let mut extensions: Vec<AccountKey> = self
+            .enabled_accounts
+            .iter()
+            .filter(|id| id.starts_with("extension#"))
+            .filter_map(|id| AccountKey::from_id(id))
+            .collect();
+        extensions.sort_by_key(|account| {
+            self.extension_names
+                .get(&account.id())
+                .cloned()
+                .unwrap_or_else(|| account.slot.clone())
+        });
+        accounts.extend(extensions);
+        accounts
     }
 
     /// The enabled set a first launch resolves: only providers that have

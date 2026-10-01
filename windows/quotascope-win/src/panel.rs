@@ -68,6 +68,9 @@ pub struct RailEntry {
     pub headline: Option<UsageWindow>,
     /// The full reading, for the card.
     pub usage: Option<ProviderUsage>,
+    /// Per window id, the value estimate the transcript ledger supports.
+    /// Empty unless token spend is on and the ledger can price the window.
+    pub value_lines: HashMap<String, String>,
 }
 
 impl RailEntry {
@@ -83,9 +86,13 @@ impl RailEntry {
 
         let now = quotascope_core::timeutil::now_ms();
         // The clock arc and the second ring are settings; the reading only
-        // supplies the fractions.
+        // supplies the fractions. The clock fills whichever way the reader
+        // asked for — time gone, or time left.
+        let clock_remaining = settings.window_clock_direction == "remaining";
         let elapsed = if settings.shows_window_clock {
-            headline.as_ref().and_then(|w| w.elapsed_fraction(now))
+            headline
+                .as_ref()
+                .and_then(|w| w.window_clock_fraction(clock_remaining, now))
         } else {
             None
         };
@@ -107,6 +114,10 @@ impl RailEntry {
             }
         };
 
+        // An extension is called by the name its manifest gave, not by the
+        // placeholder word for the kind of account it is.
+        let title = account_title(usage.provider(), &usage.account, settings);
+
         // Refresh feedback is transient state set by a click and cleared
         // by the next snapshot, not something a reading carries.
         let refreshing_shown = false;
@@ -127,30 +138,53 @@ impl RailEntry {
 
         RailEntry {
             account: usage.account.clone(),
-            title: usage.provider().display_name().to_string(),
+            title,
             monogram: usage.provider().monogram().to_string(),
             ring,
             percent_text,
             figure,
             headline,
             usage: Some(usage.clone()),
+            value_lines: HashMap::new(),
         }
     }
 
-    pub fn placeholder(provider: quotascope_core::model::Provider) -> RailEntry {
+    pub fn placeholder(
+        provider: quotascope_core::model::Provider,
+        settings: &quotascope_core::settings::AppSettings,
+    ) -> RailEntry {
+        let account = AccountKey::primary(provider);
         let mut ring = RingModel::unavailable(provider.monogram());
         ring.icon = Some(provider.raw().to_string());
         RailEntry {
-            account: AccountKey::primary(provider),
-            title: provider.display_name().to_string(),
+            title: account_title(provider, &account, settings),
+            account,
             monogram: provider.monogram().to_string(),
             ring,
             percent_text: String::new(),
             figure: "—".to_string(),
             headline: None,
             usage: None,
+            value_lines: HashMap::new(),
         }
     }
+}
+
+/// What a rail entry calls its account: the extension's own name when it is
+/// one, the product's name otherwise.
+fn account_title(
+    provider: quotascope_core::model::Provider,
+    account: &AccountKey,
+    settings: &quotascope_core::settings::AppSettings,
+) -> String {
+    if provider == quotascope_core::model::Provider::Extension {
+        return settings
+            .extension_names
+            .get(&account.id())
+            .cloned()
+            .unwrap_or_else(|| account.slot.clone());
+    }
+    provider.display_name().to_string()
 }
 
 struct DragState {
@@ -702,10 +736,20 @@ impl PanelWindow {
             icon: Some(usage.provider().raw().to_string()),
             shows_remaining: quotascope_core::settings::with(|s| s.shows_remaining),
             shows_forecast: forecast,
+            warning_fraction: quotascope_core::settings::with(|s| {
+                usage_tint::warning_fraction(s.warning_threshold)
+            }),
+            value_lines: entry.value_lines.clone(),
         };
         Some((
             data,
-            card_body_size(&self.m, usage.windows.len().max(1), footnote, forecast),
+            card_body_size(
+                &self.m,
+                usage.windows.len().max(1),
+                footnote,
+                forecast,
+                entry.value_lines.len(),
+            ),
         ))
     }
 

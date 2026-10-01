@@ -5,10 +5,16 @@
 //! contract. The Windows shell (`quotascope-win`) draws on top of it.
 
 pub mod alerts;
+pub mod balance_ring;
 pub mod cache;
+pub mod estimate;
+pub mod extension;
+pub mod gateway;
 pub mod http;
+pub mod ledger;
 pub mod localization;
 pub mod model;
+pub mod model_prices;
 pub mod providers;
 pub mod report;
 pub mod secrets;

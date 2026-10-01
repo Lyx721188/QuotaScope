@@ -98,6 +98,10 @@ pub struct WindowReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "resetsAt")]
     resets_at: Option<String>,
+    /// When a bought pack on this limit lapses, if the provider said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nextExpiryAt")]
+    next_expiry_at: Option<String>,
 }
 
 /// Reads the stored rail and prints the report. Never fetches, never
@@ -180,12 +184,20 @@ fn window_report(window: &UsageWindow) -> WindowReport {
         estimated: window.is_estimated(),
         estimated_from: window.estimate.map(|e| e.token().to_string()),
         resets_at: window.resets_at.map(crate::timeutil::iso8601_utc),
+        next_expiry_at: window.next_expiry_ms.map(crate::timeutil::iso8601_utc),
     }
 }
 
-fn settings_label(_settings: &AppSettings, account: &AccountKey) -> String {
-    // Added accounts carry user labels; the primary account is the product's
-    // own name.
+fn settings_label(settings: &AppSettings, account: &AccountKey) -> String {
+    // An extension is called by the name its manifest gave; added accounts
+    // carry user labels; the primary account is the product's own name.
+    if account.provider == crate::model::Provider::Extension {
+        return settings
+            .extension_names
+            .get(&account.id())
+            .cloned()
+            .unwrap_or_else(|| account.slot.clone());
+    }
     account.provider.display_name().to_string()
 }
 

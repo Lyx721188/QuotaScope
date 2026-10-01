@@ -41,7 +41,10 @@ fn main() {
         return;
     }
 
+    // A second launch opens Settings in the first instance — the answer to
+    // "I clicked it again and nothing happened" — then exits.
     if !winutil::acquire_single_instance() {
+        winutil::signal_open_settings();
         return;
     }
 

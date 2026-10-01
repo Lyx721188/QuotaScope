@@ -14,9 +14,7 @@
 
 use super::{pasted_or_none, DeepSeekBasis, KeyRing, ProviderService};
 use crate::http::HttpClient;
-use crate::model::{
-    AccountKey, CreditAmount, Estimate, Kind, Provider, ProviderUsage, UsageWindow,
-};
+use crate::model::{AccountKey, CreditAmount, Provider, ProviderUsage, UsageWindow};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -172,8 +170,9 @@ fn currency_suffix(code: &str) -> String {
 
 /// At most one window, because there is at most one denominator.
 /// `balanceOnly` produces none at all and the rail shows the money in place
-/// of a percentage. The other two produce a single row whose estimate says
-/// where its denominator came from. **No length and no reset, ever.**
+/// of a percentage. The arithmetic is the balance ring's own — the same rule
+/// every prepaid account draws by — and DeepSeek adds one thing of its own:
+/// **its word** on whether the balance can still pay for a call.
 pub fn windows_for(
     purse: &Purse,
     basis: &str,
@@ -182,27 +181,18 @@ pub fn windows_for(
     since: i64,
     is_available: Option<bool>,
 ) -> Vec<UsageWindow> {
-    let measured: Option<(f64, Estimate)> = match basis {
-        "balanceOnly" => None,
-        "budget" => budget.filter(|b| b.is_finite() && *b > 0.0).map(|budget| {
-            (
-                ((budget - purse.total) / budget).clamp(0.0, 1.0),
-                Estimate::YourBudget,
-            )
-        }),
-        // "sinceTopUp" and anything unrecognised: the measured default.
-        _ => (peak > 0.0)
-            .then(|| ((peak - purse.total) / peak).clamp(0.0, 1.0))
-            .map(|f| (f, Estimate::SinceTopUp)),
+    let balance = CreditAmount {
+        amount: purse.total,
+        currency: purse.currency.clone(),
     };
-
-    let Some((fraction, estimate)) = measured else {
+    let Some(mut window) = crate::balance_ring::window(
+        &balance,
+        crate::balance_ring::Basis::from_token(basis),
+        budget,
+        peak,
+    ) else {
         return Vec::new();
     };
-
-    let mut window = UsageWindow::new("balance", Kind::Balance, None, fraction, 30 * 86_400, None);
-    window.reports_length = false;
-    window.estimate = Some(estimate);
     // **DeepSeek's own word**, not the arithmetic: `is_available` is the
     // flag it sets when the balance can no longer pay for a call. A budget
     // the reader set low can reach 100% with money still in the account, and

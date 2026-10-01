@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 pub enum Provider {
     ClaudeCode,
     Codex,
+    Kiro,
     Antigravity,
     Cursor,
     OpenCodeGo,
@@ -34,11 +35,86 @@ pub enum Provider {
     Volcengine,
     CommandCode,
     DeepSeek,
+    Devin,
+    XiaomiMiMo,
+    Sub2api,
+    #[serde(rename = "newAPI")]
+    NewApi,
+    V2ex,
+    Qoder,
+    StepFun,
+    ClinePass,
+    AlibabaCodingPlan,
+    AlibabaTokenPlan,
+    QwenCloud,
+    Factory,
+    Gemini,
+    KiloCode,
+    Augment,
+    #[serde(rename = "jetBrainsAI")]
+    JetBrainsAi,
+    T3Chat,
+    Synthetic,
+    ElevenLabs,
+    Warp,
+    Windsurf,
+    Bifrost,
+    Chutes,
+    LongCat,
+    ZoomMate,
+    #[serde(rename = "notionAI")]
+    NotionAi,
+    #[serde(rename = "ibmBob")]
+    IbmBob,
+    NousPortal,
+    #[serde(rename = "raycastAI")]
+    RaycastAi,
+    GitKraken,
+    #[serde(rename = "xKiro")]
+    XKiro,
+    Abacus,
+    Moonshot,
+    Hyper,
+    AtlasCloud,
+    Poe,
+    Venice,
+    #[serde(rename = "openAIPlatform")]
+    OpenAiPlatform,
+    Amp,
+    Zed,
+    Sakana,
+    Mistral,
+    Codebuff,
+    #[serde(rename = "llmProxy")]
+    LlmProxy,
+    #[serde(rename = "liteLLM")]
+    LiteLlm,
+    Aixy,
+    Neuralwatt,
+    ClawRouter,
+    ZenMux,
+    V0,
+    DevPass,
+    Perplexity,
+    Manus,
+    HuggingFace,
+    DeepInfra,
+    #[serde(rename = "xaiAPI")]
+    XaiApi,
+    Replicate,
+    TypeSafe,
+    #[serde(rename = "vercelAIGateway")]
+    VercelAiGateway,
+    /// Not a product but a kind of account: each extension in the
+    /// Extensions folder is one account of this provider. It stays out of
+    /// `ALL_PROVIDERS`, which is the built-in list.
+    Extension,
 }
 
-pub const ALL_PROVIDERS: [Provider; 17] = [
+pub const ALL_PROVIDERS: [Provider; 77] = [
     Provider::ClaudeCode,
     Provider::Codex,
+    Provider::Kiro,
     Provider::Antigravity,
     Provider::Cursor,
     Provider::OpenCodeGo,
@@ -54,6 +130,65 @@ pub const ALL_PROVIDERS: [Provider; 17] = [
     Provider::Volcengine,
     Provider::CommandCode,
     Provider::DeepSeek,
+    Provider::Devin,
+    Provider::XiaomiMiMo,
+    Provider::Sub2api,
+    Provider::NewApi,
+    Provider::V2ex,
+    Provider::Qoder,
+    Provider::StepFun,
+    Provider::ClinePass,
+    Provider::AlibabaCodingPlan,
+    Provider::AlibabaTokenPlan,
+    Provider::QwenCloud,
+    Provider::Factory,
+    Provider::Gemini,
+    Provider::KiloCode,
+    Provider::Augment,
+    Provider::JetBrainsAi,
+    Provider::T3Chat,
+    Provider::Synthetic,
+    Provider::ElevenLabs,
+    Provider::Warp,
+    Provider::Windsurf,
+    Provider::Bifrost,
+    Provider::Chutes,
+    Provider::LongCat,
+    Provider::ZoomMate,
+    Provider::NotionAi,
+    Provider::IbmBob,
+    Provider::NousPortal,
+    Provider::RaycastAi,
+    Provider::GitKraken,
+    Provider::XKiro,
+    Provider::Abacus,
+    Provider::Moonshot,
+    Provider::Hyper,
+    Provider::AtlasCloud,
+    Provider::Poe,
+    Provider::Venice,
+    Provider::OpenAiPlatform,
+    Provider::Amp,
+    Provider::Zed,
+    Provider::Sakana,
+    Provider::Mistral,
+    Provider::Codebuff,
+    Provider::LlmProxy,
+    Provider::LiteLlm,
+    Provider::Aixy,
+    Provider::Neuralwatt,
+    Provider::ClawRouter,
+    Provider::ZenMux,
+    Provider::V0,
+    Provider::DevPass,
+    Provider::Perplexity,
+    Provider::Manus,
+    Provider::HuggingFace,
+    Provider::DeepInfra,
+    Provider::XaiApi,
+    Provider::Replicate,
+    Provider::TypeSafe,
+    Provider::VercelAiGateway,
 ];
 
 impl Provider {
@@ -62,7 +197,10 @@ impl Provider {
     }
 
     pub fn from_raw(raw: &str) -> Option<Provider> {
-        ALL_PROVIDERS.into_iter().find(|p| p.raw() == raw)
+        ALL_PROVIDERS
+            .into_iter()
+            .find(|p| p.raw() == raw)
+            .or_else(|| (raw == "extension").then_some(Provider::Extension))
     }
 
     /// Product names, left untranslated.
@@ -70,6 +208,7 @@ impl Provider {
         match self {
             Provider::ClaudeCode => "Claude Code",
             Provider::Codex => "Codex",
+            Provider::Kiro => "Kiro",
             Provider::Antigravity => "Antigravity",
             Provider::Cursor => "Cursor",
             Provider::OpenCodeGo => "OpenCode Go",
@@ -87,6 +226,68 @@ impl Provider {
             Provider::Volcengine => "Volcengine",
             Provider::CommandCode => "Command Code",
             Provider::DeepSeek => "DeepSeek",
+            Provider::Devin => "Devin",
+            Provider::XiaomiMiMo => "Xiaomi Coding Plan",
+            Provider::Sub2api => "sub2api",
+            Provider::NewApi => "New API",
+            Provider::V2ex => "V2EX",
+            Provider::Qoder => "Qoder",
+            Provider::StepFun => "StepFun",
+            Provider::ClinePass => "ClinePass",
+            Provider::AlibabaCodingPlan => "Alibaba Coding Plan",
+            Provider::AlibabaTokenPlan => "Alibaba Token Plan",
+            Provider::QwenCloud => "Qwen Cloud",
+            Provider::Factory => "Factory",
+            Provider::Gemini => "Gemini",
+            Provider::KiloCode => "Kilo Code",
+            Provider::Augment => "Augment Code",
+            Provider::JetBrainsAi => "JetBrains AI",
+            Provider::T3Chat => "T3 Chat",
+            Provider::Synthetic => "Synthetic",
+            Provider::ElevenLabs => "ElevenLabs",
+            Provider::Warp => "Warp",
+            Provider::Windsurf => "Windsurf",
+            Provider::Bifrost => "Bifrost",
+            Provider::Chutes => "Chutes",
+            Provider::LongCat => "LongCat",
+            Provider::ZoomMate => "ZoomMate",
+            Provider::NotionAi => "Notion AI",
+            Provider::IbmBob => "IBM Bob",
+            Provider::NousPortal => "Nous Portal",
+            Provider::RaycastAi => "Raycast AI",
+            Provider::GitKraken => "GitKraken AI",
+            Provider::XKiro => "xKiro",
+            Provider::Abacus => "Abacus AI",
+            Provider::Moonshot => "Moonshot",
+            Provider::Hyper => "Hyper",
+            Provider::AtlasCloud => "Atlas Cloud",
+            Provider::Poe => "Poe",
+            Provider::Venice => "Venice",
+            Provider::OpenAiPlatform => "OpenAI API",
+            Provider::Amp => "Amp",
+            Provider::Zed => "Zed",
+            Provider::Sakana => "Sakana AI",
+            Provider::Mistral => "Mistral",
+            Provider::Codebuff => "Codebuff",
+            Provider::LlmProxy => "LLM API Key Proxy",
+            Provider::LiteLlm => "LiteLLM",
+            Provider::Aixy => "Aixy",
+            Provider::Neuralwatt => "Neuralwatt",
+            Provider::ClawRouter => "ClawRouter",
+            Provider::ZenMux => "ZenMux",
+            Provider::V0 => "v0",
+            Provider::DevPass => "DevPass",
+            Provider::Perplexity => "Perplexity",
+            Provider::Manus => "Manus",
+            Provider::HuggingFace => "Hugging Face",
+            Provider::DeepInfra => "DeepInfra",
+            Provider::XaiApi => "xAI API",
+            Provider::Replicate => "Replicate",
+            Provider::TypeSafe => "TypeSafe",
+            Provider::VercelAiGateway => "Vercel AI Gateway",
+            // A placeholder: an extension account's real name comes from its
+            // manifest, carried in the settings' extension-name map.
+            Provider::Extension => "Extension",
         }
     }
 
@@ -97,6 +298,7 @@ impl Provider {
         match self {
             Provider::ClaudeCode => "Cl",
             Provider::Codex => "Cd",
+            Provider::Kiro => "Ki",
             Provider::Antigravity => "A",
             Provider::Cursor => "Cu",
             Provider::OpenCodeGo => "Oc",
@@ -112,6 +314,66 @@ impl Provider {
             Provider::Volcengine => "V",
             Provider::CommandCode => "Co",
             Provider::DeepSeek => "D",
+            Provider::Devin => "Dv",
+            Provider::XiaomiMiMo => "Xm",
+            Provider::Sub2api => "S2",
+            Provider::NewApi => "NA",
+            Provider::V2ex => "V2",
+            Provider::Qoder => "Qo",
+            Provider::StepFun => "St",
+            Provider::ClinePass => "Cl",
+            Provider::AlibabaCodingPlan => "AC",
+            Provider::AlibabaTokenPlan => "AT",
+            Provider::QwenCloud => "Qw",
+            Provider::Factory => "Fa",
+            Provider::Gemini => "Ge",
+            Provider::KiloCode => "Kc",
+            Provider::Augment => "Au",
+            Provider::JetBrainsAi => "Jb",
+            Provider::T3Chat => "T3",
+            Provider::Synthetic => "Sy",
+            Provider::ElevenLabs => "El",
+            Provider::Warp => "Wa",
+            Provider::Windsurf => "Wi",
+            Provider::Bifrost => "Bi",
+            Provider::Chutes => "Ch",
+            Provider::LongCat => "Lc",
+            Provider::ZoomMate => "Zm",
+            Provider::NotionAi => "No",
+            Provider::IbmBob => "Ib",
+            Provider::NousPortal => "Np",
+            Provider::RaycastAi => "Ra",
+            Provider::GitKraken => "Gk",
+            Provider::XKiro => "Xk",
+            Provider::Abacus => "Ab",
+            Provider::Moonshot => "Mo",
+            Provider::Hyper => "Hy",
+            Provider::AtlasCloud => "At",
+            Provider::Poe => "Po",
+            Provider::Venice => "Ve",
+            Provider::OpenAiPlatform => "OA",
+            Provider::Amp => "Am",
+            Provider::Zed => "Ze",
+            Provider::Sakana => "Sa",
+            Provider::Mistral => "Mi",
+            Provider::Codebuff => "Cb",
+            Provider::LlmProxy => "LP",
+            Provider::LiteLlm => "LL",
+            Provider::Aixy => "Ax",
+            Provider::Neuralwatt => "Ne",
+            Provider::ClawRouter => "CR",
+            Provider::ZenMux => "ZM",
+            Provider::V0 => "v0",
+            Provider::DevPass => "DP",
+            Provider::Perplexity => "Px",
+            Provider::Manus => "Ma",
+            Provider::HuggingFace => "HF",
+            Provider::DeepInfra => "DI",
+            Provider::XaiApi => "xA",
+            Provider::Replicate => "Re",
+            Provider::TypeSafe => "TS",
+            Provider::VercelAiGateway => "VA",
+            Provider::Extension => "E",
         }
     }
 
@@ -135,6 +397,42 @@ impl Provider {
                 | Provider::MinimaxCn
                 | Provider::CommandCode
                 | Provider::DeepSeek
+                | Provider::Sub2api
+                | Provider::NewApi
+                | Provider::V2ex
+                | Provider::Moonshot
+                | Provider::HuggingFace
+                | Provider::Venice
+                | Provider::DeepInfra
+                | Provider::Poe
+                | Provider::Chutes
+                | Provider::V0
+                | Provider::Aixy
+                | Provider::AtlasCloud
+                | Provider::Factory
+                | Provider::GitKraken
+                | Provider::Hyper
+                | Provider::Neuralwatt
+                | Provider::ZenMux
+                | Provider::Amp
+                | Provider::Codebuff
+                | Provider::ClawRouter
+                | Provider::DevPass
+                | Provider::ClinePass
+                | Provider::KiloCode
+                | Provider::Synthetic
+                | Provider::ElevenLabs
+                | Provider::IbmBob
+                | Provider::VercelAiGateway
+                | Provider::XaiApi
+                | Provider::XKiro
+                | Provider::OpenAiPlatform
+                | Provider::Warp
+                | Provider::AlibabaCodingPlan
+                | Provider::Bifrost
+                | Provider::LlmProxy
+                | Provider::LiteLlm
+                | Provider::Extension
         )
     }
 
@@ -150,8 +448,51 @@ impl Provider {
             Provider::Volcengine => {
                 Some("Signs Volcengine's usage API with access keys — the signer has not been ported yet.")
             }
+            Provider::Kiro => Some("Runs Kiro's local ACP client — the Windows route has not been ported yet."),
+            Provider::Devin => Some("Reads Devin's local or API quota — the Windows route has not been ported yet."),
+            Provider::XiaomiMiMo | Provider::Qoder | Provider::StepFun => Some("Reads a browser session cookie — browser access has not been ported yet."),
+            Provider::Sub2api | Provider::NewApi => Some("Enter the gateway address and API key to enable this account."),
+            Provider::Windsurf => Some("Reads browser local storage — that Windows route has not been ported yet."),
+            _ if self.is_profiled_unported() => Some("This provider is catalogued, but its Windows usage route has not been ported yet."),
             _ => None,
         }
+    }
+
+    fn is_profiled_unported(&self) -> bool {
+        matches!(
+            self,
+            Provider::AlibabaTokenPlan
+                | Provider::QwenCloud
+                | Provider::Gemini
+                | Provider::Augment
+                | Provider::JetBrainsAi
+                | Provider::T3Chat
+                | Provider::Windsurf
+                | Provider::LongCat
+                | Provider::ZoomMate
+                | Provider::NotionAi
+                | Provider::NousPortal
+                | Provider::RaycastAi
+                | Provider::Abacus
+                | Provider::Zed
+                | Provider::Sakana
+                | Provider::Mistral
+                | Provider::Perplexity
+                | Provider::Manus
+                | Provider::Replicate
+                | Provider::TypeSafe
+        )
+    }
+
+    pub fn needs_server_address(&self) -> bool {
+        matches!(
+            self,
+            Provider::Bifrost
+                | Provider::LlmProxy
+                | Provider::LiteLlm
+                | Provider::Sub2api
+                | Provider::NewApi
+        )
     }
 
     /// Whether a spending history can be shown for this provider at all.
@@ -162,7 +503,25 @@ impl Provider {
     /// Providers whose spending is invisible to this machine sit on the
     /// adaptive ceiling for ever; prepaid credit is capped shorter instead.
     pub fn reports_spendable_balance(&self) -> bool {
-        matches!(self, Provider::DeepSeek | Provider::CommandCode)
+        matches!(
+            self,
+            Provider::DeepSeek
+                | Provider::CommandCode
+                | Provider::Moonshot
+                | Provider::Venice
+                | Provider::DeepInfra
+                | Provider::Sub2api
+                | Provider::NewApi
+                | Provider::AtlasCloud
+                | Provider::Neuralwatt
+                | Provider::ZenMux
+                | Provider::Amp
+                | Provider::KiloCode
+                | Provider::VercelAiGateway
+                | Provider::XaiApi
+                | Provider::XKiro
+                | Provider::OpenAiPlatform
+        )
     }
 
     pub fn spending_is_watched_locally(&self) -> bool {
@@ -188,6 +547,43 @@ impl Provider {
                 | Provider::Volcengine
                 | Provider::CommandCode
                 | Provider::DeepSeek
+                | Provider::V2ex
+                | Provider::Moonshot
+                | Provider::HuggingFace
+                | Provider::Venice
+                | Provider::DeepInfra
+                | Provider::ClinePass
+                | Provider::AlibabaCodingPlan
+                | Provider::IbmBob
+                | Provider::KiloCode
+                | Provider::Bifrost
+                | Provider::Sub2api
+                | Provider::NewApi
+                | Provider::Aixy
+                | Provider::Amp
+                | Provider::AtlasCloud
+                | Provider::Chutes
+                | Provider::ClawRouter
+                | Provider::Codebuff
+                | Provider::DevPass
+                | Provider::ElevenLabs
+                | Provider::Factory
+                | Provider::GitKraken
+                | Provider::Hyper
+                | Provider::LlmProxy
+                | Provider::LiteLlm
+                | Provider::Neuralwatt
+                | Provider::OpenAiPlatform
+                | Provider::Poe
+                | Provider::Replicate
+                | Provider::Synthetic
+                | Provider::TypeSafe
+                | Provider::V0
+                | Provider::VercelAiGateway
+                | Provider::Warp
+                | Provider::XaiApi
+                | Provider::XKiro
+                | Provider::ZenMux
         )
     }
 
@@ -414,6 +810,16 @@ pub struct UsageWindow {
     /// `used_fraction >= 1`. A spend limit can run past 100%.
     #[serde(default)]
     pub is_exhausted: bool,
+    /// When a bought pack on this limit lapses — Grok's and Qoder's bonus
+    /// credits arrive with an expiry, and a balance that will shrink is
+    /// worth knowing about. Epoch milliseconds.
+    #[serde(default)]
+    pub next_expiry_ms: Option<i64>,
+    /// The row's own name, when the source gives one — an extension
+    /// programme names its limits in its own words. Shown instead of the
+    /// kind's name; never translated.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 fn yes() -> bool {
@@ -439,6 +845,8 @@ impl UsageWindow {
             reports_length: true,
             estimate: None,
             is_exhausted: false,
+            next_expiry_ms: None,
+            label: None,
         }
     }
 
@@ -462,8 +870,20 @@ impl UsageWindow {
         Some((1.0 - remaining_ms as f64 / window_ms).clamp(0.0, 1.0))
     }
 
-    /// The row's full name: the kind, the scope, and which inference applies.
+    /// The clock arc's fraction in the direction the reader chose: how much
+    /// of the window has gone by, or how much is still to come. Both need
+    /// what `elapsed_fraction` needs — a stated length and a reset time.
+    pub fn window_clock_fraction(&self, remaining: bool, now_ms: i64) -> Option<f64> {
+        let elapsed = self.elapsed_fraction(now_ms)?;
+        Some(if remaining { 1.0 - elapsed } else { elapsed })
+    }
+
+    /// The row's full name: its own label when the source gave one, else
+    /// the kind, the scope, and which inference applies.
     pub fn display_name(&self) -> String {
+        if let Some(label) = &self.label {
+            return label.clone();
+        }
         let base = self.kind.localized_name(self.window_seconds);
         let scoped = match &self.scope {
             Some(s) => format!("{base} · {s}"),
@@ -595,6 +1015,8 @@ pub enum Unavailability {
     NotSignedIn,
     ApiKeyMissing,
     ApiKeyRefused,
+    ServerAddressMissing,
+    ServerAddressRefused,
     Unreachable,
     UnreadableReply,
     RateLimited,
@@ -612,6 +1034,16 @@ pub enum Unavailability {
     /// Not ported to Windows yet — named once, in Settings only.
     NotOnWindows,
     ZaiNoCodingPlan,
+    /// An extension's program is not where its manifest said, or will not
+    /// start.
+    ExtensionMissing,
+    /// An extension ran past the timeout its manifest asked for.
+    ExtensionTimedOut,
+    /// An extension exited without printing a usable report.
+    ExtensionFailed,
+    /// An extension's own word for "the account this program reads is
+    /// signed out".
+    ExtensionSignedOut,
 }
 
 impl Unavailability {
@@ -632,6 +1064,8 @@ impl Unavailability {
             Unavailability::NotSignedIn => "notSignedIn",
             Unavailability::ApiKeyMissing => "Add an API key in Settings.",
             Unavailability::ApiKeyRefused => "That key was refused. Check it in Settings.",
+            Unavailability::ServerAddressMissing => "Add a gateway address in Settings.",
+            Unavailability::ServerAddressRefused => "That gateway address is not allowed.",
             Unavailability::Unreachable => "The service didn't respond.",
             Unavailability::UnreadableReply => "Couldn't read the reply.",
             Unavailability::RateLimited => "Checking too often — easing off.",
@@ -646,6 +1080,10 @@ impl Unavailability {
             }
             Unavailability::NotOnWindows => "notOnWindows",
             Unavailability::ZaiNoCodingPlan => "zaiNoCodingPlan",
+            Unavailability::ExtensionMissing => "extensionMissing",
+            Unavailability::ExtensionTimedOut => "extensionTimedOut",
+            Unavailability::ExtensionFailed => "extensionFailed",
+            Unavailability::ExtensionSignedOut => "extensionSignedOut",
         })
     }
 }
@@ -785,16 +1223,28 @@ pub mod usage_tint {
     pub const ALERT_GLOW: [f32; 3] = WARNING;
 
     pub fn color(used_fraction: f64, is_exhausted: bool) -> [f32; 3] {
+        color_with(used_fraction, is_exhausted, WARNING_THRESHOLD)
+    }
+
+    /// The same scale with the warning line where the reader put it — the
+    /// port of the macOS app's "turn red at" choice.
+    pub fn color_with(used_fraction: f64, is_exhausted: bool, warning_at: f64) -> [f32; 3] {
         if is_exhausted || used_fraction >= 1.0 {
             return EXHAUSTED;
         }
         if used_fraction < CAUTION_THRESHOLD {
             GOOD
-        } else if used_fraction < WARNING_THRESHOLD {
+        } else if used_fraction < warning_at {
             CAUTION
         } else {
             WARNING
         }
+    }
+
+    /// A settings percentage (60..90) as the fraction the tints compare
+    /// against, clamped to the values the picker offers.
+    pub fn warning_fraction(threshold_percent: i64) -> f64 {
+        (threshold_percent.clamp(50, 95) as f64) / 100.0
     }
 
     pub fn is_spent(window: Option<&UsageWindow>) -> bool {

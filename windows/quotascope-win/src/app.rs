@@ -20,7 +20,12 @@ pub enum AppMsg {
     Panel(PanelEvent),
     Settings(SettingsAction),
     StorePoll,
+    /// A second launch asked for the settings window.
+    OpenSettings,
     DeviceFlowDone(Result<String, String>),
+    /// The value estimates for the transcript-backed accounts, worked out off
+    /// the UI path: account id -> window id -> the card's estimate line.
+    Estimates(std::collections::HashMap<String, std::collections::HashMap<String, String>>),
 }
 
 pub struct App {
@@ -32,7 +37,18 @@ pub struct App {
     rx: Receiver<AppMsg>,
     readings: HashMap<String, ProviderUsage>,
     refreshing: std::collections::HashSet<String>,
+    /// The transcript ledgers' value estimates, keyed like the readings. Kept
+    /// beside the rail entries so the card can draw them without the card
+    /// itself ever touching the file system.
+    estimates: HashMap<String, HashMap<String, String>>,
+    estimates_running: bool,
+    estimates_dirty: bool,
+    estimates_at: Option<std::time::Instant>,
 }
+
+/// Long enough that moving between rings does not rescan, short enough that
+/// "Today" is today's — upstream's card keeps the same lifetime.
+const ESTIMATES_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 impl App {
     /// Starts the app on the calling thread — a worker, since the main
@@ -94,10 +110,27 @@ impl App {
                 }
             }
         });
+        // A second launch asks through the named event; this end opens the
+        // settings window.
+        {
+            let (signal_tx, signal_rx) = channel::<()>();
+            crate::winutil::listen_for_open_settings(signal_tx);
+            std::thread::spawn({
+                let tx = tx.clone();
+                move || {
+                    for _ in signal_rx {
+                        if tx.send(AppMsg::OpenSettings).is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
 
         // First-run resolution happens exactly once, at launch, on the UI
         // path — `--json` never stamps anything.
         quotascope_core::settings::mutate(|s| s.resolve_first_run());
+        sync_extension_names();
 
         let panel = PanelWindow::new(panel_tx);
         let mut tray = TrayIcon::new(tray_tx);
@@ -116,6 +149,10 @@ impl App {
             rx,
             readings: HashMap::new(),
             refreshing: std::collections::HashSet::new(),
+            estimates: HashMap::new(),
+            estimates_running: false,
+            estimates_dirty: true,
+            estimates_at: None,
         };
 
         // Paint the rail from the cache before the first round trip, so it
@@ -126,6 +163,8 @@ impl App {
         }
         app.rebuild_entries();
         app.panel.show();
+        app.tray
+            .set_hidden(quotascope_core::settings::with(|s| s.hides_tray_icon));
 
         // Timers: the panel's frame clock, and the store's poll.
         unsafe {
@@ -159,6 +198,13 @@ impl App {
                 AppMsg::Panel(event) => self.handle_panel(event),
                 AppMsg::Settings(action) => self.handle_settings(action),
                 AppMsg::StorePoll => self.poll_store(),
+                AppMsg::OpenSettings => self.settings.show(),
+                AppMsg::Estimates(map) => {
+                    self.estimates_running = false;
+                    self.estimates_at = Some(std::time::Instant::now());
+                    self.estimates = map;
+                    self.rebuild_entries();
+                }
                 AppMsg::DeviceFlowDone(result) => match result {
                     Ok(token) => {
                         quotascope_core::secrets::set_key("copilot", &token);
@@ -226,6 +272,10 @@ impl App {
         match action {
             SettingsAction::Changed => {
                 self.panel.reload_settings();
+                self.tray
+                    .set_hidden(quotascope_core::settings::with(|s| s.hides_tray_icon));
+                sync_extension_names();
+                self.estimates_dirty = true;
                 self.store.send(Command::SettingsChanged);
                 self.settings.refresh();
             }
@@ -295,6 +345,13 @@ impl App {
                 Update::Readings(readings) => {
                     for reading in readings {
                         self.refreshing.remove(&reading.account.id());
+                        if matches!(
+                            reading.account.provider,
+                            Provider::ClaudeCode | Provider::Codex
+                        ) {
+                            // New windows may be priced differently now.
+                            self.estimates_dirty = true;
+                        }
                         self.readings.insert(reading.account.id(), reading);
                     }
                     self.rebuild_entries();
@@ -308,6 +365,60 @@ impl App {
             }
         }
         self.update_settings_status();
+        self.maybe_refresh_estimates();
+    }
+
+    /// Works out the value estimates off the UI path, the way upstream reads
+    /// its ledgers when a card opens: on a worker, with the results coming
+    /// back through the channel. A cold first scan can walk a few hundred
+    /// megabytes of transcripts; nothing here may block the message loop.
+    fn maybe_refresh_estimates(&mut self) {
+        if self.estimates_running {
+            return;
+        }
+        if !quotascope_core::settings::with(|s| s.reads_token_spend) {
+            if !self.estimates.is_empty() {
+                self.estimates.clear();
+                self.rebuild_entries();
+            }
+            self.estimates_dirty = false;
+            return;
+        }
+        let subjects: Vec<ProviderUsage> = self
+            .readings
+            .values()
+            .filter(|r| matches!(r.account.provider, Provider::ClaudeCode | Provider::Codex))
+            .cloned()
+            .collect();
+        if subjects.is_empty() {
+            return;
+        }
+        let fresh = self
+            .estimates_at
+            .map(|at| at.elapsed() >= ESTIMATES_LIFETIME)
+            .unwrap_or(true);
+        if !self.estimates_dirty && !fresh {
+            return;
+        }
+        self.estimates_running = true;
+        self.estimates_dirty = false;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let now = quotascope_core::timeutil::now_ms();
+            let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
+            for reading in subjects {
+                let ledger = quotascope_core::ledger::ledger(reading.account.provider);
+                let mut lines = HashMap::new();
+                for window in &reading.windows {
+                    if let Some(text) = quotascope_core::estimate::window_text(window, &ledger, now)
+                    {
+                        lines.insert(window.id.clone(), text);
+                    }
+                }
+                out.insert(reading.account.id(), lines);
+            }
+            let _ = tx.send(AppMsg::Estimates(out));
+        });
     }
 
     fn rebuild_entries(&mut self) {
@@ -320,11 +431,16 @@ impl App {
                     Some(reading) => {
                         RailEntry::from_reading(reading, &settings, settings.shows_remaining)
                     }
-                    None => RailEntry::placeholder(account.provider),
+                    None => RailEntry::placeholder(account.provider, &settings),
                 };
                 if self.refreshing.contains(&account.id()) {
                     entry.ring.is_refreshing = true;
                 }
+                entry.value_lines = self
+                    .estimates
+                    .get(&account.id())
+                    .cloned()
+                    .unwrap_or_default();
                 entry
             })
             .collect();
@@ -383,4 +499,28 @@ pub fn open_in_browser(url: &str) {
             SW_SHOWNORMAL,
         );
     }
+}
+
+/// Remembers what each discovered extension calls itself, so the rail's
+/// card and `--json` can use the program's own word.
+fn sync_extension_names() {
+    let scan = quotascope_core::extension::scan();
+    quotascope_core::settings::mutate(|s| {
+        for extension in &scan.extensions {
+            let id = extension.account().id();
+            s.extension_names.insert(id, extension.name.clone());
+        }
+        // A folder that has gone takes its name with it.
+        let live: std::collections::HashSet<String> =
+            scan.extensions.iter().map(|e| e.account().id()).collect();
+        let stale: Vec<String> = s
+            .extension_names
+            .keys()
+            .filter(|id| !live.contains(*id))
+            .cloned()
+            .collect();
+        for id in stale {
+            s.extension_names.remove(&id);
+        }
+    });
 }

@@ -25,6 +25,9 @@ impl HttpClient {
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(15))
             .user_agent("QuotaScope/1.1 (Windows)")
+            // Provider credentials must never follow a redirect to another
+            // host. A 3xx is classified below as a refused credential.
+            .redirect(reqwest::redirect::Policy::none())
             // System proxy settings apply, as on macOS: a machine behind a
             // VPN or corporate proxy reaches these endpoints through it.
             .use_native_tls()
@@ -115,6 +118,7 @@ impl HttpClient {
         if !status.is_success() {
             let reason = match status.as_u16() {
                 401 | 403 => Unavailability::ApiKeyRefused,
+                300..=399 => Unavailability::ApiKeyRefused,
                 429 => Unavailability::RateLimited,
                 _ => Unavailability::ServerError,
             };
