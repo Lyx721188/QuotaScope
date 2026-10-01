@@ -18,6 +18,7 @@ pub enum TrayCommand {
     TogglePanel,
     OpenSettings,
     RefreshAll,
+    OpenUsagePage(&'static str),
     Exit,
 }
 
@@ -25,6 +26,13 @@ const ID_TOGGLE: u32 = 1001;
 const ID_SETTINGS: u32 = 1002;
 const ID_REFRESH: u32 = 1003;
 const ID_EXIT: u32 = 1004;
+const ID_USAGE_BASE: u32 = 2000;
+
+pub struct DashboardEntry {
+    pub title: String,
+    pub summary: String,
+    pub usage_page: Option<&'static str>,
+}
 
 pub struct TrayIcon {
     pub hwnd: HWND,
@@ -37,6 +45,7 @@ pub struct TrayIcon {
     /// The app's poll tick: the tray window carries the slow timer, and its
     /// firings become store polls.
     poll: Option<Sender<()>>,
+    dashboard: Vec<DashboardEntry>,
 }
 
 /// The tray's icon: the embedded application mark when it loads, the old
@@ -159,6 +168,7 @@ impl TrayIcon {
             added: false,
             commands,
             poll: None,
+            dashboard: Vec::new(),
         });
 
         unsafe {
@@ -230,6 +240,10 @@ impl TrayIcon {
         self.poll = Some(poll);
     }
 
+    pub fn set_dashboard(&mut self, entries: Vec<DashboardEntry>) {
+        self.dashboard = entries;
+    }
+
     pub fn show_balloon(&mut self, title: &str, text: &str, warning: bool) {
         if !self.added {
             return;
@@ -281,7 +295,9 @@ unsafe extern "system" fn tray_wndproc(
                     LRESULT(0)
                 }
                 WM_RBUTTONUP | WM_CONTEXTMENU => {
-                    show_menu(hwnd, &tray.commands);
+                    if tray.shows_icon() {
+                        show_menu(hwnd, &tray.dashboard);
+                    }
                     LRESULT(0)
                 }
                 _ => LRESULT(0),
@@ -294,13 +310,17 @@ unsafe extern "system" fn tray_wndproc(
             LRESULT(0)
         }
         WM_COMMAND => {
-            let id = wparam.0 as u32;
+            let id = (wparam.0 & 0xffff) as u32;
             let command = match id {
                 ID_TOGGLE => Some(TrayCommand::TogglePanel),
                 ID_SETTINGS => Some(TrayCommand::OpenSettings),
                 ID_REFRESH => Some(TrayCommand::RefreshAll),
                 ID_EXIT => Some(TrayCommand::Exit),
-                _ => None,
+                _ => id
+                    .checked_sub(ID_USAGE_BASE)
+                    .and_then(|index| tray.dashboard.get(index as usize))
+                    .and_then(|entry| entry.usage_page)
+                    .map(TrayCommand::OpenUsagePage),
             };
             if let Some(command) = command {
                 let _ = tray.commands.send(command);
@@ -312,12 +332,52 @@ unsafe extern "system" fn tray_wndproc(
     }
 }
 
-unsafe fn show_menu(hwnd: HWND, commands: &Sender<TrayCommand>) {
-    let _ = commands;
+unsafe fn show_menu(hwnd: HWND, dashboard: &[DashboardEntry]) {
     let menu = match CreatePopupMenu() {
         Ok(menu) => menu,
         Err(_) => return,
     };
+    for entry in dashboard {
+        // Ampersands are mnemonics in native menus; account names are text.
+        let text =
+            winutil::wide(&format!("{} · {}", entry.title, entry.summary).replace('&', "&&"));
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | MF_GRAYED,
+            0,
+            windows::core::PCWSTR(text.as_ptr()),
+        );
+    }
+    if !dashboard.is_empty() {
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+    }
+    if dashboard.iter().any(|entry| entry.usage_page.is_some()) {
+        if let Ok(pages) = CreatePopupMenu() {
+            for (index, entry) in dashboard.iter().enumerate() {
+                if entry.usage_page.is_some() && index < (u16::MAX as u32 - ID_USAGE_BASE) as usize
+                {
+                    let text = winutil::wide(&entry.title.replace('&', "&&"));
+                    let _ = AppendMenuW(
+                        pages,
+                        MF_STRING,
+                        ID_USAGE_BASE as usize + index,
+                        windows::core::PCWSTR(text.as_ptr()),
+                    );
+                }
+            }
+            let text = winutil::wide(quotascope_core::localization::t("Open usage page"));
+            if AppendMenuW(
+                menu,
+                MF_STRING | MF_POPUP,
+                pages.0 as usize,
+                windows::core::PCWSTR(text.as_ptr()),
+            )
+            .is_err()
+            {
+                let _ = DestroyMenu(pages);
+            }
+        }
+    }
     // Each UTF-16 buffer must outlive its AppendMenuW, so they are all
     // materialised before any menu item is appended.
     let entries: [(u32, Option<&str>); 6] = [

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["quotascope-core", "quotascope-win"]
 
 [workspace.package]
-version = "1.1.1"
+version = "1.2.0"
 edition = "2021"
 license = "Apache-2.0"
 

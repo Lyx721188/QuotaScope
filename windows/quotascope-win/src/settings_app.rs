@@ -240,6 +240,13 @@ enum Message {
     Choice(ChoiceKey, Option<usize>),
     KeyEdit(usize, String),
     AddressEdit(usize, String),
+    Search(String),
+    RevealKey(usize, bool),
+    Detailed(usize, bool),
+    BalanceBasis(usize, Option<usize>),
+    BudgetEdit(usize, String),
+    FloorEdit(usize, String),
+    SaveBalance(usize),
     Save(usize),
     Refresh(usize),
     ImportSession(usize),
@@ -255,6 +262,10 @@ struct SettingsApp {
     keys: HashMap<String, String>,
     /// Draft gateway address per provider raw, until Saved.
     addresses: HashMap<String, String>,
+    search: String,
+    revealed_keys: std::collections::HashSet<usize>,
+    budgets: HashMap<String, String>,
+    floors: HashMap<String, String>,
     /// Status lines pushed by the app, per provider raw.
     status: HashMap<String, String>,
     /// The extensions a scan of the extensions folder found, and why the
@@ -279,6 +290,10 @@ impl Component for SettingsApp {
             dark: crate::theme::panel::is_dark(),
             keys: HashMap::new(),
             addresses: quotascope_core::settings::with(|s| s.server_addresses.clone()),
+            search: String::new(),
+            revealed_keys: Default::default(),
+            budgets: HashMap::new(),
+            floors: HashMap::new(),
             status: HashMap::new(),
             extensions: scan.extensions,
             extension_problems: scan.problems,
@@ -293,12 +308,135 @@ impl Component for SettingsApp {
             }
             Message::Nav(tag) => {
                 self.page = tag.as_deref().map(Page::from_tag).unwrap_or(self.page);
+                self.revealed_keys.clear();
+            }
+            Message::Search(text) => {
+                self.search = text;
+                self.revealed_keys.clear();
+            }
+            Message::RevealKey(index, on) => {
+                if on {
+                    self.revealed_keys.insert(index);
+                } else {
+                    self.revealed_keys.remove(&index);
+                }
+            }
+            Message::Detailed(index, on) => {
+                if let Some(provider) = all_providers().get(index) {
+                    quotascope_core::settings::mutate(|s| {
+                        if on {
+                            s.detailed_cards.insert(provider.raw().to_string());
+                        } else {
+                            s.detailed_cards.remove(provider.raw());
+                        }
+                    });
+                    self.revealed_keys.remove(&index);
+                    self.shared.send(SettingsAction::Changed);
+                }
+            }
+            Message::BalanceBasis(index, selected) => {
+                if let Some(provider) = all_providers().get(index) {
+                    let token = match selected.unwrap_or(0) {
+                        1 => "balanceOnly",
+                        2 => "budget",
+                        _ => "sinceTopUp",
+                    };
+                    quotascope_core::settings::mutate(|s| {
+                        s.balance_bases
+                            .insert(provider.raw().to_string(), token.into());
+                    });
+                    self.shared.send(SettingsAction::Changed);
+                    self.shared
+                        .send(SettingsAction::RefreshProvider(provider.raw().to_string()));
+                }
+            }
+            Message::BudgetEdit(index, text) => {
+                if let Some(provider) = all_providers().get(index) {
+                    self.budgets.insert(provider.raw().to_string(), text);
+                }
+            }
+            Message::FloorEdit(index, text) => {
+                if let Some(provider) = all_providers().get(index) {
+                    self.floors.insert(provider.raw().to_string(), text);
+                }
+            }
+            Message::SaveBalance(index) => {
+                if let Some(provider) = all_providers().get(index) {
+                    let raw = provider.raw();
+                    let budget = self.budgets.get(raw).cloned().unwrap_or_else(|| {
+                        quotascope_core::balance_ring::basis_for(
+                            &quotascope_core::model::AccountKey::primary(*provider),
+                        )
+                        .1
+                        .map(|n| n.to_string())
+                        .unwrap_or_default()
+                    });
+                    let floor = self.floors.get(raw).cloned().unwrap_or_else(|| {
+                        quotascope_core::settings::with(|s| {
+                            s.low_balance_alerts
+                                .get(raw)
+                                .map(|n| n.to_string())
+                                .unwrap_or_default()
+                        })
+                    });
+                    match (positive_or_empty(&budget), positive_or_empty(&floor)) {
+                        (Ok(budget), Ok(floor)) => {
+                            let basis = quotascope_core::balance_ring::basis_for(
+                                &quotascope_core::model::AccountKey::primary(*provider),
+                            )
+                            .0;
+                            if basis == quotascope_core::balance_ring::Basis::Budget
+                                && budget.is_none()
+                            {
+                                self.status.insert(
+                                    raw.into(),
+                                    quotascope_core::localization::t(
+                                        "Enter a positive budget for My budget.",
+                                    )
+                                    .into(),
+                                );
+                                self.poll = Some(Self::spawn_watcher(&self.shared, context));
+                                return;
+                            }
+                            quotascope_core::settings::mutate(|s| {
+                                // Store an explicit per-account basis even for
+                                // DeepSeek, so clearing a budget cannot revive
+                                // a legacy global denominator.
+                                s.balance_bases
+                                    .insert(raw.to_string(), basis.token().into());
+                                if let Some(n) = budget {
+                                    s.balance_budgets.insert(raw.to_string(), n);
+                                } else {
+                                    s.balance_budgets.remove(raw);
+                                }
+                                if let Some(n) = floor {
+                                    s.low_balance_alerts.insert(raw.to_string(), n);
+                                } else {
+                                    s.low_balance_alerts.remove(raw);
+                                }
+                            });
+                            self.shared.send(SettingsAction::Changed);
+                            self.shared
+                                .send(SettingsAction::RefreshProvider(raw.to_string()));
+                        }
+                        _ => {
+                            self.status.insert(
+                                raw.into(),
+                                quotascope_core::localization::t(
+                                    "Enter a positive amount, or leave blank to turn it off.",
+                                )
+                                .into(),
+                            );
+                        }
+                    }
+                }
             }
             Message::Toggle(key, value) => {
                 Self::apply_toggle(key, value);
                 self.shared.send(SettingsAction::Changed);
             }
             Message::ToggleEnabled(index, value) => {
+                self.revealed_keys.remove(&index);
                 if let Some(provider) = all_providers().get(index) {
                     let raw = provider.raw();
                     quotascope_core::settings::mutate(move |s| {
@@ -355,6 +493,9 @@ impl Component for SettingsApp {
                         if value.trim().is_empty()
                             || quotascope_core::gateway::is_usable(value.trim())
                         {
+                            if let Some(key) = self.keys.get(provider.raw()) {
+                                quotascope_core::secrets::set_key(provider.raw(), key.trim());
+                            }
                             quotascope_core::settings::mutate(|s| {
                                 if value.trim().is_empty() {
                                     s.server_addresses.remove(provider.raw());
@@ -374,12 +515,19 @@ impl Component for SettingsApp {
                                 )
                                 .to_string(),
                             );
+                            self.revealed_keys.remove(&index);
+                            self.poll = Some(Self::spawn_watcher(&self.shared, context));
+                            return;
                         }
                     } else {
-                        let value = self.keys.get(provider.raw()).cloned().unwrap_or_default();
-                        quotascope_core::secrets::set_key(provider.raw(), value.trim());
+                        if let Some(value) = self.keys.get(provider.raw()) {
+                            quotascope_core::secrets::set_key(provider.raw(), value.trim());
+                        }
                         self.shared.send(SettingsAction::SaveKey);
                     }
+                    self.revealed_keys.remove(&index);
+                    self.shared
+                        .send(SettingsAction::RefreshProvider(provider.raw().to_string()));
                 }
             }
             Message::Refresh(index) => {
@@ -389,6 +537,7 @@ impl Component for SettingsApp {
                 }
             }
             Message::ImportSession(index) => {
+                self.revealed_keys.remove(&index);
                 if let Some(provider) = all_providers().get(index) {
                     let raw = provider.raw();
                     match quotascope_core::providers::session_spec(*provider).and_then(|spec| {
@@ -508,6 +657,18 @@ fn all_providers() -> &'static [Provider] {
     &quotascope_core::model::ALL_PROVIDERS
 }
 
+fn positive_or_empty(text: &str) -> Result<Option<f64>, ()> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map(Some)
+        .ok_or(())
+}
+
 /// A row of siblings: the closest thing to the missing `hstack`.
 fn row(children: impl IntoViews) -> View {
     StackPanel::new()
@@ -531,6 +692,76 @@ fn section(text: &str) -> TextBlock {
 }
 
 impl SettingsApp {
+    fn credential_field(
+        &self,
+        index: usize,
+        value: String,
+        cookie: bool,
+        context: &ViewContext<Self>,
+    ) -> View {
+        StackPanel::new().spacing(6.0).children((
+            PasswordBox::new()
+                .password(value)
+                .password_reveal_mode(if self.revealed_keys.contains(&index) {
+                    PasswordRevealMode::Visible
+                } else {
+                    PasswordRevealMode::Hidden
+                })
+                .placeholder_text(quotascope_core::localization::t(if cookie {
+                    "Paste the Cookie header"
+                } else {
+                    "Paste the API key"
+                }))
+                .on_password_changed(context.callback(move |text| Message::KeyEdit(index, text))),
+            row((
+                TextBlock::new().text(quotascope_core::localization::t("Show credential")),
+                ToggleSwitch::new()
+                    .is_on(self.revealed_keys.contains(&index))
+                    .on_toggled(context.callback(move |on| Message::RevealKey(index, on))),
+            )),
+        ))
+    }
+
+    fn balance_controls(
+        &self,
+        index: usize,
+        provider: Provider,
+        context: &ViewContext<Self>,
+    ) -> View {
+        let (basis, saved_budget) = quotascope_core::balance_ring::basis_for(
+            &quotascope_core::model::AccountKey::primary(provider),
+        );
+        let raw = provider.raw();
+        let budget = self
+            .budgets
+            .get(raw)
+            .cloned()
+            .unwrap_or_else(|| saved_budget.map(|n| n.to_string()).unwrap_or_default());
+        let floor = self.floors.get(raw).cloned().unwrap_or_else(|| {
+            quotascope_core::settings::with(|s| {
+                s.low_balance_alerts
+                    .get(raw)
+                    .map(|n| n.to_string())
+                    .unwrap_or_default()
+            })
+        });
+        StackPanel::new().spacing(6.0).children((
+            TextBlock::new().text(quotascope_core::localization::t("Ring measures")),
+            ComboBox::new().selected_index(match basis { quotascope_core::balance_ring::Basis::SinceTopUp => 0, quotascope_core::balance_ring::Basis::BalanceOnly => 1, quotascope_core::balance_ring::Basis::Budget => 2 })
+                .on_selection_changed(context.callback(move |value| Message::BalanceBasis(index, value)))
+                .items_source(["Since top-up", "Balance only", "My budget"].map(quotascope_core::localization::t)),
+            if basis == quotascope_core::balance_ring::Basis::Budget {
+                TextBox::new().text(budget).placeholder_text(quotascope_core::localization::t("Budget in the balance's currency"))
+                    .on_text_changed(context.callback(move |text| Message::BudgetEdit(index, text))).into()
+            } else { View::empty() },
+            TextBlock::new().text(quotascope_core::localization::t("Warn below")),
+            TextBox::new().text(floor).placeholder_text(quotascope_core::localization::t("Amount in the balance's currency; blank disables"))
+                .on_text_changed(context.callback(move |text| Message::FloorEdit(index, text))),
+            Button::new().on_click(context.message(Message::SaveBalance(index)))
+                .content(quotascope_core::localization::t("Save balance settings")),
+            self.muted(quotascope_core::localization::t("Applies when the provider reports a balance without its own limits. Low-balance warnings also require notifications to be enabled.")),
+        ))
+    }
     fn spawn_watcher(shared: &Arc<Shared>, context: &ComponentContext<Self>) -> ComponentTask {
         let watcher = shared.clone();
         context.spawn_background(move |_| {
@@ -952,10 +1183,7 @@ impl SettingsApp {
                     .spacing(6.0)
                     .children((
                         TextBlock::new().text(quotascope_core::localization::t("API key")),
-                        PasswordBox::new()
-                            .password(key_draft.clone().or_else(|| quotascope_core::secrets::key_for(raw)).unwrap_or_default())
-                            .placeholder_text(quotascope_core::localization::t("Paste the API key"))
-                            .on_password_changed(context.callback(move |text| Message::KeyEdit(index, text))),
+                        self.credential_field(index, key_draft.clone().or_else(|| quotascope_core::secrets::key_for(raw)).unwrap_or_default(), false, context),
                         TextBlock::new().text(quotascope_core::localization::t("Gateway address")),
                         TextBox::new()
                             .text(value)
@@ -992,14 +1220,7 @@ impl SettingsApp {
                         )),
                         TextBlock::new()
                             .text(quotascope_core::localization::t("Or paste a Cookie header")),
-                        PasswordBox::new()
-                            .password(stored)
-                            .placeholder_text(quotascope_core::localization::t(
-                                "Paste the Cookie header",
-                            ))
-                            .on_password_changed(
-                                context.callback(move |text| Message::KeyEdit(index, text)),
-                            ),
+                        self.credential_field(index, stored, true, context),
                         Button::new()
                             .on_click(context.message(Message::Save(index)))
                             .content(quotascope_core::localization::t("Save")),
@@ -1014,12 +1235,7 @@ impl SettingsApp {
                     .spacing(6.0)
                     .children((
                         TextBlock::new().text(quotascope_core::localization::t("API key")),
-                        PasswordBox::new()
-                            .password(stored)
-                            .placeholder_text(quotascope_core::localization::t("Paste the API key"))
-                            .on_password_changed(
-                                context.callback(move |text| Message::KeyEdit(index, text)),
-                            ),
+                        self.credential_field(index, stored, false, context),
                         row((
                             Button::new()
                                 .on_click(context.message(Message::Save(index)))
@@ -1040,7 +1256,24 @@ impl SettingsApp {
 
         StackPanel::new()
             .spacing(6.0)
-            .children((header, body, status))
+            .children((
+                header,
+                body,
+                status,
+                row((
+                    TextBlock::new().text(quotascope_core::localization::t("Detailed card")),
+                    ToggleSwitch::new()
+                        .is_on(quotascope_core::settings::with(|s| {
+                            s.detailed_cards.contains(raw)
+                        }))
+                        .on_toggled(context.callback(move |on| Message::Detailed(index, on))),
+                )),
+                if provider.reports_spendable_balance() {
+                    self.balance_controls(index, provider, context)
+                } else {
+                    View::empty()
+                },
+            ))
             .into()
     }
 
@@ -1051,15 +1284,49 @@ impl SettingsApp {
         let note = self.muted(&quotascope_core::localization::t(
             "Each provider reports its own figures by the route that product offers — QuotaScope holds no account of its own and sends nothing anywhere but to the provider you already use.",
         ));
-        let rows = std::iter::once(("__heading", heading("Accounts").into()))
-            .chain(std::iter::once(("__note", note.into())))
-            .chain(all_providers().iter().enumerate().map(|(index, provider)| {
-                (provider.raw(), self.provider_row(index, *provider, context))
-            }))
-            .chain(std::iter::once((
-                "__extensions",
-                self.extensions_view(context),
-            )));
+        let mut rows: Vec<(&str, View)> = vec![
+            ("__heading", heading("Accounts").into()),
+            ("__note", note.into()),
+            (
+                "__search",
+                TextBox::new()
+                    .text(self.search.clone())
+                    .placeholder_text(quotascope_core::localization::t("Search accounts"))
+                    .on_text_changed(context.callback(Message::Search))
+                    .into(),
+            ),
+        ];
+        let query = self.search.trim().to_lowercase();
+        let mut matches = 0;
+        for (api, key, label) in [
+            (false, "__subscriptions", "Subscriptions"),
+            (true, "__api", "API accounts"),
+        ] {
+            let providers: Vec<_> = all_providers()
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.is_api_billing() == api)
+                .filter(|(_, p)| {
+                    p.display_name().to_lowercase().contains(&query)
+                        || p.raw().to_lowercase().contains(&query)
+                })
+                .collect();
+            if !providers.is_empty() {
+                rows.push((key, section(label).into()));
+            }
+            matches += providers.len();
+            for (index, provider) in providers {
+                rows.push((provider.raw(), self.provider_row(index, *provider, context)));
+            }
+        }
+        if matches == 0 {
+            rows.push((
+                "__empty",
+                self.muted(quotascope_core::localization::t("No matching accounts."))
+                    .into(),
+            ));
+        }
+        rows.push(("__extensions", self.extensions_view(context)));
         StackPanel::new().spacing(14.0).keyed_children(rows)
     }
 
@@ -1078,7 +1345,10 @@ impl SettingsApp {
             .into(),
         ));
 
-        for (index, extension) in self.extensions.iter().enumerate() {
+        let query = self.search.trim().to_lowercase();
+        for (index, extension) in self.extensions.iter().enumerate().filter(|(_, e)| {
+            e.name.to_lowercase().contains(&query) || e.id.to_lowercase().contains(&query)
+        }) {
             let is_on = enabled.contains(&extension.account().id());
             let key: &'static str = Box::leak(format!("__ext-{index}").into_boxed_str());
             rows.push((
@@ -1211,5 +1481,19 @@ impl SettingsApp {
                     .content("github.com/Lyx721188/QuotaScope"),
             ))
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::positive_or_empty;
+
+    #[test]
+    fn balance_edits_reject_nonfinite_zero_negative_and_half_typed_amounts() {
+        for text in ["NaN", "inf", "-inf", "0", "-1", "12x", "-"] {
+            assert!(positive_or_empty(text).is_err(), "{text}");
+        }
+        assert_eq!(positive_or_empty(" 1.25 "), Ok(Some(1.25)));
+        assert_eq!(positive_or_empty("  "), Ok(None));
     }
 }

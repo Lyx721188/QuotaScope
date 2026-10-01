@@ -71,6 +71,7 @@ pub struct RailEntry {
     /// Per window id, the value estimate the transcript ledger supports.
     /// Empty unless token spend is on and the ledger can price the window.
     pub value_lines: HashMap<String, String>,
+    pub history: Option<quotascope_core::history::HistoryRead>,
 }
 
 impl RailEntry {
@@ -146,6 +147,7 @@ impl RailEntry {
             headline,
             usage: Some(usage.clone()),
             value_lines: HashMap::new(),
+            history: None,
         }
     }
 
@@ -166,6 +168,7 @@ impl RailEntry {
             headline: None,
             usage: None,
             value_lines: HashMap::new(),
+            history: None,
         }
     }
 }
@@ -583,6 +586,10 @@ impl PanelWindow {
             .unwrap_or(false)
         {
             self.hide_card();
+        } else if self.card_slot.is_some() {
+            // A background history read or a detailed-card toggle changes
+            // the height even when the pointer has not moved.
+            self.place_card();
         }
         self.redraw();
     }
@@ -729,6 +736,16 @@ impl PanelWindow {
         let usage = entry.usage.as_ref()?;
         let forecast = self.forecast_enabled();
         let footnote = matches!(usage.state, State::Stale);
+        let settings = quotascope_core::settings::with(|s| s.clone());
+        let detailed = settings.detailed_cards.contains(&entry.account.id());
+        let history_enabled = detailed
+            && usage.provider().provides_history()
+            && (settings.reads_token_spend
+                || matches!(
+                    usage.provider(),
+                    quotascope_core::model::Provider::Zai
+                        | quotascope_core::model::Provider::GlmCoding
+                ));
         let data = CardData {
             usage: usage.clone(),
             title: entry.title.clone(),
@@ -739,18 +756,27 @@ impl PanelWindow {
             warning_fraction: quotascope_core::settings::with(|s| {
                 usage_tint::warning_fraction(s.warning_threshold)
             }),
-            value_lines: entry.value_lines.clone(),
+            value_lines: if detailed && settings.reads_token_spend {
+                entry.value_lines.clone()
+            } else {
+                HashMap::new()
+            },
+            detailed,
+            history_enabled,
+            history: entry.history.clone(),
         };
-        Some((
-            data,
-            card_body_size(
+        let extra_height = crate::card::detail_height(&self.m, &data);
+        let estimate_count = data.value_lines.len();
+        Some((data, {
+            let (w, h) = card_body_size(
                 &self.m,
                 usage.windows.len().max(1),
                 footnote,
                 forecast,
-                entry.value_lines.len(),
-            ),
-        ))
+                estimate_count,
+            );
+            (w, h + extra_height)
+        }))
     }
 
     /// Puts the card beside the ring it points at — on the desktop side of

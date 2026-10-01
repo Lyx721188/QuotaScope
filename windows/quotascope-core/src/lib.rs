@@ -11,6 +11,7 @@ pub mod cache;
 pub mod estimate;
 pub mod extension;
 pub mod gateway;
+pub mod history;
 pub mod http;
 pub mod ledger;
 pub mod localization;

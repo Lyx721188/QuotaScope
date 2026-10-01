@@ -1,3 +1,13 @@
+# Windows implementation status
+
+Use the [Windows support table](windows-ports.md) for the current Rust routes,
+configuration and implementation boundaries. The inherited provider notes
+below describe upstream macOS behavior; Keychain, Swift paths and additional
+account capabilities there do not establish Windows support. New Windows UI
+and history behavior is documented in [the Windows guide](../windows-1.2.md).
+
+---
+
 # Providers
 
 QuotaScope tracks **seventeen** `Provider` cases. There is no QuotaScope backend and no QuotaScope account. Each provider reports its own usage by whatever route that product actually offers — often an undocumented account endpoint the product itself calls, sometimes a documented usage path, sometimes a local helper that only exists while an editor is open.

@@ -498,9 +498,73 @@ impl Provider {
         )
     }
 
+    /// The provider's own page for an account's usage or billing, where one
+    /// is known — what the tray's "Open usage page" goes to.
+    ///
+    /// **Only pages somebody opens.** Several providers' services send a
+    /// `Referer` or call an endpoint whose address looks like a page; those
+    /// are not listed unless they are also where a person looks at their
+    /// usage. A provider missing here gets no menu item rather than a
+    /// guessed link.
+    pub fn usage_page(&self) -> Option<&'static str> {
+        match self {
+            Provider::ClaudeCode => Some("https://claude.ai/settings/usage"),
+            Provider::Codex => Some("https://chatgpt.com/codex/settings/usage"),
+            Provider::Cursor => Some("https://cursor.com/dashboard?tab=usage"),
+            Provider::Copilot => Some("https://github.com/settings/copilot"),
+            Provider::DeepSeek => Some("https://platform.deepseek.com/usage"),
+            Provider::OpenAiPlatform => Some("https://platform.openai.com/usage"),
+            Provider::KimiCode => Some("https://www.kimi.com/code/console"),
+            Provider::OllamaCloud => Some("https://ollama.com/settings"),
+            Provider::XiaomiMiMo => Some("https://platform.xiaomimimo.com"),
+            Provider::Replicate => Some("https://replicate.com/account/billing"),
+            Provider::QwenCloud => {
+                Some("https://home.qwencloud.com/billing/subscription/token-plan-individual")
+            }
+            Provider::Perplexity => Some("https://www.perplexity.ai/account/usage"),
+            Provider::GitKraken => Some("https://gitkraken.dev/account#ai-usage"),
+            Provider::Neuralwatt => Some("https://portal.neuralwatt.com/dashboard"),
+            Provider::Amp => Some("https://ampcode.com/settings"),
+            Provider::TypeSafe => Some("https://console.typesafe.ai/settings/billing"),
+            Provider::Mistral => Some("https://admin.mistral.ai/organization/usage"),
+            Provider::XaiApi => Some("https://console.x.ai"),
+            _ => None,
+        }
+    }
+
     /// Whether a spending history can be shown for this provider at all.
     pub fn provides_history(&self) -> bool {
-        false // Transcript ledger is not ported yet; Z.ai/Zhipu statistics pending.
+        matches!(
+            self,
+            Provider::ClaudeCode | Provider::Codex | Provider::Zai | Provider::GlmCoding
+        )
+    }
+
+    /// Billing classification from upstream, independent of credential type.
+    pub fn is_api_billing(&self) -> bool {
+        matches!(
+            self,
+            Provider::DeepSeek
+                | Provider::Sub2api
+                | Provider::NewApi
+                | Provider::Aixy
+                | Provider::AtlasCloud
+                | Provider::Bifrost
+                | Provider::ClawRouter
+                | Provider::DeepInfra
+                | Provider::Hyper
+                | Provider::LlmProxy
+                | Provider::LiteLlm
+                | Provider::Moonshot
+                | Provider::OpenAiPlatform
+                | Provider::Perplexity
+                | Provider::Poe
+                | Provider::Replicate
+                | Provider::TypeSafe
+                | Provider::Venice
+                | Provider::VercelAiGateway
+                | Provider::XaiApi
+        )
     }
 
     /// Providers whose spending is invisible to this machine sit on the
@@ -524,6 +588,8 @@ impl Provider {
                 | Provider::XaiApi
                 | Provider::XKiro
                 | Provider::OpenAiPlatform
+                | Provider::Replicate
+                | Provider::TypeSafe
         )
     }
 

@@ -16,15 +16,19 @@ Win32、Direct2D 和 WinUI 3 之上。它直接读取各服务商自己的客户
 - 自适应刷新、缓存、通知和 `quotascope.exe --json` 状态输出
 - API Key 和会话凭据使用 Windows DPAPI 加密，仅当前系统用户可解密
 - Provider 图标和本地化资源随 Windows 应用一起发布
+- 托盘逐账户用量摘要和用量页入口；设置页支持账户搜索、订阅/API 分组和凭据明文切换
+- 每账户余额口径、预算与低余额提醒；扩展程序可报告自己的用量
+- 可选的 Claude Code/Codex 本机 token 价值估算，以及 z.ai/智谱近 30 天用量历史
 
 ## 支持的服务商
 
-当前已移植读取逻辑的服务商包括 Claude Code、Codex、Antigravity、Cursor、Grok、
-GitHub Copilot、OpenCode Go、Kimi Code、z.ai、Zhipu、MiniMax、Command Code 和
-DeepSeek。Ollama Cloud、Grok Bot、Volcengine 的部分读取通道仍在设置页中明确标注
-为未支持，不会伪装成故障或编造用量。
+内置目录包含 77 个 provider，其中 67 个已实现 Windows 读取路由。API key、
+自建网关和 18 个浏览器会话路由均可在账户设置中配置。路由实现和解析测试
+不代表所有服务商都经过真实账号验证；未实现的 10 个路由仍在设置中明确标注。
 
-各服务商的读取通道和鉴权方式见 [`Docs/providers`](Docs/providers/README.md)。
+Windows 完整清单见 [`Docs/providers/windows-ports.md`](Docs/providers/windows-ports.md)，
+新功能操作说明见 [`Docs/windows-1.2.md`](Docs/windows-1.2.md)，
+扩展契约见 [`Docs/extensions.md`](Docs/extensions.md)。
 
 ## 下载与构建
 
@@ -49,8 +53,11 @@ cargo build --release
 ## 隐私与安全性
 
 - QuotaScope 不提供自有服务器、账号或遥测服务。
-- 应用只请求你正在使用的服务商接口，或读取本机已登录工具的状态。
-- QuotaScope 不读取或上传源码、终端上下文、Prompt 或模型生成内容。
+- 应用请求已配置服务商的用量接口，或读取本机已登录工具的状态。
+- 启用“Token spend”后会在本机扫描 Claude Code/Codex 会话文件，只解析 token 计数、
+  模型和时间；不会上传会话正文。定价功能会下载 models.dev 的公开价目表。
+- 浏览器 cookie 仅在点击“从浏览器导入”时读取，并用 DPAPI 保存；扩展程序只在启用后运行。
+- QuotaScope 不上传源码、Prompt 或模型生成内容。启用的扩展程序使用自己的网络和登录通道。
 
 ## 许可
 

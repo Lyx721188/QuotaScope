@@ -1,5 +1,10 @@
 # QuotaScope for Windows
 
+Current Windows 1.2 implementation and limitations:
+[usage guide](../Docs/windows-1.2.md), [all 77 provider routes](../Docs/providers/windows-ports.md),
+and [extension contract](../Docs/extensions.md). The inherited provider table
+below predates the expanded catalog; use the linked Windows table for support.
+
 A native Windows application for [QuotaScope](../README.md) — the screen-edge monitor
 for your AI coding allowances — written in Rust against the Win32 / Direct2D
 APIs, styled after WinUI. A Mica dock floats beside a screen edge; each

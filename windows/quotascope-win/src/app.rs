@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::panel::{PanelEvent, PanelWindow, RailEntry};
 use crate::settings_app::{SettingsAction, SettingsHost};
-use crate::tray::{TrayCommand, TrayIcon};
+use crate::tray::{DashboardEntry, TrayCommand, TrayIcon};
 
 pub enum AppMsg {
     Tray(TrayCommand),
@@ -26,6 +26,7 @@ pub enum AppMsg {
     /// The value estimates for the transcript-backed accounts, worked out off
     /// the UI path: account id -> window id -> the card's estimate line.
     Estimates(std::collections::HashMap<String, std::collections::HashMap<String, String>>),
+    Histories(u64, HashMap<String, quotascope_core::history::HistoryRead>),
 }
 
 pub struct App {
@@ -44,6 +45,11 @@ pub struct App {
     estimates_running: bool,
     estimates_dirty: bool,
     estimates_at: Option<std::time::Instant>,
+    histories: HashMap<String, quotascope_core::history::HistoryRead>,
+    histories_running: bool,
+    histories_dirty: bool,
+    histories_generation: u64,
+    histories_at: Option<std::time::Instant>,
 }
 
 /// Long enough that moving between rings does not rescan, short enough that
@@ -153,6 +159,11 @@ impl App {
             estimates_running: false,
             estimates_dirty: true,
             estimates_at: None,
+            histories: HashMap::new(),
+            histories_running: false,
+            histories_dirty: true,
+            histories_generation: 0,
+            histories_at: None,
         };
 
         // Paint the rail from the cache before the first round trip, so it
@@ -205,6 +216,14 @@ impl App {
                     self.estimates = map;
                     self.rebuild_entries();
                 }
+                AppMsg::Histories(generation, map) => {
+                    self.histories_running = false;
+                    if generation == self.histories_generation {
+                        self.histories_at = Some(std::time::Instant::now());
+                        self.histories = map;
+                        self.rebuild_entries();
+                    }
+                }
                 AppMsg::DeviceFlowDone(result) => match result {
                     Ok(token) => {
                         quotascope_core::secrets::set_key("copilot", &token);
@@ -238,7 +257,9 @@ impl App {
             TrayCommand::OpenSettings => {
                 self.settings.show();
             }
+            TrayCommand::OpenUsagePage(url) => open_in_browser(url),
             TrayCommand::RefreshAll => {
+                self.invalidate_histories();
                 let accounts = quotascope_core::settings::with(|s| {
                     s.ordered_enabled()
                         .into_iter()
@@ -258,6 +279,7 @@ impl App {
     fn handle_panel(&mut self, event: PanelEvent) {
         match event {
             PanelEvent::RefreshAccount(account) => {
+                self.invalidate_histories();
                 self.refreshing.insert(account.id());
                 self.store.send(Command::RefreshAccount(account));
                 self.mark_refreshing();
@@ -271,6 +293,7 @@ impl App {
     fn handle_settings(&mut self, action: SettingsAction) {
         match action {
             SettingsAction::Changed => {
+                self.invalidate_histories();
                 self.panel.reload_settings();
                 self.tray
                     .set_hidden(quotascope_core::settings::with(|s| s.hides_tray_icon));
@@ -278,8 +301,10 @@ impl App {
                 self.estimates_dirty = true;
                 self.store.send(Command::SettingsChanged);
                 self.settings.refresh();
+                self.rebuild_entries();
             }
             SettingsAction::RefreshProvider(raw) => {
+                self.invalidate_histories();
                 if let Some(provider) = Provider::from_raw(&raw) {
                     self.refreshing
                         .insert(quotascope_core::model::AccountKey::primary(provider).id());
@@ -290,6 +315,7 @@ impl App {
                 }
             }
             SettingsAction::SaveKey => {
+                self.invalidate_histories();
                 self.store.send(Command::SettingsChanged);
             }
             SettingsAction::SignInCopilot => self.start_device_flow(),
@@ -366,6 +392,59 @@ impl App {
         }
         self.update_settings_status();
         self.maybe_refresh_estimates();
+        self.maybe_refresh_histories();
+    }
+
+    fn invalidate_histories(&mut self) {
+        self.histories_dirty = true;
+        self.histories_generation = self.histories_generation.wrapping_add(1);
+        self.histories.clear();
+        self.rebuild_entries();
+    }
+
+    /// Reading records and querying statistics must never block a hover or
+    /// the settings thread. Generation checks discard replies for old keys.
+    fn maybe_refresh_histories(&mut self) {
+        if self.histories_running {
+            return;
+        }
+        let settings = quotascope_core::settings::with(|s| s.clone());
+        let subjects: Vec<_> = settings
+            .ordered_enabled()
+            .into_iter()
+            .filter(|a| settings.detailed_cards.contains(&a.id()))
+            .filter(|a| a.provider.provides_history())
+            .filter(|a| {
+                settings.reads_token_spend
+                    || matches!(a.provider, Provider::Zai | Provider::GlmCoding)
+            })
+            .collect();
+        if subjects.is_empty() {
+            if !self.histories.is_empty() {
+                self.histories.clear();
+                self.rebuild_entries();
+            }
+            self.histories_dirty = false;
+            return;
+        }
+        if !self.histories_dirty
+            && self
+                .histories_at
+                .is_some_and(|at| at.elapsed() < ESTIMATES_LIFETIME)
+        {
+            return;
+        }
+        self.histories_running = true;
+        self.histories_dirty = false;
+        let generation = self.histories_generation;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let map = subjects
+                .into_iter()
+                .map(|a| (a.id(), quotascope_core::history::read(a.provider)))
+                .collect();
+            let _ = tx.send(AppMsg::Histories(generation, map));
+        });
     }
 
     /// Works out the value estimates off the UI path, the way upstream reads
@@ -441,10 +520,58 @@ impl App {
                     .get(&account.id())
                     .cloned()
                     .unwrap_or_default();
+                entry.history = self.histories.get(&account.id()).cloned();
                 entry
             })
             .collect();
         self.panel.set_entries(entries);
+        self.tray.set_dashboard(
+            self.panel
+                .entries_mut()
+                .iter()
+                .map(|entry| {
+                    let summary = entry
+                        .usage
+                        .as_ref()
+                        .map(|reading| match &reading.state {
+                            State::Unavailable(reason) => reason.message().to_string(),
+                            State::Live | State::Stale => {
+                                let figure = reading
+                                    .headline_window(
+                                        settings
+                                            .pinned_windows
+                                            .get(&entry.account.id())
+                                            .map(String::as_str),
+                                    )
+                                    .map(|window| window.percent_text(settings.shows_remaining))
+                                    .or_else(|| reading.credit_balance.clone())
+                                    .unwrap_or_else(|| {
+                                        quotascope_core::localization::t("No reading").to_string()
+                                    });
+                                if matches!(reading.state, State::Stale) {
+                                    format!(
+                                        "{} · {}",
+                                        figure,
+                                        quotascope_core::localization::t(
+                                            "Reading may be out of date"
+                                        )
+                                    )
+                                } else {
+                                    figure
+                                }
+                            }
+                        })
+                        .unwrap_or_else(|| {
+                            quotascope_core::localization::t("No reading").to_string()
+                        });
+                    DashboardEntry {
+                        title: entry.title.clone(),
+                        summary,
+                        usage_page: entry.account.provider.usage_page(),
+                    }
+                })
+                .collect(),
+        );
     }
 
     fn update_settings_status(&mut self) {

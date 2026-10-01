@@ -2,10 +2,19 @@
 
 What each release changed, written for somebody deciding whether to install it.
 
-This file is the source for both the GitHub release page and the text Sparkle
-shows in the update window — see [Scripts/changelog.py](Scripts/changelog.py).
-Add the entry **before** tagging, in the small grammar the converter knows:
-bullets, `**bold**`, `` `code` `` and `[links](https://example.com)`.
+Windows releases use their own version sequence. Entries below 1.1.1 include
+inherited macOS history and do not establish Windows feature availability.
+
+## 1.2.0 (Windows, unreleased)
+
+- **More provider routes.** The built-in catalog has 77 providers, with 67 Windows routes implemented, including API keys, self-hosted gateways and eighteen browser-session providers. Parser fixtures cover these routes; real-account verification varies by provider. See [the Windows support table](Docs/providers/windows-ports.md).
+- **Usage at the tray.** The context menu shows enabled accounts' existing readings, marks stale data and opens the eighteen known usage pages through a submenu.
+- **Account settings.** Search and subscription/API groups, a credential visibility switch, per-account balance basis and budget, and a low-balance warning floor. Gateway Save now persists an edited key together with the address and preserves keys that were not edited.
+- **Optional detailed cards.** Per-account cards include the plan, last update and reported window clocks. Claude Code/Codex local transcripts can supply token histories and labelled API-value estimates when Token spend is enabled. z.ai and Zhipu statistics use their separate hosts, show thirty-day token history, distinguish empty/missing/failed reads, and never infer a money value.
+- **Extensions and display controls.** User-enabled extension programs report limits or balances; configurable warning threshold, clock direction, tray visibility and second-launch settings entry. Read [the Windows guide](Docs/windows-1.2.md) and [extension contract](Docs/extensions.md).
+
+This entry describes the local implementation. It is not a published Release
+or confirmation of interactive UI acceptance on every display.
 
 ## 1.1.1
 

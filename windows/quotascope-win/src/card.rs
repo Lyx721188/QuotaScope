@@ -36,6 +36,234 @@ pub struct CardData {
     /// "Estimated value ≈$220 · ≈$57 used". Absent wherever the inputs
     /// cannot support the figure.
     pub value_lines: HashMap<String, String>,
+    pub detailed: bool,
+    pub history_enabled: bool,
+    pub history: Option<quotascope_core::history::HistoryRead>,
+}
+
+/// The same extra rows are measured and drawn, so toggling a detailed card
+/// cannot leave its content clipped by the old flyout frame.
+pub fn detail_height(m: &Metrics, data: &CardData) -> f64 {
+    let lines = detail_header(data).len() + clock_lines(data).len() + history_lines(data).len();
+    lines as f64 * (m.s(card::ROW_TEXT_LINE_HEIGHT) + m.s(card::ROW_INTERNAL_SPACING))
+        + if has_history_chart(data) {
+            m.s(58.0)
+        } else {
+            0.0
+        }
+}
+
+fn detail_header(data: &CardData) -> Vec<String> {
+    if !data.detailed {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    if let Some(plan) = data.usage.plan.as_ref().filter(|p| !p.is_empty()) {
+        lines.push(plan.clone());
+    }
+    if matches!(data.usage.state, State::Live) {
+        if let Some(at) = data.usage.observed_at {
+            lines.push(quotascope_core::localization::t_fmt(
+                "Updated {time}",
+                &[&quotascope_core::timeutil::relative_text(at)],
+            ));
+        }
+    }
+    lines
+}
+
+fn clock_lines(data: &CardData) -> Vec<String> {
+    if !data.detailed || matches!(data.usage.state, State::Unavailable(_)) {
+        return Vec::new();
+    }
+    let now = quotascope_core::timeutil::now_ms();
+    data.usage
+        .windows
+        .iter()
+        .filter_map(|w| {
+            w.window_clock_fraction(false, now).map(|f| {
+                quotascope_core::localization::t_fmt(
+                    "{window}: {percent}% of window elapsed",
+                    &[&w.display_name(), &format!("{:.0}", f * 100.0)],
+                )
+            })
+        })
+        .collect()
+}
+
+fn recent_days(
+    ledger: &quotascope_core::ledger::UsageLedger,
+) -> Vec<&quotascope_core::ledger::LedgerDay> {
+    let today = chrono::Local::now().date_naive();
+    let start = today - chrono::Days::new(29);
+    ledger
+        .days
+        .iter()
+        .filter(|day| day.date >= start && day.date <= today)
+        .collect()
+}
+
+fn has_history_chart(data: &CardData) -> bool {
+    data.history_enabled
+        && matches!(&data.history, Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) if !recent_days(ledger).is_empty())
+}
+
+fn history_lines(data: &CardData) -> Vec<String> {
+    use quotascope_core::history::HistoryRead;
+    use quotascope_core::localization::{t, t_fmt};
+    if !data.history_enabled {
+        return Vec::new();
+    }
+    let mut lines = vec![t("Recent usage (30 days)").to_string()];
+    match &data.history {
+        None => lines.push(t("Reading history…").into()),
+        Some(HistoryRead::NotConfigured) => lines.push(t("Add an API key to read history.").into()),
+        Some(HistoryRead::Failed(reason)) => {
+            lines.push(t("Couldn't read the history.").into());
+            lines.push(reason.message().to_string());
+        }
+        Some(HistoryRead::Answered {
+            ledger,
+            account_wide,
+        }) => {
+            let days = recent_days(ledger);
+            if days.is_empty() {
+                lines.push(
+                    t(if *account_wide {
+                        "No history in the last 30 days."
+                    } else {
+                        "No readable local history in the last 30 days."
+                    })
+                    .into(),
+                );
+            } else {
+                let tokens = days
+                    .iter()
+                    .fold(0_i64, |sum, day| sum.saturating_add(day.tokens));
+                let cost: f64 = days.iter().map(|day| day.cost).sum();
+                lines.push(if *account_wide {
+                    t_fmt("{tokens} tokens", &[&tokens.to_string()])
+                } else {
+                    t_fmt(
+                        "{tokens} tokens · API value ≈${cost}",
+                        &[&tokens.to_string(), &format!("{cost:.2}")],
+                    )
+                });
+                let mut models: std::collections::BTreeMap<&str, i64> = Default::default();
+                for day in &days {
+                    for (model, tokens) in &day.models {
+                        let n = models.entry(model).or_default();
+                        *n = n.saturating_add(*tokens);
+                    }
+                }
+                if let Some((model, _)) = models.into_iter().max_by_key(|(_, tokens)| *tokens) {
+                    let name = ledger
+                        .model_names
+                        .get(model)
+                        .map(String::as_str)
+                        .unwrap_or(model);
+                    lines.push(t_fmt("Most used: {model}", &[name]));
+                }
+                let unpriced = days
+                    .iter()
+                    .fold(0_i64, |sum, day| sum.saturating_add(day.unpriced_tokens));
+                if !account_wide && unpriced > 0 {
+                    lines.push(t_fmt(
+                        "{tokens} tokens have no published price",
+                        &[&unpriced.to_string()],
+                    ));
+                }
+                lines.push(format!(
+                    "{} – {}",
+                    days.first().unwrap().date,
+                    days.last().unwrap().date
+                ));
+            }
+            lines.push(
+                t(if *account_wide {
+                    "Provider statistics · all machines · no price breakdown"
+                } else {
+                    "Local records · API value is an estimate, not a bill"
+                })
+                .to_string(),
+            );
+        }
+    }
+    lines
+}
+
+fn draw_detail_line(
+    painter: &Painter,
+    m: &Metrics,
+    x: f64,
+    cy: &mut f64,
+    width: f64,
+    text: &str,
+    alpha: f32,
+) -> windows::core::Result<()> {
+    *cy += m.s(card::ROW_INTERNAL_SPACING);
+    let brush = painter.brush(faded(panel::palette().text_secondary, alpha))?;
+    painter.text(
+        text,
+        crate::d2d::rect(
+            x as f32,
+            *cy as f32,
+            width as f32,
+            m.s(card::ROW_TEXT_LINE_HEIGHT) as f32,
+        ),
+        m.s(card::FOOTNOTE_FONT) as f32,
+        DWRITE_FONT_WEIGHT_NORMAL,
+        &brush,
+        0,
+        1,
+    );
+    *cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
+    Ok(())
+}
+
+fn draw_history(
+    painter: &Painter,
+    m: &Metrics,
+    x: f64,
+    cy: &mut f64,
+    width: f64,
+    data: &CardData,
+    alpha: f32,
+) -> windows::core::Result<()> {
+    for text in history_lines(data) {
+        draw_detail_line(painter, m, x, cy, width, &text, alpha)?;
+    }
+    if !has_history_chart(data) {
+        return Ok(());
+    }
+    let Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) = &data.history else {
+        return Ok(());
+    };
+    let days = recent_days(ledger);
+    let last = days.last().unwrap().date;
+    let first = days.first().unwrap().date;
+    let slots = (last - first).num_days() as usize + 1;
+    let maximum = days.iter().map(|day| day.tokens).max().unwrap_or(1).max(1) as f64;
+    let brush = painter.brush(faded(panel::accent(), alpha))?;
+    let slot_width = width / slots as f64;
+    for day in days {
+        let index = (day.date - first).num_days() as usize;
+        let height = m.s(50.0) * day.tokens as f64 / maximum;
+        if height > 0.0 {
+            painter.fill_rounded_rect(
+                crate::d2d::rect(
+                    (x + index as f64 * slot_width) as f32,
+                    (*cy + m.s(54.0) - height) as f32,
+                    (slot_width * 0.75) as f32,
+                    height as f32,
+                ),
+                0.0,
+                &brush,
+            );
+        }
+    }
+    *cy += m.s(58.0);
+    Ok(())
 }
 
 /// The card's total size for a reading of this shape — what the flyout
@@ -130,7 +358,7 @@ pub fn draw_card(
         );
     }
     painter.text(
-        &format!("{} Usage", data.title),
+        &quotascope_core::localization::t_fmt("{provider} Usage", &[&data.title]),
         crate::d2d::rect(
             (inset_x + m.s(card::HEADER_ICON) + 8.0) as f32,
             cy as f32,
@@ -144,6 +372,9 @@ pub fn draw_card(
         1,
     );
     cy += m.s(card::HEADER_HEIGHT);
+    for line in detail_header(data) {
+        draw_detail_line(painter, m, inset_x, &mut cy, inset_w, &line, alpha)?;
+    }
 
     match &data.usage.state {
         State::Unavailable(reason) => {
@@ -207,6 +438,11 @@ pub fn draw_card(
             }
         }
     }
+
+    for line in clock_lines(data) {
+        draw_detail_line(painter, m, inset_x, &mut cy, inset_w, &line, alpha)?;
+    }
+    draw_history(painter, m, inset_x, &mut cy, inset_w, data, alpha)?;
 
     // The "as of" line: how much to trust the figures.
     if let State::Stale = data.usage.state {
@@ -596,4 +832,70 @@ fn draw_wrapped(
         );
     }
     *cy += lh * lines.len() as f64;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quotascope_core::history::HistoryRead;
+    use quotascope_core::model::{AccountKey, Provider};
+    use serde_json::json;
+
+    fn data(history: HistoryRead) -> CardData {
+        CardData {
+            usage: ProviderUsage::live_now(AccountKey::primary(Provider::Zai), Vec::new()),
+            title: "z.ai".into(),
+            monogram: "Z".into(),
+            icon: None,
+            shows_remaining: false,
+            shows_forecast: false,
+            warning_fraction: 0.75,
+            value_lines: HashMap::new(),
+            detailed: true,
+            history_enabled: true,
+            history: Some(history),
+        }
+    }
+
+    #[test]
+    fn account_statistics_never_show_a_money_column_and_reserve_chart_height() {
+        let today = chrono::Local::now().date_naive().to_string();
+        let history = quotascope_core::history::parse_reply(
+            &json!({"success":true,"code":200,"data":{"x_time":[today],"tokensUsage":[1000]}}),
+        );
+        let mut payload = data(history);
+        assert!(has_history_chart(&payload));
+        assert!(history_lines(&payload)
+            .iter()
+            .all(|line| !line.contains('$')));
+        let m = Metrics::from_settings(&Default::default());
+        let loaded_height = detail_height(&m, &payload);
+        payload.history = None;
+        assert!(!has_history_chart(&payload));
+        assert!(loaded_height > detail_height(&m, &payload) + m.s(58.0));
+    }
+
+    #[test]
+    fn local_history_uses_calendar_cutoff_and_respects_the_opt_in() {
+        let today = chrono::Local::now().date_naive();
+        let mut ledger = quotascope_core::history::parse_statistics(&json!({"x_time":[(today - chrono::Days::new(30)).to_string(),today.to_string()],"tokensUsage":[900,1]})).unwrap();
+        ledger.days.last_mut().unwrap().cost = 0.12;
+        assert_eq!(
+            recent_days(&ledger)
+                .iter()
+                .map(|day| day.tokens)
+                .sum::<i64>(),
+            1
+        );
+        let mut payload = data(HistoryRead::Answered {
+            ledger,
+            account_wide: false,
+        });
+        assert!(history_lines(&payload)
+            .iter()
+            .any(|line| line.contains("$0.12")));
+        payload.history_enabled = false;
+        assert!(history_lines(&payload).is_empty());
+        assert!(!has_history_chart(&payload));
+    }
 }
