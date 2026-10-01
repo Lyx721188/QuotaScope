@@ -229,7 +229,8 @@ pub mod dock {
 pub mod card {
     use super::Metrics;
 
-    pub const WIDTH: f64 = 250.0;
+    /// Inner width; the macOS card's 250pt frame includes its padding.
+    pub const WIDTH: f64 = 214.0;
     pub const PADDING: f64 = 18.0;
     /// Gap between the dock bar and the detail flyout.
     pub const HORIZONTAL_GAP: f64 = 10.0;

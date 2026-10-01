@@ -1,6 +1,6 @@
 # QuotaScope Windows 1.2 交接
 
-更新：2026-10-01 15:27（Asia/Shanghai）。工作区 `D:\Projects\QuotaScope`，分支 `main`。
+更新：2026-10-01 16:32（Asia/Shanghai）。工作区 `D:\Projects\QuotaScope`，分支 `main`。
 
 ## 恢复来源与当前范围
 
@@ -15,7 +15,8 @@
 - `570e654`：Windows 改名与旧 Pulse 数据兼容。
 - `bb24b0e`：M1–M5、剩余 API/keyAndAddress 路由与 Claude/Codex 价值估计链。
 - `97266b4`：M6、浏览器 cookie 基础设施及 18 个 session provider。
-- 本轮：M7 功能与 M8 Windows 文档/版本/本地包。没有推送、打 tag 或创建线上 Release。
+- `18f969a`：M7 功能与 M8 Windows 文档/版本/本地包。
+- 后续本轮：依用户截图调整用量卡、设置页、进度条端点、HarmonyOS Sans 与悬浮光晕。没有推送、打 tag 或创建线上 Release。
 
 ## 本轮完成
 
@@ -46,48 +47,65 @@
    `Docs/windows-1.2.md`、`Docs/providers/windows-ports.md`、`Docs/extensions.md` 为当前 Windows 文档。
    旧 macOS provider 说明前增加 Windows 来源边界。根目录 VERSION 是遗留 macOS 版本，不控制 Windows 构建。
 
+## 视觉改进
+
+- 对照本地 `upstream/main` 的 UsageDetailCard/AccountUsageCard.swift：250 点宽度、18 点内边距、紧凑标题及窗口行。
+- 今天 / 7 天 / 30 天活动摘要、短格式 token、30 个日历日期柱，灰色胶囊图形与当日强调。
+  本机估值标为 API 价值估算；未公开价格和服务器统计不推断费用。
+- 单一圆角进度条取代矩形与圆端的叠加，消除端点深色接缝。
+- 同一内容函数测量并绘制卡片，移除固定空白尾部；空/失败及 CJK 多行内容也参与测量。
+- 移除鼠标跟随强调色径向光晕及其弹簧动画；保留环的轻微悬停反馈。
+- 设置页统一卡片和右侧控制列；账户默认摘要，配置可展开/收起，启用账户优先。
+  搜索、切页、保存、收起配置仍隐藏明文；凭据草稿按 provider 保留。
+- 常规设置按面板/刷新/Windows/Token spend 分区；切页重置滚动位置。
+- 私有加载未修改的 HarmonyOS Sans SC Regular / Medium / Bold，随包保留许可与关于页声明。
+  DirectWrite 使用三字重字体集合；WinUI 通过应用字体资源使用包内字体，未安装系统字体。
+  Windows 标题栏/菜单及图标字体由系统控制。
+
 ## 验证证据
 
 最终源码检查均退出 0：
 
 - `cargo fmt --all -- --check`
-- `cargo test --workspace`：476 core + 3 M7 integration + 31 existing integration + 4 Windows tests，
-  **514 passed，2 ignored**。忽略的真实环境测试没有运行。
-- `cargo clippy --workspace --all-targets`：通过但保留仓库已有风格警告；不是 `-D warnings` 零警告验收。
-- `cargo build --release`：Windows 1.2.0，本轮最终构建约 1m22s。
+- `cargo test --workspace`：476 core + 3 M7 integration + 31 existing integration + 7 Windows tests，
+  **517 passed，2 ignored**。忽略的真实环境测试没有运行。
+- 新字体测试验证实际字体家族、三种非合成字重及中文字形；新增卡片测试覆盖短格式数字、CJK 换行及三个面板尺寸。
+- `cargo clippy --workspace --all-targets`：退出 0，仍有风格警告；不是 `-D warnings` 零警告验收。
+- `cargo build --release -p quotascope-win`：最终构建约 1m21s。
 - `git diff --check`：通过。
-- 新文档 71 个本地链接验证存在；77 provider 表按 model/localization/registry核对，67 可取数路由、10 未移植。
 
-日志：`work/m7-tests.log`、`work/m7-clippy.log`、`work/m7-release-build.log`。
-
-本地包：`work/quotascope-windows-1.2.0.zip`（26,401,192 bytes），
-展开目录 `work/quotascope-windows-1.2.0/` 包含 exe、DLL、PRI 和语言资源。
+日志：`work/visual-tests.log`、`work/visual-clippy.log`、`work/visual-final-build.log`。
+本地包：`work/quotascope-windows-1.2.0.zip`（43,293,789 bytes），
+展开目录 `work/quotascope-windows-1.2.0/` 包含 exe、DLL、PRI、语言资源和完整 `Fonts/`。
 Windows FileVersion 为 1.2.0。
 
-`work/validate-m7.ps1` 使用临时 APPDATA/USERPROFILE、禁用账户配置做进程冒烟，未改实际账户设置：
+- exe SHA256：`DD95C5776CDB702426CE5D1D66DB008AF20DBFDA2CAAB758F257A61D04A644B4`。
+- zip SHA256：`740AE9AA1329C62923A2DFC34FDDC48C622835A520644772A8B8DED22784535D`。
+- 包清单：`work/visual-package.json`（2026-10-01T16:29:35+08:00）。
+- 最终包 exe 的 `--json` 退出 0、0 账户、字段正确；隔离配置哈希不变且未写新数据文件：
+  `work/visual-json-validation.json`。
 
-- 打包目录 exe 的 `--json` 退出 0，输出含 generatedAt/accounts；配置 SHA256不变且未写新的 app-data 文件。
-- 打包目录 exe 的 `--settings` 存活 20 秒，然后只停止该测试进程。
-- 运行时/包元数据与哈希：`work/m7-validation.json`，时间 2026-10-01T15:26:48+08:00。
-- exe SHA256：`C1B2E39E30AFD08145BBA8BBC10B76868543EB4949D854442C0371F81D545739`。
-- zip SHA256：`5FD6C4712ED1CC4E98862FFB8D1E0321A641ABBB95736B7C80DC1F2EB1A93A0C`。
+## 交互验收与证据边界
 
-**证据边界**：启动存活不证明交互布局正确。没有用截图完成托盘/设置/悬停卡的交互验收，
-也没有通过真实 z.ai/智谱账户验证统计端点。所有新统计边界当前是 fixture 验证。
-本轮没有安装/替换用户现用程序，也没有线上发布。`work/` 包含接管前引用和本轮本地产物，保持未跟踪。
+通过 computer-use 原生窗口快照验收，实际运行的是包内 exe：
 
-## 唯一下一项
+- 常规页右侧控制列对齐、分区卡片和 HarmonyOS Sans 生效；账户页默认紧凑摘要、启用账户排序、独立卡片和配置展开/收起均已实测。
+- 真实 Codex OAuth 读数成功，本机历史/估值成功；最终卡片为 250 × 497 点（启用预测时），
+  双限额、活动摘要、图表、未公开价格提示及脚注完整，没有旧版多余空白和端点接缝。
+- Antigravity 未运行时中文不可用卡片为 250 × 101 点；z.ai 缺 key 明确显示需要配置。
+- 搜索 codex 后仅保留匹配账户，展开配置保持；中文“配置/收起”无英文遗漏。之前切页回顶已实际检查；最终配置使用独立 APPDATA，USERPROFILE 保留真实位置以读取 Codex 本机登录/账本。
+  最初隔离 USERPROFILE 导致测试窗口提示登录，已纠正；未复制或修改真实 Codex 登录凭据。
+- 本机 localhost 网关 fixture `/v1/usage` 读到假密钥与配额；日志不含凭据。
+  `work/ui-acceptance/requests.jsonl`。测试服务已停止。
 
-**对本地 1.2.0 包做交互 UI 与实际账户验收**，依次检查：
+没有将浅色单屏快照称为所有 DPI/主题已验收；真实 z.ai/智谱统计端点仍未用真实 key 验证。
+本轮没有安装到正式目录或线上发布。用户在验收期间手动调整了测试窗口设置；这些选项保留，
+只恢复为了截图临时修改的悬浮位置。`work/` 保持未跟踪。
 
-1. 托盘右键摘要、stale/error、已知用量页链接。
-2. Accounts 搜索/分组、输入 key 与 gateway address 后 Save，再重开确认（不要输出 key）。
-3. 深浅色及不同 DPI 下的明文切换、预算验证与低余额设置。
-4. 开启某账户详细卡；打开 Token spend 后看 Claude/Codex history/估值，再关闭确认消失。
-5. 真实 z.ai/智谱的 missing key/成功/失败显示；历史返回时保持鼠标不动，确认卡片重新测量且不裁切。
+## 后续验收
 
-退出产物：对应交互截图/过程记录和端点成功/失败的脱敏证据。
-通过后再根据用户要求决定推送/发布；本地构建与 GitHub CI/Release 是分开的验收。
+当前用户要求的视觉改进已实现，并更新本地包；如要正式发布，下一项是扩大主题/DPI 和实际 z.ai/智谱统计验收。
+尚无真实 key 的成功证据，不能把 fixture 成功当作账户接口成功。推送与线上 Release 仍需按用户后续要求执行。
 
 ## 仍未移植/保留差距
 

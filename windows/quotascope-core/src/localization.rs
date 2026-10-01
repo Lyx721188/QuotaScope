@@ -65,6 +65,10 @@ struct Entry {
 }
 
 const TABLE: &[Entry] = &[
+    Entry { key: "Configure", en: "Configure", zh: "配置" },
+    Entry { key: "Collapse", en: "Collapse", zh: "收起" },
+    Entry { key: "Disabled", en: "Disabled", zh: "未启用" },
+    Entry { key: "Waiting for usage", en: "Waiting for usage", zh: "正在读取用量" },
     Entry { key: "{provider} Usage", en: "{provider} Usage", zh: "{provider} 用量" },
     Entry { key: "Enter a positive budget for My budget.", en: "Enter a positive budget for My budget.", zh: "“我的预算”需要一个正数预算金额。" },
     Entry { key: "No readable local history in the last 30 days.", en: "No readable local history in the last 30 days.", zh: "近 30 天没有可读取的本机用量记录。" },
@@ -97,7 +101,13 @@ const TABLE: &[Entry] = &[
     Entry { key: "Most used: {model}", en: "Most used: {model}", zh: "使用最多：{model}" },
     Entry { key: "{tokens} tokens have no published price", en: "{tokens} tokens have no published price", zh: "{tokens} token 无公开价格" },
     Entry { key: "Provider statistics · all machines · no price breakdown", en: "Provider statistics · all machines · no price breakdown", zh: "服务商统计 · 所有设备 · 无价格明细" },
-    Entry { key: "Local records · API value is an estimate, not a bill", en: "Local records · API value is an estimate, not a bill", zh: "本机记录 · API 价值为估算费用" },
+    Entry { key: "Local records · API value is an estimate, not a bill", en: "API value is an estimate, not a bill", zh: "API 价值估算，非实际账单" },
+    Entry { key: "On this PC", en: "On this PC", zh: "本机活动" },
+    Entry { key: "Whole account", en: "Whole account", zh: "全账户活动" },
+    Entry { key: "Today", en: "Today", zh: "今日" },
+    Entry { key: "7 days", en: "7 days", zh: "7 天" },
+    Entry { key: "30 days", en: "30 days", zh: "30 天" },
+    Entry { key: "Time {percent}%", en: "Time {percent}%", zh: "时间 {percent}%" },
     Entry { key: "Gateway address", en: "Gateway address", zh: "网关地址" },
     Entry { key: "Enter a local or HTTPS gateway address.", en: "Enter a local or HTTPS gateway address.", zh: "请输入本机或 HTTPS 网关地址。" },
     Entry { key: "Add a gateway address in Settings.", en: "Add a gateway address in Settings.", zh: "请在设置中添加网关地址。" },
@@ -241,6 +251,31 @@ const TABLE: &[Entry] = &[
         zh: "使用访问密钥对火山引擎的用量 API 签名——签名器尚未移植。",
     },
     Entry { key: "Warn me when a limit passes", en: "Warn me when a limit passes", zh: "当限额超过以下值时提醒我" },
+    Entry {
+        key: "Runs Kiro's local ACP client — the Windows route has not been ported yet.",
+        en: "Runs Kiro's local ACP client — the Windows route has not been ported yet.",
+        zh: "通过 Kiro 本机 ACP 客户端读取——Windows 路线尚未移植。",
+    },
+    Entry {
+        key: "Reads Devin's local or API quota — the Windows route has not been ported yet.",
+        en: "Reads Devin's local or API quota — the Windows route has not been ported yet.",
+        zh: "读取 Devin 的本机或 API 配额——Windows 路线尚未移植。",
+    },
+    Entry {
+        key: "Enter the gateway address and API key to enable this account.",
+        en: "Enter the gateway address and API key to enable this account.",
+        zh: "输入网关地址和 API 密钥以启用此账户。",
+    },
+    Entry {
+        key: "Reads browser local storage — that Windows route has not been ported yet.",
+        en: "Reads browser local storage — that Windows route has not been ported yet.",
+        zh: "读取浏览器本地存储——Windows 路线尚未移植。",
+    },
+    Entry {
+        key: "This provider is catalogued, but its Windows usage route has not been ported yet.",
+        en: "This provider is catalogued, but its Windows usage route has not been ported yet.",
+        zh: "此服务商已列入目录，但 Windows 用量读取路线尚未移植。",
+    },
     Entry { key: "when a warned window comes back", en: "when a warned window comes back", zh: "当被警告的窗口恢复时" },
     Entry { key: "when checks keep failing", en: "when checks keep failing", zh: "当检查持续失败时" },
     Entry {

@@ -235,6 +235,7 @@ enum Message {
     Nav(Option<String>),
     Toggle(ToggleKey, bool),
     ToggleEnabled(usize, bool),
+    ExpandAccount(usize),
     ToggleExtension(usize, bool),
     RescanExtensions,
     Choice(ChoiceKey, Option<usize>),
@@ -263,6 +264,7 @@ struct SettingsApp {
     /// Draft gateway address per provider raw, until Saved.
     addresses: HashMap<String, String>,
     search: String,
+    expanded_accounts: std::collections::HashSet<usize>,
     revealed_keys: std::collections::HashSet<usize>,
     budgets: HashMap<String, String>,
     floors: HashMap<String, String>,
@@ -280,6 +282,9 @@ impl Component for SettingsApp {
     type Message = Message;
 
     fn create(_input: &(), context: &ComponentContext<Self>) -> Self {
+        if let Err(error) = crate::fonts::install_winui_font() {
+            eprintln!("HarmonyOS Sans settings font: {error}");
+        }
         let shared = SHARED.with(|cell| cell.borrow().clone().expect("settings shared state"));
         let scan = quotascope_core::extension::scan();
         SettingsApp {
@@ -291,6 +296,7 @@ impl Component for SettingsApp {
             keys: HashMap::new(),
             addresses: quotascope_core::settings::with(|s| s.server_addresses.clone()),
             search: String::new(),
+            expanded_accounts: Default::default(),
             revealed_keys: Default::default(),
             budgets: HashMap::new(),
             floors: HashMap::new(),
@@ -309,6 +315,12 @@ impl Component for SettingsApp {
             Message::Nav(tag) => {
                 self.page = tag.as_deref().map(Page::from_tag).unwrap_or(self.page);
                 self.revealed_keys.clear();
+            }
+            Message::ExpandAccount(index) => {
+                if !self.expanded_accounts.insert(index) {
+                    self.expanded_accounts.remove(&index);
+                    self.revealed_keys.remove(&index);
+                }
             }
             Message::Search(text) => {
                 self.search = text;
@@ -631,16 +643,21 @@ impl Component for SettingsApp {
                 ),
                 SlotView::new(
                     NavigationViewSlot::Content,
-                    ScrollViewer::new().content(
-                        Border::new()
-                            .padding(Thickness::uniform(28.0))
-                            .content(match self.page {
-                                Page::General => self.general_view(context).into(),
-                                Page::Accounts => self.accounts_view(context),
-                                Page::Notifications => self.notifications_view(context),
-                                Page::About => self.about_view(context),
-                            }),
-                    ),
+                    // A different page needs a new scroll viewport. Ordinary
+                    // updates keep its identity so typing does not reset it.
+                    View::keyed_fragment([(
+                        self.page.tag(),
+                        ScrollViewer::new().content(
+                            Border::new().padding(Thickness::uniform(28.0)).content(
+                                match self.page {
+                                    Page::General => self.general_view(context).into(),
+                                    Page::Accounts => self.accounts_view(context),
+                                    Page::Notifications => self.notifications_view(context),
+                                    Page::About => self.about_view(context),
+                                },
+                            ),
+                        ),
+                    )]),
                 ),
             ]);
         let mut visuals = WindowVisuals::new().backdrop(WindowBackdrop::Mica);
@@ -713,12 +730,13 @@ impl SettingsApp {
                     "Paste the API key"
                 }))
                 .on_password_changed(context.callback(move |text| Message::KeyEdit(index, text))),
-            row((
-                TextBlock::new().text(quotascope_core::localization::t("Show credential")),
+            self.aligned(
+                "Show credential",
                 ToggleSwitch::new()
                     .is_on(self.revealed_keys.contains(&index))
-                    .on_toggled(context.callback(move |on| Message::RevealKey(index, on))),
-            )),
+                    .on_toggled(context.callback(move |on| Message::RevealKey(index, on)))
+                    .into(),
+            ),
         ))
     }
 
@@ -880,13 +898,42 @@ impl SettingsApp {
         });
     }
 
+    fn surface(&self, content: View) -> View {
+        let ink = if self.dark { 255 } else { 0 };
+        Border::new()
+            .background(Color::argb(if self.dark { 9 } else { 180 }, 255, 255, 255))
+            .border_brush(Color::argb(18, ink, ink, ink))
+            .border_thickness(Thickness::uniform(1.0))
+            .corner_radius(CornerRadius::uniform(10.0))
+            .padding(Thickness::uniform(18.0))
+            .content(content)
+            .into()
+    }
+
+    fn aligned(&self, label: &str, control: View) -> View {
+        Grid::new()
+            .columns([GridLength::Star(1.0), GridLength::Auto])
+            .column_spacing(20.0)
+            .children((
+                TextBlock::new()
+                    .text(quotascope_core::localization::t(label))
+                    .vertical_alignment(VerticalAlignment::Center),
+                Border::new()
+                    .grid_column(1)
+                    .min_width(150.0)
+                    .content(control),
+            ))
+            .into()
+    }
+
     fn toggle(&self, key: ToggleKey, label: &str, on: bool, context: &ViewContext<Self>) -> View {
-        row((
-            TextBlock::new().text(quotascope_core::localization::t(label)),
+        self.aligned(
+            label,
             ToggleSwitch::new()
                 .is_on(on)
-                .on_toggled(context.callback(move |on| Message::Toggle(key, on))),
-        ))
+                .on_toggled(context.callback(move |on| Message::Toggle(key, on)))
+                .into(),
+        )
     }
 
     fn choice(
@@ -897,13 +944,15 @@ impl SettingsApp {
         selected: usize,
         context: &ViewContext<Self>,
     ) -> View {
-        row((
-            TextBlock::new().text(quotascope_core::localization::t(label)),
+        self.aligned(
+            label,
             ComboBox::new()
+                .min_width(150.0)
                 .items_source(options.iter().map(|o| quotascope_core::localization::t(o)))
                 .selected_index(selected)
-                .on_selection_changed(context.callback(move |index| Message::Choice(key, index))),
-        ))
+                .on_selection_changed(context.callback(move |index| Message::Choice(key, index)))
+                .into(),
+        )
     }
 
     fn general_view(&self, context: &ViewContext<Self>) -> View {
@@ -952,13 +1001,10 @@ impl SettingsApp {
             .spacing(10.0)
             .children((
                 heading("General"),
-                section("Panel"),
-                // The panel's own controls, one level in: the row helper is
-                // a tuple, and a tuple runs out of slots before this many
-                // rows fit.
-                StackPanel::new()
-                    .spacing(10.0)
+                self.surface(StackPanel::new()
+                    .spacing(14.0)
                     .children((
+                        section("Panel"),
                         self.choice(
                             ChoiceKey::Dock,
                             "Dock to",
@@ -1045,23 +1091,23 @@ impl SettingsApp {
                         self.muted(&quotascope_core::localization::t(
                             "The panel stays put and comes back at every launch; run QuotaScope again to reach Settings.",
                         )),
-                    )),
-                section("Refresh"),
+                    )).into()),
+                self.surface(StackPanel::new().spacing(14.0).children((section("Refresh"),
                 self.choice(
                     ChoiceKey::Interval,
                     "Refresh interval",
                     &["Automatic", "30s", "1min", "2min", "5min", "10min", "30min"],
                     interval_selected,
                     context,
-                ),
-                section("Windows"),
+                ))).into()),
+                self.surface(StackPanel::new().spacing(14.0).children((section("Windows"),
                 self.toggle(
                     ToggleKey::Startup,
                     "Launch at startup",
                     crate::autostart::is_enabled(),
                     context,
-                ),
-                section("Token spend"),
+                ))).into()),
+                self.surface(StackPanel::new().spacing(14.0).children((section("Token spend"),
                 self.toggle(
                     ToggleKey::TokenSpend,
                     "Read token spend",
@@ -1070,7 +1116,7 @@ impl SettingsApp {
                 ),
                 self.muted(&quotascope_core::localization::t(
                     "Read this machine's Claude Code and Codex transcripts and price them at the providers' published API rates, so a limit's window can show what it is worth. The transcripts never leave this machine.",
-                )),
+                )))).into()),
             ))
             .into()
     }
@@ -1079,64 +1125,68 @@ impl SettingsApp {
         let raw = provider.raw();
         let enabled = quotascope_core::settings::with(|s| s.enabled_accounts.contains(raw));
 
-        // A route this port does not reach is named, not shown broken.
         if !provider.is_ported_to_windows() {
-            let address = if provider.needs_server_address() {
-                let value = self
-                    .addresses
-                    .get(raw)
-                    .cloned()
-                    .or_else(|| {
-                        quotascope_core::settings::with(|s| s.server_addresses.get(raw).cloned())
-                    })
-                    .unwrap_or_default();
+            return self.surface(
                 StackPanel::new()
                     .spacing(6.0)
                     .children((
-                        TextBlock::new().text(quotascope_core::localization::t("Gateway address")),
-                        TextBox::new()
-                            .text(value)
-                            .placeholder_text("https://gateway.example")
-                            .on_text_changed(
-                                context.callback(move |text| Message::AddressEdit(index, text)),
-                            ),
-                        Button::new()
-                            .on_click(context.message(Message::Save(index)))
-                            .content(quotascope_core::localization::t("Save")),
+                        TextBlock::new()
+                            .text(provider.display_name())
+                            .font_size(15.0)
+                            .font_weight(FontWeight::SEMI_BOLD),
+                        self.muted(&quotascope_core::localization::t(
+                            provider
+                                .windows_gap()
+                                .unwrap_or("Not available on Windows."),
+                        )),
                     ))
-                    .into()
-            } else {
-                View::empty()
-            };
-            return StackPanel::new()
-                .spacing(4.0)
-                .children((
-                    TextBlock::new()
-                        .text(provider.display_name())
-                        .font_size(15.0)
-                        .font_weight(FontWeight::SEMI_BOLD),
-                    self.muted(&quotascope_core::localization::t(
-                        provider
-                            .windows_gap()
-                            .unwrap_or("Not available on Windows."),
-                    )),
-                    address,
-                ))
-                .into();
+                    .into(),
+            );
         }
 
         let status_line = self.status.get(raw).cloned();
         let key_draft = self.keys.get(raw).cloned();
 
-        let header = row((
-            TextBlock::new()
-                .text(provider.display_name())
-                .font_size(15.0)
-                .font_weight(FontWeight::SEMI_BOLD),
-            ToggleSwitch::new()
-                .is_on(enabled)
-                .on_toggled(context.callback(move |on| Message::ToggleEnabled(index, on))),
-        ));
+        let expanded = self.expanded_accounts.contains(&index);
+        let summary = status_line.as_deref().unwrap_or(if enabled {
+            quotascope_core::localization::t("Waiting for usage")
+        } else {
+            quotascope_core::localization::t("Disabled")
+        });
+        let header = Grid::new()
+            .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
+            .column_spacing(18.0)
+            .children((
+                StackPanel::new()
+                    .spacing(4.0)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .children((
+                        TextBlock::new()
+                            .text(provider.display_name())
+                            .font_size(15.0)
+                            .font_weight(FontWeight::SEMI_BOLD),
+                        self.muted(summary),
+                    )),
+                ToggleSwitch::new()
+                    .grid_column(1)
+                    .min_width(100.0)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .is_on(enabled)
+                    .on_toggled(context.callback(move |on| Message::ToggleEnabled(index, on))),
+                Button::new()
+                    .grid_column(2)
+                    .min_width(72.0)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .on_click(context.message(Message::ExpandAccount(index)))
+                    .content(quotascope_core::localization::t(if expanded {
+                        "Collapse"
+                    } else {
+                        "Configure"
+                    })),
+            ));
+        if !expanded {
+            return self.surface(header.into());
+        }
 
         let body: View = match provider {
             Provider::ClaudeCode | Provider::Codex | Provider::Grok => self
@@ -1249,32 +1299,47 @@ impl SettingsApp {
             }
         };
 
-        let status: View = match status_line {
-            Some(text) => TextBlock::new().text(text).into(),
-            None => View::empty(),
-        };
-
-        StackPanel::new()
-            .spacing(6.0)
-            .children((
-                header,
-                body,
-                status,
-                row((
-                    TextBlock::new().text(quotascope_core::localization::t("Detailed card")),
-                    ToggleSwitch::new()
-                        .is_on(quotascope_core::settings::with(|s| {
-                            s.detailed_cards.contains(raw)
-                        }))
-                        .on_toggled(context.callback(move |on| Message::Detailed(index, on))),
-                )),
-                if provider.reports_spendable_balance() {
-                    self.balance_controls(index, provider, context)
-                } else {
-                    View::empty()
-                },
-            ))
-            .into()
+        self.surface(
+            StackPanel::new()
+                .spacing(16.0)
+                .children((
+                    header,
+                    Border::new()
+                        .height(1.0)
+                        .background(Color::argb(20, 128, 128, 128)),
+                    body,
+                    if matches!(
+                        provider,
+                        Provider::ClaudeCode
+                            | Provider::Codex
+                            | Provider::Grok
+                            | Provider::Antigravity
+                            | Provider::Cursor
+                    ) {
+                        Button::new()
+                            .on_click(context.message(Message::Refresh(index)))
+                            .content(quotascope_core::localization::t("Refresh"))
+                            .into()
+                    } else {
+                        View::empty()
+                    },
+                    self.aligned(
+                        "Detailed card",
+                        ToggleSwitch::new()
+                            .is_on(quotascope_core::settings::with(|s| {
+                                s.detailed_cards.contains(raw)
+                            }))
+                            .on_toggled(context.callback(move |on| Message::Detailed(index, on)))
+                            .into(),
+                    ),
+                    if provider.reports_spendable_balance() {
+                        self.balance_controls(index, provider, context)
+                    } else {
+                        View::empty()
+                    },
+                ))
+                .into(),
+        )
     }
 
     fn accounts_view(&self, context: &ViewContext<Self>) -> View {
@@ -1302,7 +1367,7 @@ impl SettingsApp {
             (false, "__subscriptions", "Subscriptions"),
             (true, "__api", "API accounts"),
         ] {
-            let providers: Vec<_> = all_providers()
+            let mut providers: Vec<_> = all_providers()
                 .iter()
                 .enumerate()
                 .filter(|(_, p)| p.is_api_billing() == api)
@@ -1311,6 +1376,12 @@ impl SettingsApp {
                         || p.raw().to_lowercase().contains(&query)
                 })
                 .collect();
+            providers.sort_by_key(|(_, p)| {
+                (
+                    !p.is_ported_to_windows(),
+                    !quotascope_core::settings::with(|s| s.enabled_accounts.contains(p.raw())),
+                )
+            });
             if !providers.is_empty() {
                 rows.push((key, section(label).into()));
             }
@@ -1473,6 +1544,7 @@ impl SettingsApp {
                     quotascope_core::localization::t("Version"),
                     env!("CARGO_PKG_VERSION")
                 )),
+                TextBlock::new().text("HarmonyOS Sans · Copyright 2021 Huawei Device Co., Ltd."),
                 self.muted(&quotascope_core::localization::t(
                     "No QuotaScope servers, no QuotaScope account, no telemetry. Requests go to the providers you already use and follow the Windows system proxy settings.",
                 )),

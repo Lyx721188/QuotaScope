@@ -1,5 +1,14 @@
 # Third-Party Notices
 
+QuotaScope uses **HarmonyOS Sans SC**, Copyright 2021 Huawei Device Co., Ltd.
+Unmodified Regular, Medium and Bold font files are bundled in `Fonts/` beside
+the Windows executable. They are loaded privately by the application; no system
+font installation is needed. The full HarmonyOS Sans Fonts License Agreement
+is included in `Fonts/LICENSE.txt` and in
+`windows/quotascope-win/assets/fonts/LICENSE.txt` in this repository.
+Source: [Huawei design resources](https://developer.huawei.com/consumer/cn/design/resource/)
+and [official font archive](https://developer.huawei.com/images/download/general/HarmonyOS-Sans.zip).
+
 QuotaScope bundles provider marks derived from [Lobe Icons](https://github.com/lobehub/lobe-icons):
 
 - `windows/quotascope-win/assets/icons/*.png`

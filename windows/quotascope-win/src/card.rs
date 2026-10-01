@@ -13,7 +13,7 @@ use quotascope_core::model::{ProviderUsage, State, Unavailability};
 use std::collections::HashMap;
 use windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL;
 
-use crate::d2d::{point, Painter, Rgba};
+use crate::d2d::{Painter, Rgba};
 use crate::geometry::{card, Metrics};
 use crate::theme::panel;
 use quotascope_core::model::usage_tint;
@@ -41,18 +41,6 @@ pub struct CardData {
     pub history: Option<quotascope_core::history::HistoryRead>,
 }
 
-/// The same extra rows are measured and drawn, so toggling a detailed card
-/// cannot leave its content clipped by the old flyout frame.
-pub fn detail_height(m: &Metrics, data: &CardData) -> f64 {
-    let lines = detail_header(data).len() + clock_lines(data).len() + history_lines(data).len();
-    lines as f64 * (m.s(card::ROW_TEXT_LINE_HEIGHT) + m.s(card::ROW_INTERNAL_SPACING))
-        + if has_history_chart(data) {
-            m.s(58.0)
-        } else {
-            0.0
-        }
-}
-
 fn detail_header(data: &CardData) -> Vec<String> {
     if !data.detailed {
         return Vec::new();
@@ -69,26 +57,11 @@ fn detail_header(data: &CardData) -> Vec<String> {
             ));
         }
     }
-    lines
-}
-
-fn clock_lines(data: &CardData) -> Vec<String> {
-    if !data.detailed || matches!(data.usage.state, State::Unavailable(_)) {
-        return Vec::new();
+    if lines.is_empty() {
+        lines
+    } else {
+        vec![lines.join(" · ")]
     }
-    let now = quotascope_core::timeutil::now_ms();
-    data.usage
-        .windows
-        .iter()
-        .filter_map(|w| {
-            w.window_clock_fraction(false, now).map(|f| {
-                quotascope_core::localization::t_fmt(
-                    "{window}: {percent}% of window elapsed",
-                    &[&w.display_name(), &format!("{:.0}", f * 100.0)],
-                )
-            })
-        })
-        .collect()
 }
 
 fn recent_days(
@@ -103,18 +76,89 @@ fn recent_days(
         .collect()
 }
 
+#[cfg(test)]
 fn has_history_chart(data: &CardData) -> bool {
     data.history_enabled
         && matches!(&data.history, Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) if !recent_days(ledger).is_empty())
 }
 
-fn history_lines(data: &CardData) -> Vec<String> {
+struct ActivityFigure {
+    label: &'static str,
+    tokens: i64,
+    cost: Option<f64>,
+}
+
+struct Activity {
+    heading: &'static str,
+    figures: Vec<ActivityFigure>,
+    notes: Vec<String>,
+    footer: Option<&'static str>,
+    priced: bool,
+}
+
+impl Activity {
+    fn height(&self, m: &Metrics) -> f64 {
+        m.s(card::CONTENT_SPACING + 1.0 + 10.0 + 13.0)
+            + if self.figures.is_empty() {
+                0.0
+            } else {
+                m.s(10.0
+                    + 13.0
+                    + 2.0
+                    + 17.0
+                    + if self.priced { 15.0 } else { 0.0 }
+                    + 10.0
+                    + 30.0
+                    + 4.0
+                    + 11.0)
+            }
+            + self.notes.len() as f64 * m.s(8.0 + 14.0)
+            + if self.footer.is_some() {
+                m.s(10.0 + 13.0)
+            } else {
+                0.0
+            }
+    }
+}
+
+fn short_tokens(tokens: i64) -> String {
+    let n = tokens.max(0) as f64;
+    for (base, suffix) in [(1e9, "B"), (1e6, "M"), (1e3, "K")] {
+        if n >= base {
+            return format!("{:.1}{suffix}", n / base);
+        }
+    }
+    tokens.max(0).to_string()
+}
+
+fn activity(data: &CardData) -> Option<Activity> {
     use quotascope_core::history::HistoryRead;
     use quotascope_core::localization::{t, t_fmt};
     if !data.history_enabled {
-        return Vec::new();
+        return None;
     }
-    let mut lines = vec![t("Recent usage (30 days)").to_string()];
+    let account_wide = matches!(
+        &data.history,
+        Some(HistoryRead::Answered {
+            account_wide: true,
+            ..
+        })
+    ) || matches!(
+        data.usage.provider(),
+        quotascope_core::model::Provider::Zai | quotascope_core::model::Provider::GlmCoding
+    );
+    let mut section = Activity {
+        heading: t(if account_wide {
+            "Whole account"
+        } else {
+            "On this PC"
+        }),
+        figures: Vec::new(),
+        notes: Vec::new(),
+        footer: None,
+        priced: false,
+    };
+    let lines = &mut section.notes;
     match &data.history {
         None => lines.push(t("Reading history…").into()),
         Some(HistoryRead::NotConfigured) => lines.push(t("Add an API key to read history.").into()),
@@ -137,18 +181,22 @@ fn history_lines(data: &CardData) -> Vec<String> {
                     .into(),
                 );
             } else {
-                let tokens = days
-                    .iter()
-                    .fold(0_i64, |sum, day| sum.saturating_add(day.tokens));
                 let cost: f64 = days.iter().map(|day| day.cost).sum();
-                lines.push(if *account_wide {
-                    t_fmt("{tokens} tokens", &[&tokens.to_string()])
-                } else {
-                    t_fmt(
-                        "{tokens} tokens · API value ≈${cost}",
-                        &[&tokens.to_string(), &format!("{cost:.2}")],
-                    )
-                });
+                section.priced = !account_wide && cost > 0.0;
+                let today = chrono::Local::now().date_naive();
+                for (label, span) in [("Today", 1), ("7 days", 7), ("30 days", 30)] {
+                    let cutoff = today - chrono::Days::new(span - 1);
+                    let selected: Vec<_> = days.iter().filter(|day| day.date >= cutoff).collect();
+                    let tokens = selected
+                        .iter()
+                        .fold(0_i64, |sum, day| sum.saturating_add(day.tokens));
+                    let cost: f64 = selected.iter().map(|day| day.cost).sum();
+                    section.figures.push(ActivityFigure {
+                        label: t(label),
+                        tokens,
+                        cost: (section.priced && cost > 0.0).then_some(cost),
+                    });
+                }
                 let mut models: std::collections::BTreeMap<&str, i64> = Default::default();
                 for day in &days {
                     for (model, tokens) in &day.models {
@@ -170,26 +218,18 @@ fn history_lines(data: &CardData) -> Vec<String> {
                 if !account_wide && unpriced > 0 {
                     lines.push(t_fmt(
                         "{tokens} tokens have no published price",
-                        &[&unpriced.to_string()],
+                        &[&short_tokens(unpriced)],
                     ));
                 }
-                lines.push(format!(
-                    "{} – {}",
-                    days.first().unwrap().date,
-                    days.last().unwrap().date
-                ));
             }
-            lines.push(
-                t(if *account_wide {
-                    "Provider statistics · all machines · no price breakdown"
-                } else {
-                    "Local records · API value is an estimate, not a bill"
-                })
-                .to_string(),
-            );
+            section.footer = Some(t(if *account_wide {
+                "Provider statistics · all machines · no price breakdown"
+            } else {
+                "Local records · API value is an estimate, not a bill"
+            }));
         }
     }
-    lines
+    Some(section)
 }
 
 fn draw_detail_line(
@@ -201,23 +241,18 @@ fn draw_detail_line(
     text: &str,
     alpha: f32,
 ) -> windows::core::Result<()> {
-    *cy += m.s(card::ROW_INTERNAL_SPACING);
+    *cy += m.s(4.0);
     let brush = painter.brush(faded(panel::palette().text_secondary, alpha))?;
     painter.text(
         text,
-        crate::d2d::rect(
-            x as f32,
-            *cy as f32,
-            width as f32,
-            m.s(card::ROW_TEXT_LINE_HEIGHT) as f32,
-        ),
+        crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(13.0) as f32),
         m.s(card::FOOTNOTE_FONT) as f32,
         DWRITE_FONT_WEIGHT_NORMAL,
         &brush,
         0,
         1,
     );
-    *cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
+    *cy += m.s(13.0);
     Ok(())
 }
 
@@ -230,69 +265,252 @@ fn draw_history(
     data: &CardData,
     alpha: f32,
 ) -> windows::core::Result<()> {
-    for text in history_lines(data) {
-        draw_detail_line(painter, m, x, cy, width, &text, alpha)?;
-    }
-    if !has_history_chart(data) {
-        return Ok(());
-    }
-    let Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) = &data.history else {
+    let Some(section) = activity(data) else {
         return Ok(());
     };
-    let days = recent_days(ledger);
-    let last = days.last().unwrap().date;
-    let first = days.first().unwrap().date;
-    let slots = (last - first).num_days() as usize + 1;
-    let maximum = days.iter().map(|day| day.tokens).max().unwrap_or(1).max(1) as f64;
-    let brush = painter.brush(faded(panel::accent(), alpha))?;
-    let slot_width = width / slots as f64;
-    for day in days {
-        let index = (day.date - first).num_days() as usize;
-        let height = m.s(50.0) * day.tokens as f64 / maximum;
-        if height > 0.0 {
+    let palette = panel::palette();
+    let primary = painter.brush(faded(palette.text_primary, alpha))?;
+    let secondary = painter.brush(faded(palette.text_secondary, alpha))?;
+    let muted = painter.brush(faded(palette.text_disabled, alpha))?;
+    let rule = painter.brush(faded(palette.track.with_alpha(0.10), alpha))?;
+    *cy += m.s(card::CONTENT_SPACING);
+    painter.fill_rounded_rect(
+        crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(1.0) as f32),
+        0.0,
+        &rule,
+    );
+    *cy += m.s(1.0 + 10.0);
+    painter.text(
+        section.heading,
+        crate::d2d::rect(
+            x as f32,
+            *cy as f32,
+            (width * 0.65) as f32,
+            m.s(13.0) as f32,
+        ),
+        m.s(10.5) as f32,
+        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_MEDIUM,
+        &secondary,
+        0,
+        1,
+    );
+    painter.text(
+        "token",
+        crate::d2d::rect(
+            (x + width * 0.65) as f32,
+            *cy as f32,
+            (width * 0.35) as f32,
+            m.s(13.0) as f32,
+        ),
+        m.s(10.0) as f32,
+        DWRITE_FONT_WEIGHT_NORMAL,
+        &muted,
+        2,
+        1,
+    );
+    *cy += m.s(13.0);
+    if !section.figures.is_empty() {
+        *cy += m.s(10.0);
+        let column = (width - m.s(16.0)) / 3.0;
+        for (index, figure) in section.figures.iter().enumerate() {
+            let left = x + index as f64 * (column + m.s(8.0));
+            painter.text(
+                figure.label,
+                crate::d2d::rect(left as f32, *cy as f32, column as f32, m.s(13.0) as f32),
+                m.s(10.5) as f32,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                &secondary,
+                0,
+                1,
+            );
+            painter.text(
+                &short_tokens(figure.tokens),
+                crate::d2d::rect(
+                    left as f32,
+                    (*cy + m.s(15.0)) as f32,
+                    column as f32,
+                    m.s(17.0) as f32,
+                ),
+                m.s(14.0) as f32,
+                windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                &primary,
+                0,
+                1,
+            );
+            if let Some(cost) = figure.cost {
+                painter.text(
+                    &format!("≈${cost:.2}"),
+                    crate::d2d::rect(
+                        left as f32,
+                        (*cy + m.s(34.0)) as f32,
+                        column as f32,
+                        m.s(13.0) as f32,
+                    ),
+                    m.s(10.0) as f32,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    &secondary,
+                    0,
+                    1,
+                );
+            }
+        }
+        *cy += m.s(32.0 + if section.priced { 15.0 } else { 0.0 } + 10.0);
+        let Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) = &data.history
+        else {
+            unreachable!()
+        };
+        let days = recent_days(ledger);
+        let today = chrono::Local::now().date_naive();
+        let first = today - chrono::Days::new(29);
+        let maximum = days.iter().map(|day| day.tokens).max().unwrap_or(1).max(1) as f64;
+        let slot_width = width / 30.0;
+        let bar_width = slot_width * 0.65;
+        for index in 0..30 {
+            let date = first + chrono::Days::new(index);
+            let tokens = days
+                .iter()
+                .find(|day| day.date == date)
+                .map(|day| day.tokens)
+                .unwrap_or(0)
+                .max(0);
+            let height = if tokens > 0 {
+                (m.s(30.0) * tokens as f64 / maximum).max(bar_width)
+            } else {
+                m.s(1.5)
+            };
+            let brush = painter.brush(faded(
+                palette.text_primary.with_alpha(if date == today {
+                    0.85
+                } else if tokens > 0 {
+                    0.32
+                } else {
+                    0.12
+                }),
+                alpha,
+            ))?;
             painter.fill_rounded_rect(
                 crate::d2d::rect(
                     (x + index as f64 * slot_width) as f32,
-                    (*cy + m.s(54.0) - height) as f32,
-                    (slot_width * 0.75) as f32,
+                    (*cy + m.s(30.0) - height) as f32,
+                    bar_width as f32,
                     height as f32,
                 ),
-                0.0,
+                (bar_width / 2.0).min(height / 2.0) as f32,
                 &brush,
             );
         }
+        *cy += m.s(30.0 + 4.0);
+        painter.text(
+            &first.format("%m/%d").to_string(),
+            crate::d2d::rect(x as f32, *cy as f32, (width / 2.0) as f32, m.s(11.0) as f32),
+            m.s(9.0) as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            &muted,
+            0,
+            1,
+        );
+        painter.text(
+            &today.format("%m/%d").to_string(),
+            crate::d2d::rect(
+                (x + width / 2.0) as f32,
+                *cy as f32,
+                (width / 2.0) as f32,
+                m.s(11.0) as f32,
+            ),
+            m.s(9.0) as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            &muted,
+            2,
+            1,
+        );
+        *cy += m.s(11.0);
     }
-    *cy += m.s(58.0);
+    for note in &section.notes {
+        *cy += m.s(8.0);
+        painter.text(
+            note,
+            crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(14.0) as f32),
+            m.s(10.5) as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            &secondary,
+            0,
+            1,
+        );
+        *cy += m.s(14.0);
+    }
+    if let Some(footer) = section.footer {
+        *cy += m.s(10.0);
+        painter.text(
+            footer,
+            crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(13.0) as f32),
+            m.s(9.5) as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            &muted,
+            0,
+            1,
+        );
+        *cy += m.s(13.0);
+    }
     Ok(())
 }
 
 /// The card's total size for a reading of this shape — what the flyout
 /// window has to be, in design units.
-pub fn body_size(
-    m: &Metrics,
-    windows_count: usize,
-    footnote: bool,
-    forecast: bool,
-    estimate_lines: usize,
-) -> (f64, f64) {
+pub fn body_size(m: &Metrics, data: &CardData) -> (f64, f64) {
     let w = m.s(card::WIDTH) + m.s(card::PADDING) * 2.0;
-    let h = m.s(card::PADDING) * 2.0
-        + m.s(card::HEADER_HEIGHT)
-        + windows_count as f64 * (m.s(card::CONTENT_SPACING) + card::row_height(m, forecast))
-        + estimate_lines as f64
-            * (m.s(card::ROW_INTERNAL_SPACING) + m.s(card::ROW_TEXT_LINE_HEIGHT))
-        + if footnote {
-            m.s(card::CONTENT_SPACING) + m.s(card::ROW_TEXT_LINE_HEIGHT)
-        } else {
-            0.0
+    let mut h = m.s(card::PADDING * 2.0 + card::HEADER_HEIGHT)
+        + detail_header(data).len() as f64 * m.s(4.0 + 13.0);
+    match &data.usage.state {
+        State::Unavailable(reason) => {
+            h += m.s(card::CONTENT_SPACING) + message_height(m, &unavailable_message(data, reason));
         }
-        // Room for a wrapped unavailable message even with no rows.
-        .max(
-            m.s(card::PADDING) * 2.0
-                + m.s(card::HEADER_HEIGHT)
-                + m.s(card::ROW_TEXT_LINE_HEIGHT) * 4.0,
-        );
+        State::Live | State::Stale => {
+            for window in &data.usage.windows {
+                h += m.s(card::CONTENT_SPACING) + card::row_height(m, false);
+                if data.value_lines.contains_key(&window.id) {
+                    h += m.s(card::ROW_INTERNAL_SPACING + card::ROW_TEXT_LINE_HEIGHT);
+                }
+                if forecast_line(window, data).is_some() {
+                    h += m.s(card::ROW_INTERNAL_SPACING + card::ROW_TEXT_LINE_HEIGHT);
+                }
+            }
+            if data.usage.windows.is_empty() {
+                h += m.s(card::CONTENT_SPACING)
+                    + if data.usage.credit_balance.is_some() {
+                        m.s(card::ROW_TEXT_LINE_HEIGHT)
+                    } else {
+                        message_height(m, quotascope_core::localization::t("No limits reported."))
+                    };
+            }
+        }
+    }
+    if let Some(section) = activity(data) {
+        h += section.height(m);
+    }
+    if matches!(data.usage.state, State::Stale) {
+        h += m.s(card::CONTENT_SPACING + card::ROW_TEXT_LINE_HEIGHT);
+    }
     (w, h)
+}
+
+fn unavailable_message(data: &CardData, reason: &Unavailability) -> String {
+    if *reason == Unavailability::NotOnWindows {
+        quotascope_core::localization::t(
+            data.usage
+                .provider()
+                .windows_gap()
+                .unwrap_or(reason.message()),
+        )
+        .to_string()
+    } else {
+        reason.message().to_string()
+    }
+}
+
+fn message_height(m: &Metrics, text: &str) -> f64 {
+    wrapped_lines(text, m.s(card::WIDTH), m.s(card::MESSAGE_FONT)).len() as f64
+        * m.s(card::MESSAGE_FONT)
+        * 1.3
 }
 
 /// Scales a colour's alpha by the card's entrance fade.
@@ -379,16 +597,7 @@ pub fn draw_card(
     match &data.usage.state {
         State::Unavailable(reason) => {
             cy += m.s(card::CONTENT_SPACING);
-            let message = if *reason == Unavailability::NotOnWindows {
-                data.usage
-                    .account
-                    .provider
-                    .windows_gap()
-                    .unwrap_or(reason.message())
-                    .to_string()
-            } else {
-                reason.message().to_string()
-            };
+            let message = unavailable_message(data, reason);
             let message_brush = painter.brush(faded(palette.text_secondary, alpha))?;
             draw_wrapped(
                 painter,
@@ -439,9 +648,6 @@ pub fn draw_card(
         }
     }
 
-    for line in clock_lines(data) {
-        draw_detail_line(painter, m, inset_x, &mut cy, inset_w, &line, alpha)?;
-    }
     draw_history(painter, m, inset_x, &mut cy, inset_w, data, alpha)?;
 
     // The "as of" line: how much to trust the figures.
@@ -474,7 +680,10 @@ pub fn draw_card(
             0,
             0,
         );
+        cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
     }
+
+    debug_assert!((cy + m.s(card::PADDING) - body_size(m, data).1 - origin.1).abs() < 0.1);
 
     Ok(())
 }
@@ -498,12 +707,16 @@ fn draw_progress_row(
     // not fit one line, and the name is the half that says which limit
     // this is.
     let title_brush = painter.brush(faded(palette.text_primary, alpha))?;
+    let clock = data
+        .detailed
+        .then(|| window.window_clock_fraction(false, quotascope_core::timeutil::now_ms()))
+        .flatten();
     painter.text(
         &window.display_name(),
         crate::d2d::rect(
             x as f32,
             *cy as f32,
-            width as f32,
+            (width * if clock.is_some() { 0.67 } else { 1.0 }) as f32,
             m.s(card::ROW_TEXT_LINE_HEIGHT) as f32,
         ),
         m.s(card::ROW_FONT) as f32,
@@ -512,6 +725,27 @@ fn draw_progress_row(
         0,
         1,
     );
+    if let Some(clock) = clock {
+        let text = quotascope_core::localization::t_fmt(
+            "Time {percent}%",
+            &[&format!("{:.0}", clock * 100.0)],
+        );
+        let brush = painter.brush(faded(palette.text_disabled, alpha))?;
+        painter.text(
+            &text,
+            crate::d2d::rect(
+                (x + width * 0.67) as f32,
+                *cy as f32,
+                (width * 0.33) as f32,
+                m.s(card::ROW_TEXT_LINE_HEIGHT) as f32,
+            ),
+            m.s(10.0) as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            &brush,
+            2,
+            1,
+        );
+    }
     *cy += m.s(card::ROW_TEXT_LINE_HEIGHT) + m.s(card::ROW_INTERNAL_SPACING);
 
     // The bar: a capsule filled to the fraction, in the system accent —
@@ -629,54 +863,60 @@ fn draw_progress_row(
     // The forecast: the one line the provider did not say, dimmer than the
     // figures above it, absent far more often than present — and the
     // verdict without the time when the time is past the horizon.
-    if data.shows_forecast && !spent_color {
-        if let Some(burn) =
-            quotascope_core::model::burn_rate::reading(window, quotascope_core::timeutil::now_ms())
-        {
-            *cy += m.s(card::ROW_INTERNAL_SPACING);
-            let (text, color) = if let Some(ms) = burn.time_to_exhaustion_ms {
-                (
-                    quotascope_core::localization::t_fmt(
-                        "Runs out in {t}",
-                        &[&quotascope_core::model::burn_rate::approximate(ms)],
-                    ),
-                    Rgba::from(usage_tint::WARNING).with_alpha(0.9),
-                )
-            } else if burn.exhausts_before_reset {
-                (
-                    quotascope_core::localization::t("Won't last the window").to_string(),
-                    Rgba::from(usage_tint::WARNING).with_alpha(0.9),
-                )
-            } else {
-                (
-                    quotascope_core::localization::t("Expected to last the window").to_string(),
-                    palette.text_disabled,
-                )
-            };
-            let burn_brush = painter.brush(faded(color, alpha))?;
-            painter.text(
-                &text,
-                crate::d2d::rect(
-                    x as f32,
-                    *cy as f32,
-                    width as f32,
-                    m.s(card::ROW_TEXT_LINE_HEIGHT) as f32,
-                ),
-                m.s(card::ROW_FONT) as f32,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                &burn_brush,
-                0,
-                1,
-            );
-            *cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
-        }
+    if let Some((text, color)) = forecast_line(window, data) {
+        *cy += m.s(card::ROW_INTERNAL_SPACING);
+        let burn_brush = painter.brush(faded(color, alpha))?;
+        painter.text(
+            &text,
+            crate::d2d::rect(
+                x as f32,
+                *cy as f32,
+                width as f32,
+                m.s(card::ROW_TEXT_LINE_HEIGHT) as f32,
+            ),
+            m.s(card::ROW_FONT) as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            &burn_brush,
+            0,
+            1,
+        );
+        *cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
     }
 
     Ok(())
 }
 
-/// A capsule: two half-circle ends and a body. Cheaper than a path per bar,
-/// and exactly the shape a progress capsule is.
+fn forecast_line(
+    window: &quotascope_core::model::UsageWindow,
+    data: &CardData,
+) -> Option<(String, Rgba)> {
+    if !data.shows_forecast || usage_tint::is_spent(Some(window)) {
+        return None;
+    }
+    let burn =
+        quotascope_core::model::burn_rate::reading(window, quotascope_core::timeutil::now_ms())?;
+    Some(if let Some(ms) = burn.time_to_exhaustion_ms {
+        (
+            quotascope_core::localization::t_fmt(
+                "Runs out in {t}",
+                &[&quotascope_core::model::burn_rate::approximate(ms)],
+            ),
+            Rgba::from(usage_tint::WARNING).with_alpha(0.9),
+        )
+    } else if burn.exhausts_before_reset {
+        (
+            quotascope_core::localization::t("Won't last the window").into(),
+            Rgba::from(usage_tint::WARNING).with_alpha(0.9),
+        )
+    } else {
+        (
+            quotascope_core::localization::t("Expected to last the window").into(),
+            panel::palette().text_disabled,
+        )
+    })
+}
+
+/// One fill keeps the translucent track's round ends free of overlap seams.
 fn draw_capsule(
     painter: &Painter,
     x: f32,
@@ -685,21 +925,9 @@ fn draw_capsule(
     height: f32,
     brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
 ) {
-    let r = height / 2.0;
-    if width <= height {
-        painter.fill_ellipse(point(x + width / 2.0, y + r), width / 2.0, brush);
-        return;
-    }
-    painter.fill_ellipse(point(x + r, y + r), r, brush);
-    painter.fill_ellipse(point(x + width - r, y + r), r, brush);
     painter.fill_rounded_rect(
-        crate::d2d::rect(
-            (x + r) as f32,
-            y as f32,
-            (width - height) as f32,
-            height as f32,
-        ),
-        (height / 2.0) as f32,
+        crate::d2d::rect(x, y, width, height),
+        height.min(width) / 2.0,
         brush,
     );
 }
@@ -795,25 +1023,7 @@ fn draw_wrapped(
     font: f64,
     brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
 ) {
-    let mut line = String::new();
-    let mut lines: Vec<String> = Vec::new();
-    // Rough width estimate: a little over half the font size per character,
-    // conservative for the CJK-heavy strings this table carries.
-    let chars_per_line = ((width / (font * 0.62)).floor() as usize).max(8);
-    for word in text.split_whitespace() {
-        let candidate_len = line.chars().count() + word.chars().count() + 1;
-        if candidate_len > chars_per_line && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines.truncate(4);
+    let lines = wrapped_lines(text, width, font);
     let lh = font * 1.3;
     for (i, text) in lines.iter().enumerate() {
         painter.text(
@@ -832,6 +1042,27 @@ fn draw_wrapped(
         );
     }
     *cy += lh * lines.len() as f64;
+}
+
+fn wrapped_lines(text: &str, width: f64, font: f64) -> Vec<String> {
+    let mut line = String::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0.0;
+    // CJK does not separate words with spaces. Budget a full em per glyph.
+    for ch in text.chars() {
+        let advance = font * if ch.is_ascii() { 0.56 } else { 1.0 };
+        if used + advance > width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            used = 0.0;
+        }
+        line.push(ch);
+        used += advance;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines.truncate(4);
+    lines
 }
 
 #[cfg(test)]
@@ -865,14 +1096,21 @@ mod tests {
         );
         let mut payload = data(history);
         assert!(has_history_chart(&payload));
-        assert!(history_lines(&payload)
+        assert!(activity(&payload)
+            .unwrap()
+            .notes
             .iter()
             .all(|line| !line.contains('$')));
+        assert!(activity(&payload)
+            .unwrap()
+            .figures
+            .iter()
+            .all(|figure| figure.cost.is_none()));
         let m = Metrics::from_settings(&Default::default());
-        let loaded_height = detail_height(&m, &payload);
+        let loaded_height = body_size(&m, &payload).1;
         payload.history = None;
         assert!(!has_history_chart(&payload));
-        assert!(loaded_height > detail_height(&m, &payload) + m.s(58.0));
+        assert!(loaded_height > body_size(&m, &payload).1 + m.s(30.0));
     }
 
     #[test]
@@ -891,11 +1129,60 @@ mod tests {
             ledger,
             account_wide: false,
         });
-        assert!(history_lines(&payload)
+        let section = activity(&payload).unwrap();
+        assert_eq!(section.figures.len(), 3);
+        assert!(section
+            .figures
             .iter()
-            .any(|line| line.contains("$0.12")));
+            .all(|figure| figure.tokens == 1 && figure.cost == Some(0.12)));
         payload.history_enabled = false;
-        assert!(history_lines(&payload).is_empty());
+        assert!(activity(&payload).is_none());
         assert!(!has_history_chart(&payload));
+    }
+
+    #[test]
+    fn frame_reserves_only_actual_content_at_every_panel_scale() {
+        let mut payload = data(HistoryRead::NotConfigured);
+        payload.history_enabled = false;
+        payload.detailed = false;
+        payload.usage = ProviderUsage::unavailable(
+            AccountKey::primary(Provider::Codex),
+            Unavailability::SignInRequired,
+        );
+        for scale in [0.82, 1.0, 1.22] {
+            let mut m = Metrics::from_settings(&Default::default());
+            m.scale = scale;
+            let (width, height) = body_size(&m, &payload);
+            assert!((width - 250.0 * scale).abs() < 0.01);
+            assert!(
+                height < 110.0 * scale,
+                "unavailable card must not reserve phantom limit rows"
+            );
+            payload.usage = ProviderUsage::live_now(
+                AccountKey::primary(Provider::Codex),
+                quotascope_core::providers::codex::parse_usage_response(
+                    &json!({"rate_limit":{"primary_window":{"used_percent":16,"limit_window_seconds":18000},"secondary_window":{"used_percent":56,"limit_window_seconds":604800}}}),
+                ),
+            );
+            let expected = m.s(card::PADDING * 2.0 + card::HEADER_HEIGHT)
+                + 2.0 * (m.s(card::CONTENT_SPACING) + card::row_height(&m, false));
+            assert!((body_size(&m, &payload).1 - expected).abs() < 0.01);
+            payload.usage = ProviderUsage::unavailable(
+                AccountKey::primary(Provider::Codex),
+                Unavailability::SignInRequired,
+            );
+        }
+    }
+
+    #[test]
+    fn token_figures_are_compact_and_cjk_messages_wrap() {
+        assert_eq!(short_tokens(490581125), "490.6M");
+        assert_eq!(short_tokens(1234), "1.2K");
+        assert_eq!(short_tokens(0), "0");
+        assert_eq!(short_tokens(-1), "0");
+        let message = "近三十天没有可读取的本机用量记录，请检查本机登录状态。";
+        let lines = wrapped_lines(message, 120.0, 12.0);
+        assert!(lines.len() > 1);
+        assert_eq!(lines.join(""), message);
     }
 }

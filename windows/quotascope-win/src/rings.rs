@@ -18,10 +18,6 @@ const BUSY_PERIOD_MS: f64 = 1000.0;
 const REFRESH_SWEEP_DEG: f64 = 0.16 * 360.0;
 const REFRESH_PERIOD_MS: f64 = 850.0;
 
-/// The halo's reach beyond a ring, in design units. Lives with the panel
-/// now — one glow chases the cursor beneath all the rings.
-pub const HALO_RADIUS: f64 = 14.0;
-
 /// The gap between the progress ring and the mark it encircles, and the
 /// mark's share of the middle.
 const CENTRE_GAP: f64 = 4.0;

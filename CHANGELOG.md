@@ -7,6 +7,8 @@ inherited macOS history and do not establish Windows feature availability.
 
 ## 1.2.0 (Windows, unreleased)
 
+- **A quieter interface.** Compact usage cards follow the upstream 250-point layout, with three activity summaries and a restrained daily chart. Progress bars use a single capsule to avoid dark seam dots at the ends. Pointer-following accent glow is removed. Settings use aligned rows and account cards with expandable configuration, enabled accounts first and compact inactive summaries.
+- **HarmonyOS Sans.** Regular, Medium and Bold fonts ship with the app, including their license; the rail, usage cards and settings load the bundled family without installing system fonts.
 - **More provider routes.** The built-in catalog has 77 providers, with 67 Windows routes implemented, including API keys, self-hosted gateways and eighteen browser-session providers. Parser fixtures cover these routes; real-account verification varies by provider. See [the Windows support table](Docs/providers/windows-ports.md).
 - **Usage at the tray.** The context menu shows enabled accounts' existing readings, marks stale data and opens the eighteen known usage pages through a submenu.
 - **Account settings.** Search and subscription/API groups, a credential visibility switch, per-account balance basis and budget, and a low-balance warning floor. Gateway Save now persists an edited key together with the address and preserves keys that were not edited.

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
-use quotascope_core::model::{usage_tint, AccountKey, ProviderUsage, State, UsageWindow};
+use quotascope_core::model::{usage_tint, AccountKey, ProviderUsage, UsageWindow};
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -27,7 +27,7 @@ use crate::card::{body_size as card_body_size, CardData};
 use crate::d2d::{global_engine, Painter, SwapchainCanvas};
 use crate::flyout::Flyout;
 use crate::geometry::{self, card, dock, Edge, Metrics};
-use crate::rings::{draw_ring, ring_center, RingModel, HALO_RADIUS};
+use crate::rings::{draw_ring, ring_center, RingModel};
 use crate::theme::panel as theme_panel;
 use crate::winutil;
 
@@ -219,12 +219,8 @@ pub struct PanelWindow {
     /// The emphasis weights the last pointer position called for, aligned
     /// with `entries`.
     emphasis_target: Vec<f64>,
-    /// Where the pointer last was, in units — what the glow chases.
+    /// Where the pointer last was, in design units.
     cursor: (f64, f64),
-    /// The accent glow's own position and velocity, spring-chasing the
-    /// cursor so a flick of the wrist leaves the light trailing a beat.
-    halo_pos: (f64, f64),
-    halo_v: (f64, f64),
     /// The arcs' springs, per account: the displayed fraction trails the
     /// reading the way the macOS ring's arc animates
     /// (`.spring(response: 0.5, dampingFraction: 0.85)`), so a refreshed
@@ -294,8 +290,6 @@ impl PanelWindow {
             emphasis: HashMap::new(),
             emphasis_target: Vec::new(),
             cursor: (0.0, 0.0),
-            halo_pos: (0.0, 0.0),
-            halo_v: (0.0, 0.0),
             arc_springs: HashMap::new(),
             hover_slot: None,
             card_slot: None,
@@ -631,19 +625,6 @@ impl PanelWindow {
         let arrive = self.presence.clamp(0.0, 1.0);
         let ring_scale = 0.55 + 0.45 * self.presence;
         if arrive > 0.0 && count > 0 {
-            // One glow beneath it all, riding the pointer: the accent disc
-            // chasing the cursor on its own spring, so it reads as the
-            // pointer's own light rather than a property of one ring.
-            let glow = self.max_emphasis();
-            if glow > 0.004 {
-                let radius = (self.m.s(dock::RING_DIAMETER) / 2.0 * ring_scale
-                    + HALO_RADIUS * self.m.scale) as f32;
-                let _ = painter.draw_halo(
-                    crate::d2d::point(self.halo_pos.0 as f32, self.halo_pos.1 as f32),
-                    radius,
-                    theme_panel::accent().with_alpha(glow as f32),
-                );
-            }
             let label_shows = if self.edge.is_vertical() {
                 self.m.side_percentages
             } else {
@@ -735,7 +716,6 @@ impl PanelWindow {
         let entry = self.entries.get(slot)?;
         let usage = entry.usage.as_ref()?;
         let forecast = self.forecast_enabled();
-        let footnote = matches!(usage.state, State::Stale);
         let settings = quotascope_core::settings::with(|s| s.clone());
         let detailed = settings.detailed_cards.contains(&entry.account.id());
         let history_enabled = detailed
@@ -765,18 +745,8 @@ impl PanelWindow {
             history_enabled,
             history: entry.history.clone(),
         };
-        let extra_height = crate::card::detail_height(&self.m, &data);
-        let estimate_count = data.value_lines.len();
-        Some((data, {
-            let (w, h) = card_body_size(
-                &self.m,
-                usage.windows.len().max(1),
-                footnote,
-                forecast,
-                estimate_count,
-            );
-            (w, h + extra_height)
-        }))
+        let size = card_body_size(&self.m, &data);
+        Some((data, size))
     }
 
     /// Puts the card beside the ring it points at — on the desktop side of
@@ -879,16 +849,7 @@ impl PanelWindow {
             .collect()
     }
 
-    /// The strongest ring's emphasis — the glow's own brightness.
-    fn max_emphasis(&self) -> f64 {
-        self.entries
-            .iter()
-            .filter_map(|e| self.emphasis.get(&e.account.id()))
-            .map(|s| s.0)
-            .fold(0.0, f64::max)
-    }
-
-    /// The animation tick: steps the springs (arrival, hover halo, arcs)
+    /// The animation tick: steps the springs (arrival, hover emphasis, arcs)
     /// and settles the card's linger. Returns true while something still
     /// moves, so the app knows to keep the frame clock alive.
     pub fn tick(&mut self) -> bool {
@@ -912,24 +873,6 @@ impl PanelWindow {
             let target = self.emphasis_target.get(i).copied().unwrap_or(0.0);
             spring_step(&mut s.0, &mut s.1, target, 0.34, 0.82, dt);
         }
-        // The glow chases the pointer on a slightly lighter spring, so a
-        // fast flick drags the light along for a beat before it catches up.
-        spring_step(
-            &mut self.halo_pos.0,
-            &mut self.halo_v.0,
-            self.cursor.0,
-            0.3,
-            0.8,
-            dt,
-        );
-        spring_step(
-            &mut self.halo_pos.1,
-            &mut self.halo_v.1,
-            self.cursor.1,
-            0.3,
-            0.8,
-            dt,
-        );
         for entry in &self.entries {
             let Some(s) = self.arc_springs.get_mut(&entry.account.id()) else {
                 continue;
@@ -966,21 +909,16 @@ impl PanelWindow {
                 .get(&e.account.id())
                 .is_some_and(|s| !settled(s.0, s.1, target))
         });
-        let glow = self.max_emphasis();
-        let glow_moving = glow > 0.004
-            && (!settled(self.halo_pos.0, self.halo_v.0, self.cursor.0)
-                || !settled(self.halo_pos.1, self.halo_v.1, self.cursor.1));
-        let moving =
-            !(settled(self.presence, self.presence_v, 1.0) && !emphasis_moving && !glow_moving)
-                || self.entries.iter().any(|e| {
-                    let Some(s) = self.arc_springs.get(&e.account.id()) else {
-                        return false;
-                    };
-                    e.ring.used_fraction.is_some_and(|t| !settled(s.0, s.1, t))
-                        || e.ring
-                            .second_fraction
-                            .is_some_and(|t| !settled(s.2, s.3, t))
-                });
+        let moving = !(settled(self.presence, self.presence_v, 1.0) && !emphasis_moving)
+            || self.entries.iter().any(|e| {
+                let Some(s) = self.arc_springs.get(&e.account.id()) else {
+                    return false;
+                };
+                e.ring.used_fraction.is_some_and(|t| !settled(s.0, s.1, t))
+                    || e.ring
+                        .second_fraction
+                        .is_some_and(|t| !settled(s.2, s.3, t))
+            });
         let mut moving = moving;
 
         // The card's slide toward its ring.
@@ -1092,13 +1030,6 @@ impl PanelWindow {
         self.hide_at = None;
 
         let (ux, uy) = (x as f64 / self.dpi, y as f64 / self.dpi);
-        // A glow that has faded out has no position worth keeping: teleport
-        // it to the returning pointer so it doesn't glide in from the last
-        // place the pointer died.
-        if self.emphasis.values().all(|s| s.0 < 0.02) {
-            self.halo_pos = (ux, uy);
-            self.halo_v = (0.0, 0.0);
-        }
         self.cursor = (ux, uy);
         self.emphasis_target = self.emphasis_weights();
         let count = self.entries.len();

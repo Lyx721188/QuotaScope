@@ -1,4 +1,14 @@
 fn main() {
+    // Loose WinUI resources and the DirectWrite collection share these
+    // unmodified font files beside the executable, including the license.
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let target = out.ancestors().nth(3).unwrap().join("Fonts");
+    std::fs::create_dir_all(&target).unwrap();
+    println!("cargo:rerun-if-changed=assets/fonts");
+    for entry in std::fs::read_dir("assets/fonts").unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), target.join(entry.file_name())).unwrap();
+    }
     // Ship the Windows App SDK runtime next to quotascope.exe, so the WinUI 3
     // settings window works without a framework-package install.
     windows_reactor_setup::as_self_contained();

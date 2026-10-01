@@ -12,6 +12,7 @@ mod card;
 mod clipboard;
 mod d2d;
 mod flyout;
+mod fonts;
 mod geometry;
 mod panel;
 mod rings;

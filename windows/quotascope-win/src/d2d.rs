@@ -17,7 +17,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_BEZIER_SEGMENT, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
     D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE, D2D1_FILL_MODE_ALTERNATE,
-    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F,
+    D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F,
 };
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Direct2D::{
@@ -46,6 +46,7 @@ pub use crate::theme::Rgba;
 pub struct D2DEngine {
     pub factory: ID2D1Factory,
     pub dwrite: IDWriteFactory,
+    font_collection: IDWriteFontCollection,
     /// The one D2D device every window draws through — shared, so icon
     /// bitmaps and other device resources serve the dock and the flyout
     /// alike.
@@ -95,6 +96,7 @@ impl D2DEngine {
         unsafe {
             let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+            let font_collection = crate::fonts::collection(&dwrite)?;
             let factory1: ID2D1Factory1 = factory.cast()?;
 
             let round_props = D2D1_STROKE_STYLE_PROPERTIES1 {
@@ -127,6 +129,7 @@ impl D2DEngine {
             Ok(D2DEngine {
                 factory,
                 dwrite,
+                font_collection,
                 d3d: d3d_device,
                 device,
                 dxgi_factory,
@@ -161,16 +164,32 @@ impl D2DEngine {
             let face = if glyph_font {
                 windows::core::w!("Segoe Fluent Icons")
             } else {
-                windows::core::w!("Segoe UI Variable Display")
+                windows::core::w!("HarmonyOS Sans SC")
             };
             let format = self.dwrite.CreateTextFormat(
                 face,
-                None::<&IDWriteFontCollection>,
+                if glyph_font {
+                    None
+                } else {
+                    Some(&self.font_collection)
+                },
                 weight,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
                 size_px,
                 windows::core::w!("en-US"),
+            )?;
+            // Every paint call owns one line; wrapped messages pass their
+            // measured lines separately. Long model/account names ellipsize.
+            format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            let ellipsis = self.dwrite.CreateEllipsisTrimmingSign(&format)?;
+            format.SetTrimming(
+                &DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    delimiter: 0,
+                    delimiterCount: 0,
+                },
+                &ellipsis,
             )?;
             if centered {
                 let _ = format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -396,63 +415,6 @@ impl<'a> Painter<'a> {
     pub fn fill_rounded_rect(&self, r: D2D_RECT_F, radius: f32, brush: &ID2D1SolidColorBrush) {
         if let Ok(geometry) = rounded_rect_geometry(self.engine, r, radius) {
             self.fill_geometry(&geometry, brush);
-        }
-    }
-
-    pub fn fill_ellipse(&self, center: Vector2, radius: f32, brush: &ID2D1SolidColorBrush) {
-        unsafe {
-            let _ = self.rt.FillEllipse(
-                &D2D1_ELLIPSE {
-                    point: center,
-                    radiusX: radius,
-                    radiusY: radius,
-                },
-                brush,
-            );
-        }
-    }
-
-    /// A radial gradient — the hover halo, which on the macOS side is a
-    /// shadow on the arc masked inward. Here it is a soft disc beneath the
-    /// ring, which on a solid surface reads the same and has no colour to
-    /// get wrong.
-    pub fn draw_halo(&self, center: Vector2, outer: f32, c: Rgba) -> Result<()> {
-        unsafe {
-            // The caller's alpha is the strength; the falloff shape is
-            // fixed here.
-            let stops = [
-                D2D1_GRADIENT_STOP {
-                    position: 0.0,
-                    color: color(c.with_alpha(c.a * 0.5)),
-                },
-                D2D1_GRADIENT_STOP {
-                    position: 1.0,
-                    color: color(c.with_alpha(0.0)),
-                },
-            ];
-            let stop_collection = self.rt.CreateGradientStopCollection(
-                &stops,
-                D2D1_GAMMA_2_2,
-                D2D1_EXTEND_MODE_CLAMP,
-            )?;
-            let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
-                center,
-                gradientOriginOffset: point(0.0, 0.0),
-                radiusX: outer,
-                radiusY: outer,
-            };
-            let brush: ID2D1RadialGradientBrush =
-                self.rt
-                    .CreateRadialGradientBrush(&props, None, &stop_collection)?;
-            let _ = self.rt.FillEllipse(
-                &D2D1_ELLIPSE {
-                    point: center,
-                    radiusX: outer,
-                    radiusY: outer,
-                },
-                &brush,
-            );
-            Ok(())
         }
     }
 
