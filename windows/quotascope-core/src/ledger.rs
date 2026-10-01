@@ -4596,6 +4596,97 @@ mod tests {
         );
     }
 
+    fn ag_varint(mut value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            out.push(if value == 0 { byte } else { byte | 0x80 });
+            if value == 0 {
+                return out;
+            }
+        }
+    }
+
+    fn ag_field(field: u32, wire: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = ag_varint(u64::from(field << 3) | u64::from(wire));
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn ag_count(field: u32, value: u64) -> Vec<u8> {
+        ag_field(field, 0, &ag_varint(value))
+    }
+
+    fn ag_text(field: u32, text: &str) -> Vec<u8> {
+        let bytes = text.as_bytes();
+        let mut out = ag_varint(bytes.len() as u64);
+        out.extend_from_slice(bytes);
+        ag_field(field, 2, &out)
+    }
+
+    fn ag_nested(field: u32, inner: &[u8]) -> Vec<u8> {
+        let mut out = ag_varint(inner.len() as u64);
+        out.extend_from_slice(inner);
+        ag_field(field, 2, &out)
+    }
+
+    /// The shape read from this machine's own Antigravity databases on
+    /// 2026-10-01: usage counts, the model and label strings, and the response
+    /// timestamp. Field 1 of the usage message is a count whose meaning is not
+    /// established, so it must not reach the tally.
+    #[test]
+    fn antigravity_usage_counts_come_from_the_fields_observed_on_this_machine() {
+        let mut usage = ag_count(1, 9_999);
+        usage.extend(ag_count(2, 1_000));
+        usage.extend(ag_count(5, 300));
+        usage.extend(ag_count(9, 200));
+        usage.extend(ag_count(10, 50));
+        usage.extend(ag_text(11, "response-7"));
+        let mut chat = ag_nested(4, &usage);
+        chat.extend(ag_text(19, "gemini-3.8-flash-control"));
+        chat.extend(ag_text(21, "Gemini 3.8 Flash"));
+        chat.extend(ag_nested(
+            9,
+            &ag_nested(
+                4,
+                &[
+                    ag_count(1, 1_777_000_000).as_slice(),
+                    &ag_count(2, 500_000_000),
+                ]
+                .concat(),
+            ),
+        ));
+        let root = ag_nested(1, &chat);
+
+        let found = antigravity_generation(3, &root).expect("generation");
+        assert_eq!(found.index, 3);
+        assert_eq!(found.model.as_deref(), Some("gemini-3.8-flash-control"));
+        assert_eq!(found.label.as_deref(), Some("Gemini 3.8 Flash"));
+        assert_eq!(found.response_id.as_deref(), Some("response-7"));
+        assert_eq!(found.timestamp_ms, Some(1_777_000_000_500));
+        assert_eq!(
+            found.tally.expect("tally"),
+            TokenTally {
+                input: 1_000,
+                cache_write: 0,
+                cache_read: 300,
+                output: 250,
+            }
+        );
+    }
+
+    #[test]
+    fn antigravity_rejects_a_message_it_cannot_read() {
+        // Wire type 3 (start group) is not a shape this decodes.
+        let chat = ag_nested(1, &ag_field(4, 3, &[]));
+        assert!(antigravity_generation(0, &chat).is_none());
+        // A zero field number, and a varint that runs off the end of the
+        // buffer, are refused rather than read as something plausible.
+        assert!(decode_antigravity_message(&[0x00]).is_none());
+        assert!(decode_antigravity_message(&[0x08, 0x80]).is_none());
+    }
+
     fn claude_line(
         model: &str,
         input: i64,
