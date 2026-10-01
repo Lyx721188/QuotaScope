@@ -1512,6 +1512,585 @@ fn ledger_from_slot_buckets(
     built
 }
 
+/// One parsed Pi transcript with the header facts Prime Agent's fork
+/// accounting needs.
+#[derive(Debug, Clone, Default)]
+struct PrimeFile {
+    path: String,
+    id: Option<String>,
+    cwd: Option<String>,
+    parent_session: Option<String>,
+    rlm_depth: Option<i64>,
+    /// `row identity, response id, timestamp, provider, model, tally`
+    messages: Vec<(
+        String,
+        Option<String>,
+        i64,
+        Option<String>,
+        String,
+        TokenTally,
+    )>,
+    /// `row identity, target id, child usage, aggregate usage`
+    attributions: Vec<(String, Option<String>, TokenTally, TokenTally)>,
+}
+
+/// Parses one Pi-shaped file for Prime Agent. A missing session header makes
+/// the file unusable rather than attributable to nobody.
+fn prime_parse_file(path: &Path) -> PrimeFile {
+    let mut file = PrimeFile {
+        path: path.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return file;
+    };
+    let mut header_seen = false;
+    for line in text.lines() {
+        let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let row_type = row.get("type").and_then(serde_json::Value::as_str);
+        match row_type {
+            Some("title") => {}
+            Some("session") => {
+                file.id = json_text(&row, &["id"]).map(str::to_string);
+                file.cwd = json_text(&row, &["cwd"]).map(str::to_string);
+                file.parent_session = json_text(&row, &["parentSession"]).map(str::to_string);
+                file.rlm_depth = json_count(row.get("rlmDepth"));
+                header_seen = file.id.is_some();
+            }
+            Some("session_info") => {}
+            Some("message") => {
+                if !header_seen {
+                    continue;
+                }
+                let Some(message) = row.get("message").filter(|value| value.is_object()) else {
+                    continue;
+                };
+                if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+                    continue;
+                }
+                let Some((tally, _)) = message.get("usage").and_then(pi_usage) else {
+                    continue;
+                };
+                if tally.total() == 0 {
+                    continue;
+                }
+                let Some(model) = json_text(message, &["model"]).map(str::to_string) else {
+                    continue;
+                };
+                let Some(at) = json_timestamp(
+                    row.get("timestamp").or_else(|| message.get("timestamp")),
+                    false,
+                ) else {
+                    continue;
+                };
+                file.messages.push((
+                    json_text(&row, &["id"]).unwrap_or("").to_string(),
+                    json_text(message, &["responseId"]).map(str::to_string),
+                    at,
+                    json_text(message, &["provider"]).map(str::to_string),
+                    model,
+                    tally,
+                ));
+            }
+            Some("child_usage_attributed") => {
+                if !header_seen {
+                    continue;
+                }
+                let (Some(child), Some(aggregate)) =
+                    (row.get("childUsage"), row.get("aggregateUsage"))
+                else {
+                    continue;
+                };
+                let (Some((child_usage, _)), Some((aggregate_usage, _))) =
+                    (pi_usage(child), pi_usage(aggregate))
+                else {
+                    continue;
+                };
+                if child_usage.total() == 0 || aggregate_usage.total() == 0 {
+                    continue;
+                }
+                file.attributions.push((
+                    json_text(&row, &["id"]).unwrap_or("").to_string(),
+                    json_text(&row, &["targetId"]).map(str::to_string),
+                    child_usage,
+                    aggregate_usage,
+                ));
+            }
+            _ => {}
+        }
+    }
+    file
+}
+
+/// Prime Agent's Pi RLM format with parent/child accounting. A parent whose
+/// own tally equals the stated aggregate is reduced by exactly the stated
+/// child usage; a missing child keeps its aggregate.
+pub fn prime_agent_ledger() -> UsageLedger {
+    const KEY: &str = "prime-agent";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    for root in [
+        crate::model::home_path(".prime/agent/sessions"),
+        crate::model::home_path(".prime/agent/session-artifacts"),
+    ] {
+        collect_jsonl(&root, &mut files);
+    }
+    files.sort();
+    let parsed: Vec<PrimeFile> = files.iter().map(|file| prime_parse_file(file)).collect();
+
+    let mut parent_of: std::collections::HashMap<String, String> = Default::default();
+    for file in &parsed {
+        if let Some(parent) = &file.parent_session {
+            parent_of.insert(file.path.clone(), parent.clone());
+        }
+    }
+    let lineage_root = |start: &String| -> String {
+        let mut chain: Vec<String> = Vec::new();
+        let mut current = start.clone();
+        loop {
+            if let Some(index) = chain.iter().position(|path| path == &current) {
+                return chain[index..].iter().min().cloned().unwrap_or(current);
+            }
+            chain.push(current.clone());
+            let Some(parent) = parent_of.get(&current) else {
+                return current;
+            };
+            current = parent.clone();
+        }
+    };
+    let is_descendant = |child: &String, ancestor: &String| -> bool {
+        let mut current = Some(child.clone());
+        let mut visited = std::collections::HashSet::new();
+        while let Some(path) = current {
+            if &path == ancestor {
+                return true;
+            }
+            if !visited.insert(path.clone()) {
+                return false;
+            }
+            current = parent_of.get(&path).cloned();
+        }
+        false
+    };
+
+    let child_totals: Vec<(String, TokenTally)> = parsed
+        .iter()
+        .filter(|file| file.rlm_depth.unwrap_or(0) > 0)
+        .map(|file| {
+            (
+                file.path.clone(),
+                file.messages
+                    .iter()
+                    .fold(TokenTally::default(), |sum, message| sum + message.5),
+            )
+        })
+        .collect();
+
+    let mut consumed_children: std::collections::HashSet<String> = Default::default();
+    let mut seen_attributions: std::collections::HashSet<String> = Default::default();
+    let mut reductions: std::collections::HashMap<String, TokenTally> = Default::default();
+    for file in &parsed {
+        for (attribution_id, target, child_usage, aggregate_usage) in &file.attributions {
+            let Some(target) = target else {
+                continue;
+            };
+            let lineage = lineage_root(&file.path);
+            let attribution_key = format!("{lineage}#{attribution_id}");
+            if !seen_attributions.insert(attribution_key) {
+                continue;
+            }
+            let Some(message) = file
+                .messages
+                .iter()
+                .find(|message| &message.0 == target && &message.5 == aggregate_usage)
+            else {
+                continue;
+            };
+            let Some(index) = child_totals.iter().position(|(path, tally)| {
+                !consumed_children.contains(path)
+                    && tally == child_usage
+                    && is_descendant(path, &lineage)
+            }) else {
+                continue;
+            };
+            consumed_children.insert(child_totals[index].0.clone());
+            let identity = message
+                .1
+                .as_ref()
+                .map(|id| format!("{KEY}:response:{id}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "{KEY}:message:{}:{}:{}:{}",
+                        message.0,
+                        message.2,
+                        message.3.as_deref().unwrap_or(""),
+                        message.4
+                    )
+                });
+            *reductions.entry(identity).or_default() += *child_usage;
+        }
+    }
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in &parsed {
+        let Some(_session_id) = file.id.clone() else {
+            continue;
+        };
+        for (row_id, response_id, at, provider, model, tally) in &file.messages {
+            let provider = provider.as_deref().unwrap_or("");
+            let identity = response_id
+                .as_ref()
+                .map(|id| format!("{KEY}:response:{id}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "{KEY}:message:{row_id}:{at}:{provider}:{model}:{}",
+                        tally.total()
+                    )
+                });
+            if !seen.insert(identity) {
+                continue;
+            }
+            let mut counted = *tally;
+            if let Some(reduction) = response_id
+                .as_ref()
+                .map(|id| format!("{KEY}:response:{id}"))
+                .or_else(|| {
+                    Some(format!(
+                        "{KEY}:message:{row_id}:{at}:{provider}:{model}:{}",
+                        tally.total()
+                    ))
+                })
+                .and_then(|identity| reductions.get(&identity))
+            {
+                counted.input = counted.input.saturating_sub(reduction.input);
+                counted.cache_write = counted.cache_write.saturating_sub(reduction.cache_write);
+                counted.cache_read = counted.cache_read.saturating_sub(reduction.cache_read);
+                counted.output = counted.output.saturating_sub(reduction.output);
+            }
+            if counted.total() == 0 {
+                continue;
+            }
+            *buckets
+                .entry(slot_key_from_ms(*at))
+                .or_default()
+                .entry(model.clone())
+                .or_default() += counted;
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+/// OpenClaw's current SQLite store plus its retained JSONL originals. The
+/// same call can appear in both, so event id + timestamp + counts fold them
+/// together; plumbing mirrors and zstd archives never count.
+pub fn openclaw_ledger() -> UsageLedger {
+    const KEY: &str = "openclaw";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let roots = [
+        crate::model::home_path(".openclaw/agents"),
+        crate::model::home_path(".clawdbot"),
+        crate::model::home_path(".moltbot"),
+        crate::model::home_path(".moldbot"),
+    ];
+    let mut sqlite_files = Vec::new();
+    let mut jsonl_files = Vec::new();
+    for root in &roots {
+        collect_files(root, "sqlite", &mut sqlite_files);
+        collect_files(root, "jsonl", &mut jsonl_files);
+    }
+    sqlite_files.sort();
+    jsonl_files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let carry = |row: &serde_json::Value| -> (Option<String>, Option<String>) {
+        let kind = row.get("type").and_then(serde_json::Value::as_str);
+        match kind {
+            Some("model_change") => (
+                json_text(row, &["modelId"]).map(str::to_string),
+                json_text(row, &["provider"]).map(str::to_string),
+            ),
+            Some("custom")
+                if row.get("customType").and_then(serde_json::Value::as_str)
+                    == Some("model-snapshot") =>
+            {
+                let data = row.get("data");
+                (
+                    data.and_then(|data| json_text(data, &["modelId"]).map(str::to_string)),
+                    data.and_then(|data| json_text(data, &["provider"]).map(str::to_string)),
+                )
+            }
+            _ => (None, None),
+        }
+    };
+
+    for database in sqlite_files.iter().filter(|file| {
+        file.file_name()
+            .map(|name| name == std::ffi::OsStr::new("openclaw-agent.sqlite"))
+            .unwrap_or(false)
+    }) {
+        let Ok(connection) = rusqlite::Connection::open_with_flags(
+            database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) else {
+            continue;
+        };
+        let mut metadata: std::collections::HashMap<String, Option<String>> = Default::default();
+        if let Ok(mut statement) =
+            connection.prepare("SELECT session_id, model FROM session_windows")
+        {
+            if let Ok(rows) = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0).unwrap_or_default(),
+                    row.get::<_, String>(1).ok(),
+                ))
+            }) {
+                for row in rows.flatten() {
+                    metadata.insert(row.0, row.1);
+                }
+            }
+        }
+        if metadata.is_empty() {
+            if let Ok(mut statement) = connection.prepare("SELECT session_id, model FROM sessions")
+            {
+                if let Ok(rows) = statement.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0).unwrap_or_default(),
+                        row.get::<_, String>(1).ok(),
+                    ))
+                }) {
+                    for row in rows.flatten() {
+                        metadata.insert(row.0, row.1);
+                    }
+                }
+            }
+        }
+
+        let Ok(mut statement) = connection.prepare(
+            "SELECT session_id, seq, event_json FROM transcript_events \
+             WHERE event_json LIKE '%\"usage\"%' OR event_json LIKE '%\"model_change\"%' \
+             OR event_json LIKE '%model-snapshot%' ORDER BY session_id, seq",
+        ) else {
+            continue;
+        };
+        let Ok(rows) = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0).unwrap_or_default(),
+                row.get::<_, i64>(1).unwrap_or(0),
+                row.get::<_, String>(2).unwrap_or_default(),
+            ))
+        }) else {
+            continue;
+        };
+        for row in rows.flatten() {
+            let (session, seq, event_json) = row;
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(&event_json) else {
+                continue;
+            };
+            let (mut model, provider) = carry(&event);
+            let Some(message) = openclaw_message(&event) else {
+                continue;
+            };
+            model = message
+                .model
+                .clone()
+                .or(model)
+                .or_else(|| metadata.get(&session).cloned().flatten())
+                .or(provider
+                    .as_ref()
+                    .and_then(|provider| provider_placeholder(provider)));
+            let Some(model) = model else {
+                continue;
+            };
+            let Some(at) = message.at else {
+                continue;
+            };
+            let event_id = message.event_id.unwrap_or_else(|| format!("seq-{seq}"));
+            let identity = format!(
+                "{KEY}:{}:{}:{}:{}",
+                event_id, at, message.tally.input, message.tally.output
+            );
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += message.tally;
+            }
+        }
+    }
+
+    for file in jsonl_files.iter().filter(|file| openclaw_jsonl(file)) {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let stem = file
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut model_carry: Option<String> = None;
+        for (index, line) in text.lines().enumerate() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let (changed_model, _) = carry(&row);
+            if changed_model.is_some() {
+                model_carry = changed_model;
+            }
+            let Some(message) = openclaw_message(&row) else {
+                continue;
+            };
+            let Some(model) = message.model.clone().or_else(|| model_carry.clone()) else {
+                continue;
+            };
+            let Some(at) = message.at else {
+                continue;
+            };
+            let event_id = message.event_id.unwrap_or_else(|| format!("line-{index}"));
+            let identity = format!(
+                "{KEY}:{}:{}:{}:{}",
+                event_id, at, message.tally.input, message.tally.output
+            );
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += message.tally;
+            }
+        }
+        let _ = stem;
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+struct OpenClawMessage {
+    event_id: Option<String>,
+    model: Option<String>,
+    at: Option<i64>,
+    tally: TokenTally,
+}
+
+fn openclaw_message(row: &serde_json::Value) -> Option<OpenClawMessage> {
+    if row.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+        return None;
+    }
+    let message = row.get("message")?;
+    if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let provider = json_text(message, &["provider"]).or(json_text(row, &["provider"]));
+    let model = json_text(message, &["model"]).or(json_text(row, &["model"]));
+    if provider == Some("openclaw")
+        && matches!(model, Some("delivery-mirror") | Some("gateway-injected"))
+    {
+        return None;
+    }
+    if json_text(row, &["api"]) == Some("openclaw-transcript")
+        || json_text(message, &["api"]) == Some("openclaw-transcript")
+    {
+        return None;
+    }
+    let usage = message.get("usage")?;
+    let count = |name: &str| json_count(usage.get(name));
+    let input = count("input");
+    let output = count("output");
+    let cache_read = count("cacheRead");
+    let cache_write = count("cacheWrite");
+    let reasoning = count("reasoningTokens").unwrap_or(0);
+    let total = count("totalTokens");
+    if input.is_none() && output.is_none() && cache_read.is_none() && cache_write.is_none() {
+        if let Some(total) = total {
+            if total <= 0 {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+    let tally = TokenTally {
+        input: input.unwrap_or(0),
+        cache_write: cache_write.unwrap_or(0),
+        cache_read: cache_read.unwrap_or(0),
+        output: output.unwrap_or(reasoning),
+    };
+    if tally.total() == 0 {
+        return None;
+    }
+    Some(OpenClawMessage {
+        event_id: json_text(row, &["id"]).map(str::to_string),
+        model: model.map(str::to_string),
+        at: json_timestamp(message.get("timestamp").or(row.get("timestamp")), true),
+        tally,
+    })
+}
+
+fn openclaw_jsonl(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !name.contains(".jsonl") || name.ends_with(".zst") {
+        return false;
+    }
+    let text = path.to_string_lossy();
+    let normalized = text.replace('\\', "/");
+    if !normalized.contains("/sessions/") && !normalized.contains("/session-sqlite-import-archive/")
+    {
+        return false;
+    }
+    !normalized.contains("/codex-home/") && !normalized.contains("/cli-auth/")
+}
+
+fn provider_placeholder(provider: &str) -> Option<String> {
+    let provider = provider.trim().to_ascii_lowercase();
+    if provider.is_empty() {
+        return None;
+    }
+    if provider.contains("anthropic") || provider.contains("claude") {
+        return Some("claude-unknown".into());
+    }
+    if provider.contains("openai") || provider.contains("gpt") {
+        return Some("gpt-unknown".into());
+    }
+    if provider.contains("google") || provider.contains("gemini") {
+        return Some("gemini-unknown".into());
+    }
+    if provider.contains("xai") || provider.contains("grok") {
+        return Some("grok-unknown".into());
+    }
+    Some(format!("{provider}-unknown"))
+}
+
 /// Gemini CLI's chat JSON and headless JSONL shapes. Session JSON's cache
 /// overlap is proven only by a total equal to the non-cache sum; headless
 /// prompt-style inputs are cache-inclusive. A bare total is not assigned to
@@ -2727,5 +3306,122 @@ mod tests {
             anthropic_style_usage(&serde_json::json!({"outputTokens": 4}), &names),
             None
         );
+    }
+
+    #[test]
+    fn prime_fork_copies_fold_and_parent_aggregates_are_reduced_by_children() {
+        let root = std::env::temp_dir().join(format!("quotascope-prime-{}", std::process::id()));
+        let sessions = root.join("sessions");
+        let child = sessions.join("child.jsonl");
+        let parent = sessions.join("parent.jsonl");
+        let fork = sessions.join("fork.jsonl");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            &child,
+            concat!(
+                r#"{"type":"session","id":"child","rlmDepth":1}"#,
+                "\n",
+                r#"{"type":"message","id":"c1","timestamp":"2026-10-01T10:00:00Z","message":{"role":"assistant","model":"m1","usage":{"input":10,"output":5}}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &parent,
+            concat!(
+                r#"{"type":"session","id":"parent"}"#,
+                "\n",
+                r#"{"type":"message","id":"p1","timestamp":"2026-10-01T10:01:00Z","message":{"role":"assistant","model":"m1","usage":{"input":20,"output":10}}}"#,
+                "\n",
+                r#"{"type":"child_usage_attributed","id":"a1","targetId":"p1","childUsage":{"input":10,"output":5},"aggregateUsage":{"input":20,"output":10}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &fork,
+            concat!(
+                r#"{"type":"session","id":"fork","parentSession":"PARENT_PATH"}"#,
+                "\n",
+                r#"{"type":"message","id":"p1","timestamp":"2026-10-01T10:01:00Z","message":{"role":"assistant","model":"m1","usage":{"input":20,"output":10}}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let fork_text = std::fs::read_to_string(&fork)
+            .unwrap()
+            .replace("PARENT_PATH", &parent.to_string_lossy().replace('\\', "/"));
+        std::fs::write(&fork, fork_text).unwrap();
+
+        // The parser is path-driven, so exercise it directly against these
+        // fixtures without touching the process HOME.
+        let parent_file = prime_parse_file(&parent);
+        let fork_file = prime_parse_file(&fork);
+        assert_eq!(parent_file.messages.len(), 1);
+        assert_eq!(fork_file.messages.len(), 1);
+        assert_eq!(parent_file.attributions.len(), 1);
+
+        let attribution = &parent_file.attributions[0];
+        let message = &parent_file.messages[0];
+        assert_eq!(&message.5, &attribution.3);
+        let child_file = prime_parse_file(&child);
+        let child_total: TokenTally = child_file
+            .messages
+            .iter()
+            .fold(TokenTally::default(), |sum, message| sum + message.5);
+        assert_eq!(child_total, attribution.2);
+
+        let reduced = TokenTally {
+            input: message.5.input.saturating_sub(attribution.2.input),
+            cache_write: 0,
+            cache_read: 0,
+            output: message.5.output.saturating_sub(attribution.2.output),
+        };
+        assert_eq!(reduced.total(), 15);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn openclaw_events_skip_plumbing_and_keep_bare_totals_counted() {
+        let call = serde_json::json!({
+            "type": "message",
+            "id": "e1",
+            "timestamp": 1791943323000_i64,
+            "message": {
+                "role": "assistant",
+                "provider": "anthropic",
+                "model": "claude-opus-4.6",
+                "usage": {"input": 10, "output": 5, "reasoningTokens": 2}
+            }
+        });
+        let message = openclaw_message(&call).expect("assistant call");
+        assert_eq!(message.tally.total(), 15);
+        assert_eq!(message.model.as_deref(), Some("claude-opus-4.6"));
+
+        let mirror = serde_json::json!({
+            "type": "message",
+            "api": "openclaw-transcript",
+            "message": {
+                "role": "assistant",
+                "provider": "openclaw",
+                "model": "delivery-mirror",
+                "usage": {"input": 999}
+            }
+        });
+        assert!(openclaw_message(&mirror).is_none());
+
+        let bare = serde_json::json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "model": "m",
+                "usage": {"totalTokens": 42}
+            }
+        });
+        // Our ledger carries classified kinds only, matching the Qwen and
+        // Prime rules: a total that names no kind is skipped rather than
+        // filed as a fabricated zero.
+        assert!(openclaw_message(&bare).is_none());
     }
 }

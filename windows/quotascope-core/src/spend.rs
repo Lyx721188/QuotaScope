@@ -149,6 +149,22 @@ impl Snapshot {
                 ledger: crate::ledger::generic_agent_ledger(agent),
             });
         }
+        let path = crate::model::home_path(".prime/agent");
+        sources.push(Source {
+            id: "prime-agent".into(),
+            title: "Prime Agent".into(),
+            location: path.display().to_string(),
+            present: path.is_dir(),
+            ledger: crate::ledger::prime_agent_ledger(),
+        });
+        let path = crate::model::home_path(".openclaw/agents");
+        sources.push(Source {
+            id: "openclaw".into(),
+            title: "OpenClaw".into(),
+            location: path.display().to_string(),
+            present: path.is_dir(),
+            ledger: crate::ledger::openclaw_ledger(),
+        });
         Self { sources }
     }
 
