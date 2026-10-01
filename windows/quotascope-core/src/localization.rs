@@ -65,6 +65,13 @@ struct Entry {
 }
 
 const TABLE: &[Entry] = &[
+    Entry { key: "Daily limit", en: "Daily limit", zh: "每日限额" },
+    Entry { key: "Messages", en: "Messages", zh: "消息额度" },
+    Entry { key: "Top-up allowance", en: "Top-up allowance", zh: "加购额度" },
+    Entry { key: "Credits", en: "Credits", zh: "积分额度" },
+    Entry { key: "Shared credits", en: "Shared credits", zh: "团队共享积分" },
+    Entry { key: "This account has no plan with usage limits.", en: "This account has no plan with usage limits.", zh: "此账户没有提供用量额度的套餐。" },
+    Entry { key: "{amount} credits expire {time}", en: "{amount} credits expire {time}", zh: "{amount} 积分于 {time} 到期" },
     Entry { key: "Configure", en: "Configure", zh: "配置" },
     Entry { key: "Collapse", en: "Collapse", zh: "收起" },
     Entry { key: "Disabled", en: "Disabled", zh: "未启用" },

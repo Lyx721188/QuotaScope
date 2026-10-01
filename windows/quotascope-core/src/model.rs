@@ -785,7 +785,12 @@ pub enum Kind {
     Spend,
     /// Prepaid credit, which is **not a limit**: no ceiling, no window.
     Balance,
+    Daily,
+    Messages,
     Monthly,
+    TopUp,
+    Credits,
+    SharedCredits,
     #[serde(rename = "other")]
     Other(#[serde(default)] i64),
 }
@@ -799,7 +804,12 @@ impl Kind {
             Kind::Weekly => "weekly".into(),
             Kind::Spend => "spend".into(),
             Kind::Balance => "balance".into(),
+            Kind::Daily => "daily".into(),
+            Kind::Messages => "messages".into(),
             Kind::Monthly => "monthly".into(),
+            Kind::TopUp => "topUp".into(),
+            Kind::Credits => "credits".into(),
+            Kind::SharedCredits => "sharedCredits".into(),
             Kind::Other(s) => format!("other:{s}"),
         }
     }
@@ -810,7 +820,12 @@ impl Kind {
             Kind::Weekly => "Weekly limit",
             Kind::Spend => "Spend limit",
             Kind::Balance => "Balance",
+            Kind::Daily => "Daily limit",
+            Kind::Messages => "Messages",
             Kind::Monthly => "Monthly limit",
+            Kind::TopUp => "Top-up allowance",
+            Kind::Credits => "Credits",
+            Kind::SharedCredits => "Shared credits",
             Kind::Other(_) => {
                 return if seconds >= 86_400 {
                     crate::localization::t_fmt(
@@ -884,11 +899,44 @@ pub struct UsageWindow {
     /// worth knowing about. Epoch milliseconds.
     #[serde(default)]
     pub next_expiry_ms: Option<i64>,
+    /// Amount expiring at next_expiry_ms, in the provider's allowance unit.
+    /// Absent in legacy caches and where the provider states only a date.
+    #[serde(default)]
+    pub next_expiry_amount: Option<f64>,
     /// The row's own name, when the source gives one — an extension
     /// programme names its limits in its own words. Shown instead of the
     /// kind's name; never translated.
     #[serde(default)]
     pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AllowanceExpiry {
+    pub at: i64,
+    pub amount: f64,
+}
+
+impl AllowanceExpiry {
+    /// Sum all remaining parts expiring on the first local calendar day,
+    /// rather than understating a day containing several expiring packs.
+    pub fn soonest(parts: impl Iterator<Item = (f64, i64)>, now_ms: i64) -> Option<Self> {
+        let ahead: Vec<_> = parts
+            .filter(|(amount, at)| amount.is_finite() && *amount > 0.0 && *at > now_ms)
+            .collect();
+        let at = ahead.iter().map(|(_, at)| *at).min()?;
+        let day = chrono::DateTime::from_timestamp_millis(at)?
+            .with_timezone(&chrono::Local)
+            .date_naive();
+        let amount = ahead
+            .iter()
+            .filter(|(_, time)| {
+                chrono::DateTime::from_timestamp_millis(*time)
+                    .is_some_and(|time| time.with_timezone(&chrono::Local).date_naive() == day)
+            })
+            .map(|(amount, _)| amount)
+            .sum();
+        Some(Self { at, amount })
+    }
 }
 
 fn yes() -> bool {
@@ -915,12 +963,37 @@ impl UsageWindow {
             estimate: None,
             is_exhausted: false,
             next_expiry_ms: None,
+            next_expiry_amount: None,
             label: None,
         }
     }
 
     pub fn is_estimated(&self) -> bool {
         self.estimate.is_some()
+    }
+
+    pub fn set_expiring_parts(&mut self, parts: impl Iterator<Item = (f64, i64)>, now_ms: i64) {
+        let expiry = AllowanceExpiry::soonest(parts, now_ms);
+        self.next_expiry_ms = expiry.map(|e| e.at);
+        self.next_expiry_amount = expiry.map(|e| e.amount);
+    }
+
+    /// Buying more credit is not a reset. Credit pools only turn over when
+    /// the provider moves the reset time; a large fall can identify other
+    /// windows turning over, but never a continuously topped-up balance.
+    pub fn has_turned_over(&self, previous: &UsageWindow) -> bool {
+        if matches!(self.kind, Kind::Balance | Kind::TopUp) {
+            return false;
+        }
+        let moved_on = self
+            .resets_at
+            .zip(previous.resets_at)
+            .is_some_and(|(new, old)| new.saturating_sub(old) > 60_000);
+        if matches!(self.kind, Kind::Credits | Kind::SharedCredits) {
+            moved_on
+        } else {
+            moved_on || previous.used_fraction - self.used_fraction >= 0.4
+        }
     }
 
     /// How much of this window has gone by, 0...1 — nil unless the provider
@@ -1073,6 +1146,7 @@ pub enum Unavailability {
     NotConnected,
     AwaitingResponse,
     NoLimitsReported,
+    NoPlan,
     SignInRequired,
     ClaudeSignInRequired,
     ClaudeLoginExpired,
@@ -1127,6 +1201,7 @@ impl Unavailability {
             Unavailability::NotConnected => "notConnected",
             Unavailability::AwaitingResponse => "awaitingResponse",
             Unavailability::NoLimitsReported => "No limits reported.",
+            Unavailability::NoPlan => "This account has no plan with usage limits.",
             Unavailability::SignInRequired => "signInRequired",
             Unavailability::ClaudeSignInRequired => "claudeSignInRequired",
             Unavailability::ClaudeLoginExpired => "claudeLoginExpired",

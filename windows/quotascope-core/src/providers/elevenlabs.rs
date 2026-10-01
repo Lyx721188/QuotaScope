@@ -84,11 +84,7 @@ pub fn reading(reply: &serde_json::Value) -> Result<ElevenLabsReading, Unavailab
     ) {
         let mut window = UsageWindow::new(
             "elevenlabs.characters",
-            // Upstream kinds this `.credits` — an allowance with a reset it
-            // states and no length it claims. The Windows kind set has no
-            // credits case; Spend is the one kind that never claims a length
-            // either.
-            Kind::Spend,
+            Kind::Credits,
             None,
             used / limit,
             // A sort key only: the billing period's length is not stated.

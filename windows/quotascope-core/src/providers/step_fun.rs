@@ -25,10 +25,7 @@
 //! was measured on a live account (Plus); the Coding Plan shape is
 //! second-hand, and the fixtures in the tests say so.
 //!
-//! **What is mapped, not ported.** Upstream kinds the credit pool `.credits`;
-//! the Windows kind set has no such case, so `Spend` stands in. Upstream has
-//! its own `.noPlan` for an account with no Step Plan on it — a complete
-//! answer, not a fault; the shared vocabulary says "no limits reported".
+//! Credit pools and an account without a plan retain their own semantics.
 
 use super::{pasted_or_none, KeyRing, ProviderService, SessionSpec};
 use crate::http::{HttpClient, HttpFailure, Method};
@@ -367,7 +364,7 @@ pub fn parse(reply: &Value) -> Result<Snapshot, Unavailability> {
     let top_up_left = fraction(credit.get("topup_credit_left_rate"));
     if buckets.is_empty() && subscription_left.is_none() {
         // The account counts no Step Plan — a complete answer, not a fault.
-        return Err(Unavailability::NoLimitsReported);
+        return Err(Unavailability::NoPlan);
     }
     Ok(Snapshot {
         plan: Plan::Credits {
@@ -476,8 +473,7 @@ pub fn windows(snapshot: &Snapshot, now_ms: i64) -> Vec<UsageWindow> {
                 let remaining: f64 = buckets.iter().map(|bucket| bucket.remaining).sum();
                 let mut window = UsageWindow::new(
                     "stepfun.credits",
-                    // Upstream kinds this `.credits`; Spend is the stand-in.
-                    Kind::Spend,
+                    Kind::Credits,
                     None,
                     ((total - remaining) / total).clamp(0.0, 1.0),
                     // Thirty days as a sort key, not a stated length: the
@@ -495,7 +491,12 @@ pub fn windows(snapshot: &Snapshot, now_ms: i64) -> Vec<UsageWindow> {
                 );
                 window.reports_length = false;
                 window.is_exhausted = remaining <= 0.0;
-                window.next_expiry_ms = next_expiry(buckets, now_ms);
+                window.set_expiring_parts(
+                    buckets
+                        .iter()
+                        .filter_map(|bucket| bucket.expires_at.map(|at| (bucket.remaining, at))),
+                    now_ms,
+                );
                 vec![window]
             } else {
                 // No sizes, only fractions. The subscription's is the plan; a
@@ -505,7 +506,7 @@ pub fn windows(snapshot: &Snapshot, now_ms: i64) -> Vec<UsageWindow> {
                 };
                 let mut window = UsageWindow::new(
                     "stepfun.credits",
-                    Kind::Spend,
+                    Kind::Credits,
                     None,
                     1.0 - left,
                     30 * 86_400,
@@ -534,14 +535,6 @@ fn coding(remaining: &CodingWindow, id: &str, kind: Kind, seconds: i64) -> Usage
 
 /// The soonest bucket to lapse, among the ones still ahead of `now` with
 /// something left in them.
-fn next_expiry(buckets: &[Bucket], now_ms: i64) -> Option<i64> {
-    buckets
-        .iter()
-        .filter(|bucket| bucket.remaining > 0.0)
-        .filter_map(|bucket| bucket.expires_at)
-        .filter(|at| *at > now_ms)
-        .min()
-}
 
 #[cfg(test)]
 mod tests {
@@ -606,7 +599,7 @@ mod tests {
         let ring = &rings[0];
         // 1,250,000 spent out of 1.5M Credits.
         assert!((ring.used_fraction - 1_250_000.0 / 1_500_000.0).abs() < 1e-9);
-        assert_eq!(ring.kind, Kind::Spend);
+        assert_eq!(ring.kind, Kind::Credits);
         assert!(!ring.reports_length);
         // The refill the reply states, still ahead. The spent pack's expiry
         // says nothing: an empty pack lapses at nothing.
@@ -651,7 +644,7 @@ mod tests {
             "weekly_usage_left_rate": 0, "weekly_usage_reset_time": "0",
             "plan_credit_rate_limit": {}
         });
-        assert_eq!(parse(&none), Err(Unavailability::NoLimitsReported));
+        assert_eq!(parse(&none), Err(Unavailability::NoPlan));
     }
 
     #[test]

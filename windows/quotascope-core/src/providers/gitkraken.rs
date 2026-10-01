@@ -10,8 +10,8 @@
 //!
 //! **Credits, not a week.** CodexBar calls the allowance weekly; the reply
 //! states only `resetsOn`, so no length is claimed and seven days is only
-//! where the row sorts. The Windows model has no credits kind, so the kind
-//! carries the same sort key. A limit of `-1` (unlimited) or `0` (no
+//! where the row sorts. Personal and organization credits remain distinct.
+//! A limit of `-1` (unlimited) or `0` (no
 //! allowance) is a statement with no fraction in it, and draws nothing.
 
 use super::{pasted_or_none, KeyRing, ProviderService};
@@ -126,7 +126,12 @@ fn fraction(used: Option<f64>, limit: Option<f64>) -> Option<f64> {
 }
 
 fn window(id: &str, used: f64, resets_at: Option<i64>) -> UsageWindow {
-    let mut window = UsageWindow::new(id, Kind::Other(SORT_KEY), None, used, SORT_KEY, resets_at);
+    let kind = if id == "gitkraken.organization" {
+        Kind::SharedCredits
+    } else {
+        Kind::Credits
+    };
+    let mut window = UsageWindow::new(id, kind, None, used, SORT_KEY, resets_at);
     // The reply does not state the period; seven days only sorts.
     window.reports_length = false;
     window.is_exhausted = used >= 1.0;

@@ -310,7 +310,7 @@ impl Period {
         };
         match (unit, count) {
             ('d', 1) => Period {
-                kind: Kind::Other(DAY),
+                kind: Kind::Daily,
                 seconds: DAY,
                 reports_length: true,
                 is_fixed: false,
@@ -460,7 +460,7 @@ mod tests {
             // (raw, kind, seconds, reports_length, is_fixed)
             ("5h", Kind::FiveHour, 5 * 3_600, true, true),
             ("24h", Kind::Other(86_400), 86_400, true, true),
-            ("1d", Kind::Other(86_400), 86_400, true, false),
+            ("1d", Kind::Daily, 86_400, true, false),
             ("7d", Kind::Weekly, 7 * 86_400, true, false),
             ("2w", Kind::Other(14 * 86_400), 14 * 86_400, true, false),
             ("1h30m", Kind::Spend, 5_400, false, true),

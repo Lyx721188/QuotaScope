@@ -286,10 +286,31 @@ pub fn reading(reply: &serde_json::Value, account: AccountKey) -> ProviderUsage 
     }
 
     if windows.is_empty() {
-        // An answer rather than an outage: when the subscription is known
-        // inactive upstream says `.noPlan`. QuotaScope's Unavailability has
-        // no such case yet, so both shapes land on "no limits reported".
-        return ProviderUsage::unavailable(account, Unavailability::NoLimitsReported);
+        let flag = value(subscription, &["active", "isactive"]).and_then(|v| v.as_bool());
+        let status = value(subscription, &["status", "state"])
+            .and_then(|v| v.as_str())
+            .map(str::to_ascii_lowercase);
+        let inactive = flag == Some(false)
+            || flag.is_none()
+                && status.as_deref().is_some_and(|s| {
+                    [
+                        "free",
+                        "inactive",
+                        "canceled",
+                        "cancelled",
+                        "expired",
+                        "none",
+                    ]
+                    .contains(&s)
+                });
+        return ProviderUsage::unavailable(
+            account,
+            if inactive {
+                Unavailability::NoPlan
+            } else {
+                Unavailability::NoLimitsReported
+            },
+        );
     }
     windows.sort_by_key(|window| window.window_seconds);
     let plan = value(subscription, &PLAN_KEYS)

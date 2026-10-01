@@ -464,10 +464,12 @@ pub fn reading(body: &str, account: AccountKey, now_ms: i64) -> ProviderUsage {
         return ProviderUsage::live_now(account, windows);
     }
 
-    // Upstream tells "the account counts no subscription" (`.noPlan`) apart
-    // from figures missing; the shared vocabulary has no such case, so both
-    // land on "no limits reported".
-    ProviderUsage::unavailable(account, Unavailability::NoLimitsReported)
+    let reason = if first_int(&["TotalCount", "totalCount"], &tree) == Some(0) {
+        Unavailability::NoPlan
+    } else {
+        Unavailability::NoLimitsReported
+    };
+    ProviderUsage::unavailable(account, reason)
 }
 
 /// The console's frame of failure, read from wherever it sits in the reply.
@@ -817,12 +819,7 @@ mod tests {
             "successResponse": true
         });
         let usage = reading_at(fixture.to_string());
-        // Upstream says `.noPlan` here; the shared vocabulary has no such
-        // case, and "no limits reported" is what stands in.
-        assert_eq!(
-            usage.state,
-            State::Unavailable(Unavailability::NoLimitsReported)
-        );
+        assert_eq!(usage.state, State::Unavailable(Unavailability::NoPlan));
     }
 
     #[test]

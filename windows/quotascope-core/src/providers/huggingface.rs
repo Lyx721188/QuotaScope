@@ -57,7 +57,7 @@ impl ProviderService for HuggingFaceService {
         };
         let mut window = UsageWindow::new(
             "huggingface.zeroGPU",
-            Kind::Other(86_400),
+            Kind::Daily,
             Some("ZeroGPU".into()),
             ((base - current) / base).max(0.0),
             86_400,
@@ -100,6 +100,6 @@ mod tests {
     fn zero_gpu_is_sort_key_only() {
         let value = serde_json::json!({"base": 100, "current": 25, "resetsAt": 1700000000});
         let _ = value;
-        assert_eq!(Kind::Other(86_400).token(), "other:86400");
+        assert_eq!(Kind::Daily.token(), "daily");
     }
 }

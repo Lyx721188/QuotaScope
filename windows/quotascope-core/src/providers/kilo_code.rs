@@ -227,10 +227,7 @@ pub fn pass_window(subscription: &serde_json::Value) -> Option<UsageWindow> {
     }
     let mut window = UsageWindow::new(
         "kilocode.pass",
-        // Upstream kinds this `.credits` — an allowance with a reset it
-        // states and no length it claims. The Windows kind set has no credits
-        // case; Spend is the one kind that never claims a length either.
-        Kind::Spend,
+        Kind::Credits,
         None,
         used / size,
         30 * 86_400,

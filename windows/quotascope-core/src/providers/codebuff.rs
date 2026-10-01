@@ -93,10 +93,7 @@ pub fn reading(
         if quota > 0.0 {
             let mut window = UsageWindow::new(
                 "codebuff.credits",
-                // Upstream calls this a credit allowance; the Windows model
-                // has no credits kind, so the month is a sort key and the
-                // row says so.
-                Kind::Other(THIRTY_DAYS),
+                Kind::Credits,
                 None,
                 used / quota,
                 THIRTY_DAYS,

@@ -160,9 +160,7 @@ pub fn reading(reply: &Value) -> Result<(Vec<UsageWindow>, Option<String>), Unav
     if let Some(fraction) = fraction(remaining, total) {
         let mut window = UsageWindow::new(
             "raycast.ai_credits",
-            // Upstream kinds the allowance `.credits`; Spend is the Windows
-            // stand-in for it, as elsewhere in the port.
-            Kind::Spend,
+            Kind::Credits,
             None,
             fraction,
             30 * 86_400,
@@ -223,7 +221,7 @@ mod tests {
         let window = &windows[0];
         assert_eq!(window.id, "raycast.ai_credits");
         // Upstream kinds this `.credits`; Spend is the Windows stand-in.
-        assert_eq!(window.kind, Kind::Spend);
+        assert_eq!(window.kind, Kind::Credits);
         assert_eq!(window.used_fraction, 0.75);
         assert_eq!(window.window_seconds, 30 * 86_400);
         assert!(!window.reports_length);

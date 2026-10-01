@@ -193,11 +193,7 @@ pub fn windows(reply: &serde_json::Value) -> Result<Vec<UsageWindow>, Unavailabi
                     upstream,
                     name.unwrap_or(index.to_string().as_str())
                 ),
-                // Upstream kinds this `.credits` — an allowance with a reset
-                // it states and no length it claims. The Windows kind set has
-                // no credits case; Spend is the one kind that never claims a
-                // length either.
-                Kind::Spend,
+                Kind::Credits,
                 Some(scope),
                 (100.0 - left) / 100.0,
                 // A sort key only: no group states its period.

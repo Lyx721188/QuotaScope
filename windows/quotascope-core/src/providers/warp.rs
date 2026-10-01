@@ -207,12 +207,7 @@ pub fn reading_at(reply: &serde_json::Value, account: AccountKey, now_ms: i64) -
             if cap.is_finite() && cap > 0.0 && used.is_finite() && used >= 0.0 {
                 let mut row = UsageWindow::new(
                     "warp.credits",
-                    // Upstream names this its `.credits` kind — an allowance
-                    // with a stated reset and no length it claims. The
-                    // Windows Kind has no credits case, so the thirty days
-                    // ride as `other`, a sort key that reports no length
-                    // (the stand-in the crate already uses, see amp.rs).
-                    Kind::Other(30 * 86_400),
+                    Kind::Credits,
                     None,
                     used / cap,
                     30 * 86_400,
@@ -267,10 +262,7 @@ pub fn reading_at(reply: &serde_json::Value, account: AccountKey, now_ms: i64) -
         let left: f64 = grants.iter().map(|(_, left, _)| left).sum();
         let mut pack = UsageWindow::new(
             "warp.addon",
-            // Upstream's `.topUp`: bought on top of the plan's, spent after
-            // it, and never reset. The same `other` stand-in applies, with
-            // no length claimed.
-            Kind::Other(30 * 86_400),
+            Kind::TopUp,
             None,
             (granted - left).max(0.0) / granted,
             30 * 86_400,
@@ -279,7 +271,12 @@ pub fn reading_at(reply: &serde_json::Value, account: AccountKey, now_ms: i64) -
         // A sort key alone: spent after the plan's, and never reset.
         pack.reports_length = false;
         pack.is_exhausted = left <= 0.0;
-        pack.next_expiry_ms = next_expiry(&grants, now_ms);
+        pack.set_expiring_parts(
+            grants
+                .iter()
+                .filter_map(|(_, left, expiry)| expiry.map(|at| (*left, at))),
+            now_ms,
+        );
         windows.push(pack);
     }
 
@@ -334,7 +331,7 @@ mod tests {
         assert_eq!(windows.len(), 1);
         let window = &windows[0];
         assert_eq!(window.id, "warp.credits");
-        assert_eq!(window.kind, Kind::Other(30 * 86_400));
+        assert_eq!(window.kind, Kind::Credits);
         assert!((window.used_fraction - 0.25).abs() < 1e-9);
         // The refill is stated, the period's length is not.
         assert!(!window.reports_length);
@@ -423,7 +420,7 @@ mod tests {
         assert_eq!(windows.len(), 2);
         let pack = &windows[1];
         assert_eq!(pack.id, "warp.addon");
-        assert_eq!(pack.kind, Kind::Other(30 * 86_400));
+        assert_eq!(pack.kind, Kind::TopUp);
         assert!((pack.used_fraction - 150.0 / 350.0).abs() < 1e-9);
         assert!(!pack.reports_length);
         assert!(pack.resets_at.is_none());

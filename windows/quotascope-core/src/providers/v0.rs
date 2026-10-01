@@ -149,12 +149,10 @@ pub fn reading(
 
     let mut windows: Vec<UsageWindow> = Vec::new();
     // v0's own credits over a billing cycle whose length is not stated.
-    // Upstream calls this its `.credits` kind — not `.monthly`, because
-    // nothing in the reply says how long a period is — and the Windows Kind
-    // has no credits case, so `other` with no reported length stands in.
+    // Credits, with no invented billing-cycle length.
     if let Some(window) = quota_window(
         "v0.billing",
-        Kind::Other(30 * 86_400),
+        Kind::Credits,
         total,
         remaining,
         reset,
@@ -163,12 +161,11 @@ pub fn reading(
         windows.push(window);
     }
     // Counted in requests, with a reset and no stated length. A day is only
-    // where it sorts. Upstream's `.messages` kind has no Windows equivalent;
-    // the day as `other` is the stand-in the crate already uses.
+    // where it sorts; the allowance is counted in messages.
     if let Some(data) = rate_limit {
         if let Some(window) = quota_window(
             "v0.rate_limit",
-            Kind::Other(86_400),
+            Kind::Messages,
             crate::http::number_field(data, "limit"),
             crate::http::number_field(data, "remaining"),
             crate::http::number_field(data, "reset"),

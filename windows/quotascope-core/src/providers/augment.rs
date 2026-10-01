@@ -171,11 +171,7 @@ pub fn reading(
     // billing cycle's thirty days are a sort key only.
     let mut window = UsageWindow::new(
         "augment.credits",
-        // Upstream kinds this `.credits` — an allowance with a reset it
-        // states and no length it claims. The Windows kind set has no
-        // credits case; Spend is the one kind that never claims a length
-        // either.
-        Kind::Spend,
+        Kind::Credits,
         None,
         used / available,
         30 * 86_400,

@@ -136,7 +136,7 @@ impl ProviderService for XiaomiMiMoService {
             // Not a failure: an account can buy tokens by the yuan with no
             // plan at all. Saying so beats a ring at 0%, which would read as
             // a full month nobody has.
-            return ProviderUsage::unavailable(account, Unavailability::NoLimitsReported);
+            return ProviderUsage::unavailable(account, Unavailability::NoPlan);
         };
         let balance = routes[2].as_ref().ok().and_then(parse_balance);
         let mut found = reading(&plan, balance, account);

@@ -259,7 +259,7 @@ fn standing(reason: Unavailability) -> Standing {
         // cleared nothing, so an earlier outage's announcement stayed armed
         // for the life of the record and the next real outage said nothing —
         // the exact failure the three-way split exists to prevent.
-        Unavailability::NoLimitsReported | Unavailability::ZaiNoCodingPlan => Standing::Answered,
+        Unavailability::NoLimitsReported | Unavailability::NoPlan | Unavailability::ZaiNoCodingPlan => Standing::Answered,
 
         // Never set up, never signed in, or an app that simply is not
         // running.
@@ -354,10 +354,7 @@ fn reset_events(
             || old_window.is_exhausted;
         let now_comfortable =
             window.percent_value(false) < old_window.percent_value(false) && !window.is_exhausted;
-        let reset_advanced = match (old_window.resets_at, window.resets_at) {
-            (Some(old_at), Some(new_at)) => new_at > old_at,
-            _ => true,
-        };
+        let reset_advanced = window.has_turned_over(old_window);
 
         if was_warned && now_comfortable && reset_advanced && memory.warned_windows.remove(&key) {
             memory.spent_announced.remove(&key);

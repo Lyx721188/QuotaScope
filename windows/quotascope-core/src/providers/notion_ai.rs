@@ -84,10 +84,7 @@ impl ProviderService for NotionAiService {
             return ProviderUsage::unavailable(account, Unavailability::UnreadableReply);
         };
         let Some(workspace) = choose(&spaces) else {
-            // A workspace list with no plan that carries an allowance is the
-            // site saying there is nothing to report. Upstream says
-            // `.noPlan`; the shared vocabulary lands it on "no limits".
-            return ProviderUsage::unavailable(account, Unavailability::NoLimitsReported);
+            return ProviderUsage::unavailable(account, Unavailability::NoPlan);
         };
 
         let status_reply = match self.post(
@@ -284,10 +281,7 @@ pub fn reading(reply: &serde_json::Value, now_ms: i64) -> Result<Vec<UsageWindow
         .as_deref()
         == Some("not_applicable")
     {
-        // A plan without an allowance answers `not_applicable` — an answer,
-        // not an outage. Upstream says `.noPlan`; the shared vocabulary has
-        // no such case, so it lands on "no limits reported".
-        return Err(Unavailability::NoLimitsReported);
+        return Err(Unavailability::NoPlan);
     }
     // Every field is optional, so an unrelated body decodes as all nil.
     if parsed.window.is_none() && parsed.billing_period_window.is_none() {
@@ -508,7 +502,7 @@ mod tests {
     fn not_applicable_is_an_answer_not_an_outage() {
         assert_eq!(
             reading(&serde_json::json!({"status": "not_applicable"}), 0),
-            Err(Unavailability::NoLimitsReported)
+            Err(Unavailability::NoPlan)
         );
     }
 

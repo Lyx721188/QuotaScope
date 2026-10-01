@@ -102,16 +102,9 @@ pub fn windows(quota: &serde_json::Value) -> Vec<UsageWindow> {
                 extra.get("used_tokens").and_then(number),
                 extra.get("total_tokens").and_then(number),
             ) {
-                let mut window = UsageWindow::new(
-                    "extra",
-                    Kind::Other(30 * 86_400),
-                    None,
-                    fraction,
-                    30 * 86_400,
-                    None,
-                );
+                let mut window =
+                    UsageWindow::new("extra", Kind::TopUp, None, fraction, 30 * 86_400, None);
                 window.reports_length = false;
-                window.label = Some("Extra usage".into());
                 window.is_exhausted = spent(extra.get("remaining_tokens").and_then(number));
                 out.push(window);
             }

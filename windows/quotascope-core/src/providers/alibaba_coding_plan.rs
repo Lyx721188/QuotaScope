@@ -312,9 +312,15 @@ pub fn answer(tree: &Value, now_ms: i64) -> Answer {
     if windows.is_empty() {
         // A list of plans that is empty, or holds only lapsed ones, is the
         // console saying there is no plan; anything else is figures missing.
-        // Upstream separates the two (`.noPlan`); the shared vocabulary has
-        // no such case yet, so both land on "no limits reported".
-        return Answer::AskOtherSite(Unavailability::NoLimitsReported);
+        let reason = if instances
+            .as_ref()
+            .is_some_and(|items| items.iter().all(|item| activity(item, now_ms) < 0))
+        {
+            Unavailability::NoPlan
+        } else {
+            Unavailability::NoLimitsReported
+        };
+        return Answer::AskOtherSite(reason);
     }
 
     let plan = chosen
@@ -828,11 +834,9 @@ mod tests {
             json!({"codingPlanInstanceInfos": [{"status": "EXPIRED"}, {"status": "STOPPED"}]}),
             json!({"codingPlanInstanceInfos": []}),
         ] {
-            // Upstream says `.noPlan` here; the shared vocabulary has no
-            // such case, and the other site may still know the key.
             assert_eq!(
                 answer(&reply, NOW),
-                Answer::AskOtherSite(Unavailability::NoLimitsReported)
+                Answer::AskOtherSite(Unavailability::NoPlan)
             );
         }
     }

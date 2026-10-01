@@ -259,10 +259,7 @@ fn active_lot(packs: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
 fn allowance(used: f64, total: f64) -> UsageWindow {
     let mut window = UsageWindow::new(
         "longcat.tokens",
-        // Upstream kinds this `.credits` — an allowance with no length it
-        // claims. The Windows kind set has no credits case; Spend is the
-        // one kind that never claims a length either.
-        Kind::Spend,
+        Kind::Credits,
         None,
         used / total,
         30 * 86_400,
@@ -295,9 +292,7 @@ fn fuel_window(fuel: &serde_json::Value, now_ms: i64) -> Option<UsageWindow> {
 
     let mut window = UsageWindow::new(
         "longcat.fuel",
-        // Upstream kinds this `.topUp`; the Windows kind set has no top-up
-        // case, and Spend is the allowance stand-in the credits row uses.
-        Kind::Spend,
+        Kind::TopUp,
         None,
         used / total,
         60 * 86_400,
@@ -307,18 +302,15 @@ fn fuel_window(fuel: &serde_json::Value, now_ms: i64) -> Option<UsageWindow> {
     window.reports_length = false;
     window.is_exhausted = remaining <= 0.0;
     // The soonest part to lapse — only parts still ahead of now with
-    // something left in them count. Upstream also sums the parts that end
-    // on the same day; the Windows model carries the timestamp alone.
-    window.next_expiry_ms = packs
-        .iter()
-        .filter_map(|pack| {
+    // something left in them count. Parts ending the same day are summed.
+    window.set_expiring_parts(
+        packs.iter().filter_map(|pack| {
             let amount = figure(pack.get("availableToken"))?;
             let at = date(pack.get("expireTime").unwrap_or(&serde_json::Value::Null))?;
             Some((amount, at))
-        })
-        .filter(|(amount, at)| *amount > 0.0 && *at > now_ms)
-        .map(|(_, at)| at)
-        .min();
+        }),
+        now_ms,
+    );
     Some(window)
 }
 

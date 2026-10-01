@@ -997,10 +997,20 @@ fn reset_text(window: &quotascope_core::model::UsageWindow) -> String {
     };
     match window.next_expiry_ms {
         Some(at) => {
-            let expiry = quotascope_core::localization::t_fmt(
-                "expires {time}",
-                &[&quotascope_core::timeutil::reset_text(at)],
-            );
+            let expiry = if let Some(amount) = window.next_expiry_amount {
+                quotascope_core::localization::t_fmt(
+                    "{amount} credits expire {time}",
+                    &[
+                        &format!("{amount:.0}"),
+                        &quotascope_core::timeutil::reset_text(at),
+                    ],
+                )
+            } else {
+                quotascope_core::localization::t_fmt(
+                    "expires {time}",
+                    &[&quotascope_core::timeutil::reset_text(at)],
+                )
+            };
             if base.is_empty() {
                 expiry
             } else {

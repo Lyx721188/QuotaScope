@@ -104,7 +104,7 @@ pub fn reading(
         // the month is a sort key and the row says so.
         if let Some(window) = window(
             "devpass.cycle",
-            Kind::Other(30 * 86_400),
+            Kind::Credits,
             amount(crate::http::string_field(key, "devPlanCreditsUsed")),
             amount(crate::http::string_field(key, "devPlanCreditsLimit")),
             30 * 86_400,
@@ -129,10 +129,11 @@ pub fn reading(
     }
 
     if windows.is_empty() {
-        // Pay as you go with no key limit: an answer, not an outage. Upstream
-        // files it under its own "no plan" word; the Windows vocabulary has
-        // no such case, so it shares this one.
-        return Err(Unavailability::NoLimitsReported);
+        return Err(if plan == "none" {
+            Unavailability::NoPlan
+        } else {
+            Unavailability::NoLimitsReported
+        });
     }
     let name = (plan != "none").then(|| capitalize(plan));
     Ok((windows, name))
@@ -274,10 +275,7 @@ mod tests {
     #[test]
     fn nothing_to_show_is_an_answer_not_an_outage() {
         let reply = serde_json::json!({"data": {"devPlan": "none"}});
-        assert_eq!(
-            reading(&reply).unwrap_err(),
-            Unavailability::NoLimitsReported
-        );
+        assert_eq!(reading(&reply).unwrap_err(), Unavailability::NoPlan);
     }
 
     #[test]

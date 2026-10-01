@@ -202,9 +202,7 @@ pub struct BobReading {
 
 pub fn reading(teams: &[Team]) -> Result<BobReading, Unavailability> {
     if teams.is_empty() {
-        // Upstream says `.noPlan` here; the Windows vocabulary has no such
-        // case, and "nothing reported" is what the reader sees either way.
-        return Err(Unavailability::NoLimitsReported);
+        return Err(Unavailability::NoPlan);
     }
     let plans: std::collections::BTreeSet<String> = teams
         .iter()
@@ -467,7 +465,7 @@ mod tests {
             reading(&teams).unwrap_err(),
             Unavailability::NoLimitsReported
         );
-        assert_eq!(reading(&[]).unwrap_err(), Unavailability::NoLimitsReported);
+        assert_eq!(reading(&[]).unwrap_err(), Unavailability::NoPlan);
     }
 
     #[test]

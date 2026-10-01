@@ -185,10 +185,8 @@ fn free_dollars(line: &str) -> Option<UsageWindow> {
     cut(rest, "remaining")?;
     let used = used_fraction(amount(remaining), amount(limit))?;
     let mut window = UsageWindow::new(
-        // Upstream calls this a credit allowance; the Windows model has no
-        // credits kind, so the day is a sort key and the row says so.
         "amp.free",
-        Kind::Other(86_400),
+        Kind::Credits,
         Some("Amp Free".into()),
         used,
         86_400,
@@ -230,7 +228,7 @@ fn free_percent(line: &str) -> Option<UsageWindow> {
     let used = (100.0 - remaining.min(100.0)).max(0.0) / 100.0;
     let mut window = UsageWindow::new(
         "amp.free",
-        Kind::Other(86_400),
+        Kind::Daily,
         Some("Amp Free".into()),
         used,
         86_400,

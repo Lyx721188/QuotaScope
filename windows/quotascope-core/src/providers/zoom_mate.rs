@@ -254,9 +254,7 @@ pub fn reading(reply: &Value, account: AccountKey) -> ProviderUsage {
     let fraction = used / cap;
     let mut window = UsageWindow::new(
         "zoommate.credits",
-        // Upstream kinds the allowance `.credits`; Spend is the Windows
-        // stand-in for it, as elsewhere in the port.
-        Kind::Spend,
+        Kind::Credits,
         None,
         fraction,
         stated.unwrap_or(30 * 86_400),
@@ -362,7 +360,7 @@ mod tests {
         let window = &usage.windows[0];
         assert_eq!(window.id, "zoommate.credits");
         // Upstream kinds this `.credits`; Spend is the Windows stand-in.
-        assert_eq!(window.kind, Kind::Spend);
+        assert_eq!(window.kind, Kind::Credits);
         assert_eq!(window.used_fraction, 0.25);
         // Both ends stated: the length between them is the cycle's.
         assert_eq!(window.window_seconds, 2_600_000);

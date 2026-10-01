@@ -25,9 +25,7 @@
 //! that is actually stopping you. Both spellings are accepted per field: the
 //! mainland site's reply mixes them (`nextResetAt` beside `total_quota`).
 //!
-//! **What is mapped, not ported.** Upstream kinds the personal credits
-//! `.credits` and a team pool `.sharedCredits`; the Windows kind set has
-//! neither, so `Spend` stands in for both and the id says which is which.
+//! Personal credits and a team's shared pool retain separate kinds.
 //! Upstream's `.qoderNoCredits` — an account with nothing to display — has no
 //! shared case either, and says "no limits reported".
 
@@ -395,7 +393,13 @@ pub fn windows(snapshot: &Snapshot, now_ms: i64) -> Vec<UsageWindow> {
     // date is not, so the ring is drawn without one.
     let resets_at = snapshot.resets_at.filter(|at| *at > now_ms);
     if let Some(mut window) = window(&snapshot.personal, "qoder.credits", resets_at) {
-        window.next_expiry_ms = next_expiry(&snapshot.packs, now_ms);
+        window.set_expiring_parts(
+            snapshot
+                .packs
+                .iter()
+                .map(|pack| (pack.remaining, pack.expires_at)),
+            now_ms,
+        );
         windows.push(window);
     }
     // The reset Qoder states is the account's. Whether a team's pool turns
@@ -418,10 +422,11 @@ fn window(pool: &Pool, id: &str, resets_at: Option<i64>) -> Option<UsageWindow> 
     }
     let mut window = UsageWindow::new(
         id,
-        // Upstream kinds these `.credits` and `.sharedCredits`; the Windows
-        // kind set has neither, so Spend stands in and the id says which is
-        // which.
-        Kind::Spend,
+        if id == "qoder.shared" {
+            Kind::SharedCredits
+        } else {
+            Kind::Credits
+        },
         None,
         (pool.used / pool.limit).clamp(0.0, 1.0),
         // Thirty days is a sort key, not a reported length: Qoder states when
@@ -436,16 +441,6 @@ fn window(pool: &Pool, id: &str, resets_at: Option<i64>) -> Option<UsageWindow> 
         .map(|remaining| remaining <= 0.0)
         .unwrap_or(pool.used >= pool.limit);
     Some(window)
-}
-
-/// The soonest pack to lapse, among the ones still ahead of `now` with
-/// something left in them.
-fn next_expiry(packs: &[Pack], now_ms: i64) -> Option<i64> {
-    packs
-        .iter()
-        .map(|pack| pack.expires_at)
-        .filter(|at| *at > now_ms)
-        .min()
 }
 
 #[cfg(test)]
@@ -492,7 +487,7 @@ mod tests {
         // Qoder's usedValue over its limitValue, not its usagePercentage —
         // the panel rounds for itself and would otherwise round a rounding.
         assert_eq!(personal.used_fraction, 0.25);
-        assert_eq!(personal.kind, Kind::Spend);
+        assert_eq!(personal.kind, Kind::Credits);
         // Thirty days is a sort key; the period's length is never stated.
         assert_eq!(personal.window_seconds, 30 * 86_400);
         assert!(!personal.reports_length);

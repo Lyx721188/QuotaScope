@@ -102,6 +102,8 @@ pub struct WindowReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "nextExpiryAt")]
     next_expiry_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "nextExpiryAmount")]
+    next_expiry_amount: Option<f64>,
 }
 
 /// Reads the stored rail and prints the report. Never fetches, never
@@ -185,6 +187,7 @@ fn window_report(window: &UsageWindow) -> WindowReport {
         estimated_from: window.estimate.map(|e| e.token().to_string()),
         resets_at: window.resets_at.map(crate::timeutil::iso8601_utc),
         next_expiry_at: window.next_expiry_ms.map(crate::timeutil::iso8601_utc),
+        next_expiry_amount: window.next_expiry_amount,
     }
 }
 
@@ -245,6 +248,25 @@ mod tests {
 
     use super::{account_report, window_report};
     use crate::model::{AccountKey, Estimate, Kind, Provider, ProviderUsage, UsageWindow};
+
+    #[test]
+    fn expiry_amount_and_new_kinds_are_preserved_in_the_public_report() {
+        for (kind, token) in [
+            (Kind::Daily, "daily"),
+            (Kind::Messages, "messages"),
+            (Kind::TopUp, "topUp"),
+            (Kind::Credits, "credits"),
+            (Kind::SharedCredits, "sharedCredits"),
+        ] {
+            let mut row = UsageWindow::new("credits", kind, None, 0.2, 0, None);
+            row.next_expiry_ms = Some(1_800_000_000_000);
+            row.next_expiry_amount = Some(500.0);
+            let json = serde_json::to_value(window_report(&row)).unwrap();
+            assert_eq!(json["kind"], token);
+            assert_eq!(json["nextExpiryAmount"], 500.0);
+            assert!(json["nextExpiryAt"].is_string());
+        }
+    }
 
     fn reading(account: &AccountKey, windows: Vec<UsageWindow>, observed_at: i64) -> ProviderUsage {
         let mut usage = ProviderUsage::live_now(account.clone(), windows);

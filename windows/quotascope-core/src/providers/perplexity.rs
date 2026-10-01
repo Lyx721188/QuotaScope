@@ -238,7 +238,7 @@ pub fn reading(reply: &Value, now_ms: i64) -> ProviderUsage {
                 .map(crate::timeutil::epoch_to_ms);
             let mut window = UsageWindow::new(
                 "perplexity.recurring",
-                Kind::Spend,
+                Kind::Credits,
                 None,
                 used / recurring,
                 // A sort key: the renewal is stated, the period's length is not.

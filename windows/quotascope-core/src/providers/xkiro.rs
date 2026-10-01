@@ -196,7 +196,7 @@ pub fn reading_at(reply: &serde_json::Value, account: AccountKey, now_ms: i64) -
                 // stand-in the crate already uses (see aixy.rs). The length
                 // is real — xKiro's documented daily boundary — so it still
                 // reports one.
-                Kind::Other(86_400),
+                Kind::Daily,
                 None,
                 used / limit,
                 86_400,
@@ -243,7 +243,7 @@ pub fn kind_of_length(seconds: i64) -> Kind {
     const A_WEEK: i64 = 7 * 86_400;
     match seconds {
         FIVE_HOURS => Kind::FiveHour,
-        A_DAY => Kind::Other(A_DAY),
+        A_DAY => Kind::Daily,
         A_WEEK => Kind::Weekly,
         other => Kind::Other(other),
     }
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(weekly.resets_at, Some(NOW + 3_600_000));
         assert!(!weekly.is_exhausted);
         let free = &windows[1];
-        assert_eq!(free.kind, Kind::Other(86_400));
+        assert_eq!(free.kind, Kind::Daily);
         assert!((free.used_fraction - 0.3).abs() < 1e-9);
         assert_eq!(free.resets_at, next_midnight_utc_ms(NOW));
         assert_eq!(usage.credit_balance.as_deref(), Some("$200.00"));
@@ -351,7 +351,7 @@ mod tests {
     fn window_lengths_name_their_kinds() {
         for (seconds, kind) in [
             (5 * 3_600, Kind::FiveHour),
-            (86_400, Kind::Other(86_400)),
+            (86_400, Kind::Daily),
             (7 * 86_400, Kind::Weekly),
             (3 * 3_600, Kind::Other(3 * 3_600)),
         ] {
