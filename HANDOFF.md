@@ -142,7 +142,7 @@ Windows FileVersion 为 1.2.0。
 
 ## 仍未移植/保留差距
 
-本节为先前视觉改版结束时的快照。2026-10-01 后续用户已授权补齐可移植上游功能，当前状态以 `PORT_PLAN.md` 为准：P1 的额度语义已通过本地 529 测试及 Actions 36842081249；P2 的缓存命中率、Claude 缓存 TTL、Codex app-server 回退、账户统计与重置次数已接入，542 项本地测试通过、3 项默认忽略，另一个被忽略的真实只读 Codex 协议测试已单独运行成功。日志 `work/p2-tests.log`、`work/p2-clippy.log`、`work/p2-codex-live.log`。物理 Esc 中止后没有继续 UI 操作，因此这些新增 UI 不宣称真实交互验收。接下来是独立 Token spend 页。
+本节为先前视觉改版结束时的快照。2026-10-01 后续用户已授权补齐可移植上游功能，当前状态以 `PORT_PLAN.md` 为准：P1 的额度语义已通过本地 529 测试及 Actions 36842081249；P2 的缓存命中率、Claude 缓存 TTL、Codex app-server 回退、账户统计与重置次数已接入，542 项本地测试通过、3 项默认忽略，另一个被忽略的真实只读 Codex 协议测试已单独运行成功。日志 `work/p2-tests.log`、`work/p2-clippy.log`、`work/p2-codex-live.log`。物理 Esc 中止后没有继续 UI 操作，因此这些新增 UI 不宣称真实交互验收。P3 独立 Token spend 页已接入 Claude Code/Codex 的时间范围、来源/模型钻取、排序分页、日柱状图、费用拆分、来源覆盖和未计价标注；本地 544 项测试通过、3 项默认忽略，日志 `work/token-spend-final-test.log`，提交 `dc055bd` 由 Actions 36848161224 验证通过。接下来是 P4：其余 52 个本机来源与更多账户详细卡历史。
 
 - 10 个 provider：Kiro、Ollama Cloud、Grok Bot、Volcengine、Devin、Alibaba Token Plan、
   Gemini、JetBrains AI、Windsurf、Nous Portal。
