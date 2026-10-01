@@ -48,6 +48,7 @@ pub struct AppSettings {
     /// Off by default, as upstream's `readsTokenSpend` is: reading the CLIs'
     /// transcripts is an act worth consenting to.
     pub reads_token_spend: bool,
+    pub spend_span: crate::spend::Span,
     /// Collapse to the 6pt sliver while docked and unhovered.
     pub auto_collapse: bool,
     pub follows_active_display: bool,
@@ -114,6 +115,7 @@ impl Default for AppSettings {
             warning_threshold: 75,
             hides_tray_icon: false,
             reads_token_spend: false,
+            spend_span: crate::spend::Span::default(),
             auto_collapse: true,
             follows_active_display: false,
             dock_side: "right".into(),

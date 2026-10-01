@@ -40,6 +40,10 @@ pub enum SettingsAction {
 struct SettingsSnapshot {
     generation: u64,
     status: HashMap<String, String>,
+    spend: Option<Arc<quotascope_core::spend::Snapshot>>,
+    spend_generation: u64,
+    spend_loading: bool,
+    spend_failed: bool,
 }
 
 pub(crate) struct Shared {
@@ -51,6 +55,41 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    fn request_spend(self: &Arc<Self>) {
+        let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
+        let generation = {
+            let mut state = self.snapshot.lock().unwrap();
+            if allowed && state.spend_loading {
+                return;
+            }
+            state.spend_generation = state.spend_generation.wrapping_add(1);
+            state.generation += 1;
+            state.spend_loading = allowed;
+            state.spend_failed = false;
+            if !allowed {
+                state.spend = None;
+                return;
+            }
+            state.spend_generation
+        };
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(quotascope_core::spend::Snapshot::read_native);
+            let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
+            let mut state = shared.snapshot.lock().unwrap();
+            if state.spend_generation != generation {
+                return;
+            }
+            state.spend_loading = false;
+            state.spend_failed = result.is_err();
+            state.spend = if allowed {
+                result.ok().map(Arc::new)
+            } else {
+                None
+            };
+            state.generation += 1;
+        });
+    }
     fn generation(&self) -> u64 {
         self.snapshot.lock().unwrap().generation
     }
@@ -162,6 +201,7 @@ fn window_icon() -> Option<&'static str> {
 enum Page {
     General,
     Accounts,
+    Spend,
     Notifications,
     About,
 }
@@ -171,6 +211,7 @@ impl Page {
         match self {
             Page::General => "general",
             Page::Accounts => "accounts",
+            Page::Spend => "spend",
             Page::Notifications => "notifications",
             Page::About => "about",
         }
@@ -178,6 +219,7 @@ impl Page {
     fn from_tag(tag: &str) -> Page {
         match tag {
             "accounts" => Page::Accounts,
+            "spend" => Page::Spend,
             "notifications" => Page::Notifications,
             "about" => Page::About,
             _ => Page::General,
@@ -187,6 +229,7 @@ impl Page {
         match self {
             Page::General => "General",
             Page::Accounts => "Accounts",
+            Page::Spend => "Token spend",
             Page::Notifications => "Notifications",
             Page::About => "About",
         }
@@ -195,6 +238,7 @@ impl Page {
         match self {
             Page::General => "\u{E713}",
             Page::Accounts => "\u{E77B}",
+            Page::Spend => "\u{E9D9}",
             Page::Notifications => "\u{EA8F}",
             Page::About => "\u{E946}",
         }
@@ -233,6 +277,10 @@ enum ChoiceKey {
 #[derive(Clone, PartialEq)]
 enum Message {
     Tick,
+    SpendChoice(u8, Option<usize>),
+    SpendPage(bool),
+    SpendDrill(String),
+    SpendRefresh,
     Nav(Option<String>),
     Toggle(ToggleKey, bool),
     ToggleEnabled(usize, bool),
@@ -259,6 +307,12 @@ enum Message {
 struct SettingsApp {
     shared: Arc<Shared>,
     page: Page,
+    spend_group: quotascope_core::spend::Group,
+    spend_sort: quotascope_core::spend::Sort,
+    spend_descending: bool,
+    spend_page: usize,
+    spend_source: Option<String>,
+    spend_model: Option<String>,
     dark: bool,
     /// Draft key text per provider raw, until Saved.
     keys: HashMap<String, String>,
@@ -291,6 +345,12 @@ impl Component for SettingsApp {
         SettingsApp {
             shared: shared.clone(),
             page: Page::General,
+            spend_group: Default::default(),
+            spend_sort: Default::default(),
+            spend_descending: true,
+            spend_page: 0,
+            spend_source: None,
+            spend_model: None,
             // XAML follows the system appearance; the muted ink follows it
             // too, read once here — a reopened window re-reads.
             dark: crate::theme::panel::is_dark(),
@@ -315,8 +375,66 @@ impl Component for SettingsApp {
             }
             Message::Nav(tag) => {
                 self.page = tag.as_deref().map(Page::from_tag).unwrap_or(self.page);
+                if self.page == Page::Spend {
+                    self.shared.request_spend();
+                }
                 self.revealed_keys.clear();
             }
+            Message::SpendRefresh => self.shared.request_spend(),
+            Message::SpendPage(next) => {
+                self.spend_page = if next {
+                    self.spend_page.saturating_add(1)
+                } else {
+                    self.spend_page.saturating_sub(1)
+                };
+            }
+            Message::SpendDrill(id) => {
+                match self.spend_group {
+                    quotascope_core::spend::Group::Agents => {
+                        self.spend_source = Some(id);
+                        self.spend_group = quotascope_core::spend::Group::Models;
+                    }
+                    quotascope_core::spend::Group::Models => {
+                        self.spend_model = Some(id);
+                        self.spend_group = quotascope_core::spend::Group::Days;
+                    }
+                    _ => {}
+                }
+                self.spend_page = 0;
+            }
+            Message::SpendChoice(key, Some(index)) => {
+                use quotascope_core::spend::{Group, Sort, Span};
+                match key {
+                    0 => {
+                        if let Some(span) = Span::ALL.get(index) {
+                            quotascope_core::settings::mutate(|s| s.spend_span = *span);
+                        }
+                    }
+                    1 => {
+                        self.spend_group = [Group::Agents, Group::Models, Group::Days]
+                            .get(index)
+                            .copied()
+                            .unwrap_or_default()
+                    }
+                    2 => self.spend_sort = Sort::ALL.get(index).copied().unwrap_or_default(),
+                    3 => self.spend_descending = index == 0,
+                    4 => {
+                        let state = self.shared.snapshot.lock().unwrap();
+                        self.spend_source = index.checked_sub(1).and_then(|i| {
+                            state.spend.as_ref()?.sources.get(i).map(|s| s.id.clone())
+                        });
+                        self.spend_model = None;
+                    }
+                    5 => {
+                        self.spend_model = index
+                            .checked_sub(1)
+                            .and_then(|i| self.spend_models().get(i).cloned())
+                    }
+                    _ => {}
+                }
+                self.spend_page = 0;
+            }
+            Message::SpendChoice(_, None) => {}
             Message::ExpandAccount(index) => {
                 if !self.expanded_accounts.insert(index) {
                     self.expanded_accounts.remove(&index);
@@ -447,6 +565,9 @@ impl Component for SettingsApp {
             Message::Toggle(key, value) => {
                 Self::apply_toggle(key, value);
                 self.shared.send(SettingsAction::Changed);
+                if key == ToggleKey::TokenSpend {
+                    self.shared.request_spend();
+                }
             }
             Message::ToggleEnabled(index, value) => {
                 self.revealed_keys.remove(&index);
@@ -619,6 +740,7 @@ impl Component for SettingsApp {
                     [
                         Page::General,
                         Page::Accounts,
+                        Page::Spend,
                         Page::Notifications,
                         Page::About,
                     ]
@@ -653,6 +775,7 @@ impl Component for SettingsApp {
                                 match self.page {
                                     Page::General => self.general_view(context).into(),
                                     Page::Accounts => self.accounts_view(context),
+                                    Page::Spend => self.spend_view(context),
                                     Page::Notifications => self.notifications_view(context),
                                     Page::About => self.about_view(context),
                                 },
@@ -710,6 +833,419 @@ fn section(text: &str) -> TextBlock {
 }
 
 impl SettingsApp {
+    fn spend_models(&self) -> Vec<String> {
+        let state = self.shared.snapshot.lock().unwrap();
+        let Some(snapshot) = state.spend.as_ref() else {
+            return Vec::new();
+        };
+        snapshot
+            .sources
+            .iter()
+            .filter(|s| self.spend_source.as_ref().is_none_or(|id| *id == s.id))
+            .flat_map(|s| s.ledger.days.iter().flat_map(|d| d.models.keys().cloned()))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn spend_choice(
+        &self,
+        key: u8,
+        label: &str,
+        options: Vec<String>,
+        index: usize,
+        context: &ViewContext<Self>,
+    ) -> View {
+        self.aligned(
+            label,
+            ComboBox::new()
+                .min_width(180.0)
+                .max_width(340.0)
+                .items_source(options)
+                .selected_index(index)
+                .on_selection_changed(context.callback(move |i| Message::SpendChoice(key, i)))
+                .into(),
+        )
+    }
+
+    fn spend_view(&self, context: &ViewContext<Self>) -> View {
+        use quotascope_core::spend::{Group, Sort, Span};
+        let settings = quotascope_core::settings::with(|s| s.clone());
+        let t = quotascope_core::localization::t;
+        let mut content = vec![
+            heading("Token spend").into(),
+            self.muted("Local records · API value is an estimate, not your bill.")
+                .into(),
+            self.toggle(
+                ToggleKey::TokenSpend,
+                "Read local token spend",
+                settings.reads_token_spend,
+                context,
+            ),
+        ];
+        if !settings.reads_token_spend {
+            content.push(
+                self.muted("Enable local reading to analyze records on this computer.")
+                    .into(),
+            );
+            return StackPanel::new()
+                .spacing(18.0)
+                .children((View::keyed_fragment(content.into_iter().enumerate()),));
+        }
+        let (snapshot, loading, failed) = {
+            let state = self.shared.snapshot.lock().unwrap();
+            (state.spend.clone(), state.spend_loading, state.spend_failed)
+        };
+        content.push(row((
+            Button::new()
+                .is_enabled(!loading)
+                .on_click(context.message(Message::SpendRefresh))
+                .content(t("Refresh")),
+            self.muted(if loading {
+                "Reading local records…"
+            } else if failed {
+                "Unable to read local records."
+            } else {
+                "Only records available on this computer are included."
+            }),
+        )));
+        let Some(snapshot) = snapshot else {
+            return StackPanel::new()
+                .spacing(18.0)
+                .children((View::keyed_fragment(content.into_iter().enumerate()),));
+        };
+        let models = self.spend_models();
+        let mut sources = vec![t("All agents").into()];
+        sources.extend(snapshot.sources.iter().map(|s| s.title.clone()));
+        let source_index = self
+            .spend_source
+            .as_ref()
+            .and_then(|id| snapshot.sources.iter().position(|s| s.id == *id))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let mut model_options = vec![t("All models").into()];
+        model_options.extend(models.iter().cloned());
+        let model_index = self
+            .spend_model
+            .as_ref()
+            .and_then(|id| models.iter().position(|m| m == id))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let translated =
+            |items: &[&str]| items.iter().map(|s| t(s).to_string()).collect::<Vec<_>>();
+        content.push(
+            self.surface(
+                StackPanel::new().spacing(12.0).children([
+                    self.spend_choice(
+                        0,
+                        "Time range",
+                        translated(&[
+                            "Today",
+                            "Last 7 days",
+                            "Last 30 days",
+                            "Last 90 days",
+                            "All time",
+                        ]),
+                        Span::ALL
+                            .iter()
+                            .position(|s| *s == settings.spend_span)
+                            .unwrap_or(1),
+                        context,
+                    ),
+                    self.spend_choice(4, "Agent", sources, source_index, context),
+                    self.spend_choice(5, "Model", model_options, model_index, context),
+                    self.spend_choice(
+                        1,
+                        "Group by",
+                        translated(&["Agents", "Models", "Days"]),
+                        match self.spend_group {
+                            Group::Agents => 0,
+                            Group::Models => 1,
+                            Group::Days => 2,
+                        },
+                        context,
+                    ),
+                    self.spend_choice(
+                        2,
+                        "Sort by",
+                        translated(&[
+                            "Name / date",
+                            "Total tokens",
+                            "API value",
+                            "Input",
+                            "Output",
+                            "Cache read",
+                            "Cache write",
+                        ]),
+                        Sort::ALL
+                            .iter()
+                            .position(|s| *s == self.spend_sort)
+                            .unwrap_or(1),
+                        context,
+                    ),
+                    self.spend_choice(
+                        3,
+                        "Order",
+                        translated(&["Descending", "Ascending"]),
+                        usize::from(!self.spend_descending),
+                        context,
+                    ),
+                ]),
+            ),
+        );
+        let analysis = snapshot.analyze(
+            settings.spend_span,
+            chrono::Local::now().date_naive(),
+            self.spend_source.as_deref(),
+            self.spend_model.as_deref(),
+            self.spend_group,
+            self.spend_sort,
+            self.spend_descending,
+        );
+        let total = analysis.total;
+        let summary = Grid::new()
+            .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
+            .column_spacing(24.0)
+            .children((
+                StackPanel::new().spacing(6.0).children((
+                    self.muted("Total tokens"),
+                    TextBlock::new()
+                        .text(total.tokens.to_string())
+                        .font_size(28.0)
+                        .font_weight(FontWeight::SEMI_BOLD),
+                    self.muted(&format!(
+                        "{} {}",
+                        t("Tokens without public prices:"),
+                        total.unpriced
+                    )),
+                    self.muted(&format!(
+                        "{} {}",
+                        t("Tokens without a kind breakdown:"),
+                        total.unclassified
+                    )),
+                )),
+                StackPanel::new().grid_column(1).spacing(6.0).children((
+                    self.muted("API value"),
+                    TextBlock::new()
+                        .text(format!("≈ ${:.2}", total.cost))
+                        .font_size(28.0)
+                        .font_weight(FontWeight::SEMI_BOLD),
+                    self.muted(&format!(
+                        "{} ${:.2} · {} ${:.2}",
+                        t("Input"),
+                        total.costs.input,
+                        t("Output"),
+                        total.costs.output
+                    )),
+                    self.muted(&format!(
+                        "{} ${:.2} · {} ${:.2}",
+                        t("Cache read"),
+                        total.costs.cache_read,
+                        t("Cache write"),
+                        total.costs.cache_write
+                    )),
+                )),
+            ));
+        content.push(self.surface(summary.into()));
+        if let Some(rate) = total.cache_hit_rate() {
+            content.push(
+                self.muted(&format!("{} {:.0}%", t("Cache hit rate"), rate * 100.0))
+                    .into(),
+            );
+        }
+        if total.tokens == 0 {
+            content.push(
+                self.muted("No measured token records in this range.")
+                    .into(),
+            );
+        }
+        // Up to 40 calendar bins, each retaining its actual total. No samples
+        // are discarded when a long span is selected.
+        if !analysis.days.is_empty() {
+            let size = analysis.days.len().div_ceil(40).max(1);
+            let bins: Vec<_> = analysis
+                .days
+                .chunks(size)
+                .map(|days| days.iter().map(|d| d.measures.tokens).sum::<i64>())
+                .collect();
+            let max = bins.iter().copied().max().unwrap_or(1).max(1) as f64;
+            content.push(
+                StackPanel::new()
+                    .orientation(Orientation::Horizontal)
+                    .spacing(4.0)
+                    .height(76.0)
+                    .children((View::keyed_fragment(bins.iter().enumerate().map(
+                        |(i, value)| {
+                            (
+                                i,
+                                Border::new()
+                                    .width(8.0)
+                                    .height((*value as f64 / max * 76.0).max(0.0))
+                                    .vertical_alignment(VerticalAlignment::Bottom)
+                                    .corner_radius(CornerRadius::uniform(2.0))
+                                    .background(Color::argb(255, 0, 120, 212)),
+                            )
+                        },
+                    )),))
+                    .into(),
+            );
+            content.push(
+                self.muted(&format!(
+                    "{} — {}",
+                    analysis.days.first().unwrap().date,
+                    analysis.days.last().unwrap().date
+                ))
+                .into(),
+            );
+        }
+        let columns = [
+            "Name / date",
+            "Input",
+            "Cache write",
+            "Cache read",
+            "Output",
+            "Total tokens",
+            "API value",
+        ];
+        let table_row = |cells: Vec<View>| {
+            Grid::new()
+                .columns([
+                    GridLength::Star(2.0),
+                    GridLength::Star(1.0),
+                    GridLength::Star(1.0),
+                    GridLength::Star(1.0),
+                    GridLength::Star(1.0),
+                    GridLength::Star(1.0),
+                    GridLength::Star(1.0),
+                ])
+                .column_spacing(12.0)
+                .min_width(780.0)
+                .children((View::keyed_fragment(
+                    cells
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, v)| (i, Border::new().grid_column(i as i32).content(v))),
+                ),))
+        };
+        let mut table: Vec<View> = vec![table_row(
+            columns
+                .iter()
+                .map(|label| {
+                    TextBlock::new()
+                        .text(t(label))
+                        .font_weight(FontWeight::SEMI_BOLD)
+                        .into()
+                })
+                .collect(),
+        )
+        .into()];
+        let pages = analysis.rows.len().div_ceil(20).max(1);
+        let page = self.spend_page.min(pages - 1);
+        for entry in analysis.page(page, 20) {
+            let values = entry.measures;
+            let id = entry.id.clone();
+            let name: View = if self.spend_group == Group::Days {
+                TextBlock::new().text(&entry.title).into()
+            } else {
+                Button::new()
+                    .on_click(context.message(Message::SpendDrill(id)))
+                    .content(entry.title.clone())
+            };
+            let cost = if values.unpriced == values.tokens && values.tokens > 0 {
+                t("Unpriced").to_string()
+            } else {
+                format!(
+                    "≈ ${:.2}{}",
+                    values.cost,
+                    if values.unpriced > 0 { " *" } else { "" }
+                )
+            };
+            table.push(
+                table_row(vec![
+                    name,
+                    TextBlock::new().text(values.tally.input.to_string()).into(),
+                    TextBlock::new()
+                        .text(values.tally.cache_write.to_string())
+                        .into(),
+                    TextBlock::new()
+                        .text(values.tally.cache_read.to_string())
+                        .into(),
+                    TextBlock::new()
+                        .text(values.tally.output.to_string())
+                        .into(),
+                    TextBlock::new().text(values.tokens.to_string()).into(),
+                    TextBlock::new().text(cost).into(),
+                ])
+                .into(),
+            );
+        }
+        content.push(
+            self.surface(
+                ScrollViewer::new()
+                    .horizontal_scroll_bar_visibility(ScrollBarVisibility::Auto)
+                    .content(
+                        StackPanel::new()
+                            .spacing(10.0)
+                            .children((View::keyed_fragment(table.into_iter().enumerate()),)),
+                    )
+                    .into(),
+            ),
+        );
+        content.push(row((
+            Button::new()
+                .is_enabled(page > 0)
+                .on_click(context.message(Message::SpendPage(false)))
+                .content(t("Previous")),
+            TextBlock::new().text(format!("{} / {}", page + 1, pages)),
+            Button::new()
+                .is_enabled(page + 1 < pages)
+                .on_click(context.message(Message::SpendPage(true)))
+                .content(t("Next")),
+        )));
+        content.push(
+            self.muted("* API value excludes tokens without a published price.")
+                .into(),
+        );
+        let coverage = snapshot
+            .sources
+            .iter()
+            .map(|s| {
+                StackPanel::new().spacing(4.0).children((
+                    TextBlock::new()
+                        .text(format!(
+                            "{} · {}",
+                            s.title,
+                            t(if !s.present {
+                                "Store not found"
+                            } else if s.ledger.days.iter().any(|d| d.tokens > 0) {
+                                "Native token records"
+                            } else {
+                                "No token counters found"
+                            })
+                        ))
+                        .font_weight(FontWeight::SEMI_BOLD),
+                    self.muted(&s.location),
+                ))
+            })
+            .collect::<Vec<_>>();
+        content.push(
+            self.surface(
+                StackPanel::new()
+                    .spacing(12.0)
+                    .children((
+                        section("Source coverage"),
+                        StackPanel::new()
+                            .spacing(14.0)
+                            .children((View::keyed_fragment(coverage.into_iter().enumerate()),)),
+                    ))
+                    .into(),
+            ),
+        );
+        StackPanel::new()
+            .spacing(18.0)
+            .children((View::keyed_fragment(content.into_iter().enumerate()),))
+    }
+
     fn credential_field(
         &self,
         index: usize,

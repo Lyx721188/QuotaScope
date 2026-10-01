@@ -24,6 +24,7 @@ pub mod providers;
 pub mod report;
 pub mod secrets;
 pub mod settings;
+pub mod spend;
 pub mod store;
 pub mod timeutil;
 

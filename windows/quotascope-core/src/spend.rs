@@ -1,0 +1,412 @@
+//! Calendar-scoped analysis of measured local agent records. No quota or
+//! subscription estimate is substituted for a missing transcript counter.
+use crate::ledger::{TokenCost, TokenTally, UsageLedger};
+use crate::model::Provider;
+use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Span {
+    Today,
+    #[default]
+    Week,
+    Month,
+    Quarter,
+    All,
+}
+impl Span {
+    pub const ALL: [Self; 5] = [
+        Self::Today,
+        Self::Week,
+        Self::Month,
+        Self::Quarter,
+        Self::All,
+    ];
+    pub fn contains(self, date: NaiveDate, today: NaiveDate) -> bool {
+        let age = today.signed_duration_since(date).num_days();
+        age >= 0
+            && match self {
+                Self::Today => age < 1,
+                Self::Week => age < 7,
+                Self::Month => age < 30,
+                Self::Quarter => age < 90,
+                Self::All => true,
+            }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Source {
+    pub id: String,
+    pub title: String,
+    pub location: String,
+    pub present: bool,
+    pub ledger: UsageLedger,
+}
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Snapshot {
+    pub sources: Vec<Source>,
+}
+impl Snapshot {
+    /// Called by a worker only, and only after the local-reading opt-in.
+    pub fn read_native() -> Self {
+        if !crate::settings::with(|s| s.reads_token_spend) {
+            return Self::default();
+        }
+        Self {
+            sources: [Provider::ClaudeCode, Provider::Codex]
+                .into_iter()
+                .map(|p| {
+                    let path = crate::ledger::transcript_root(p);
+                    Source {
+                        id: p.raw().into(),
+                        title: p.display_name().into(),
+                        location: path
+                            .as_ref()
+                            .map(|v| v.display().to_string())
+                            .unwrap_or_default(),
+                        present: path.as_ref().is_some_and(|v| v.is_dir()),
+                        ledger: crate::ledger::ledger(p),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    pub fn analyze(
+        &self,
+        span: Span,
+        today: NaiveDate,
+        source: Option<&str>,
+        model: Option<&str>,
+        group: Group,
+        sort: Sort,
+        descending: bool,
+    ) -> Analysis {
+        let mut out = Analysis::default();
+        let mut rows = BTreeMap::<String, Row>::new();
+        let mut daily = BTreeMap::<NaiveDate, Measures>::new();
+        for agent in self
+            .sources
+            .iter()
+            .filter(|s| source.is_none_or(|id| s.id == id))
+        {
+            for day in agent
+                .ledger
+                .days
+                .iter()
+                .filter(|d| span.contains(d.date, today))
+            {
+                let mut measured = Measures::default();
+                // The source total stays authoritative, including unclassified
+                // work that cannot honestly be attributed to a model.
+                if model.is_none() {
+                    measured = Measures {
+                        tokens: day.tokens,
+                        tally: day.tally,
+                        cost: day.cost,
+                        costs: day
+                            .model_costs
+                            .values()
+                            .copied()
+                            .fold(TokenCost::default(), |a, b| a + b),
+                        unpriced: day.unpriced_tokens,
+                        unclassified: (day.tokens - day.tally.total()).max(0),
+                    };
+                }
+                for (id, tokens) in day
+                    .models
+                    .iter()
+                    .filter(|(id, _)| model.is_none_or(|m| m == id.as_str()))
+                {
+                    let tally = day.model_tallies.get(id).copied().unwrap_or_default();
+                    let costs = day.model_costs.get(id).copied();
+                    let values = Measures {
+                        tokens: *tokens,
+                        tally,
+                        costs: costs.unwrap_or_default(),
+                        cost: costs.map(|c| c.total()).unwrap_or_default(),
+                        unpriced: if costs.is_none() { *tokens } else { 0 },
+                        unclassified: (*tokens - tally.total()).max(0),
+                    };
+                    if model.is_some() {
+                        measured.add(values);
+                    }
+                    if group == Group::Models {
+                        let name = agent
+                            .ledger
+                            .model_names
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| id.clone());
+                        let row = rows.entry(id.clone()).or_insert_with(|| Row {
+                            id: id.clone(),
+                            title: name,
+                            measures: Measures::default(),
+                        });
+                        row.measures.add(values);
+                    }
+                }
+                if group == Group::Agents {
+                    rows.entry(agent.id.clone())
+                        .or_insert_with(|| Row {
+                            id: agent.id.clone(),
+                            title: agent.title.clone(),
+                            measures: Measures::default(),
+                        })
+                        .measures
+                        .add(measured);
+                }
+                out.total.add(measured);
+                daily.entry(day.date).or_default().add(measured);
+            }
+        }
+        out.days = daily
+            .into_iter()
+            .map(|(date, measures)| Day { date, measures })
+            .collect();
+        if group == Group::Days {
+            rows = out
+                .days
+                .iter()
+                .map(|d| {
+                    let id = d.date.to_string();
+                    (
+                        id.clone(),
+                        Row {
+                            id: id.clone(),
+                            title: id,
+                            measures: d.measures,
+                        },
+                    )
+                })
+                .collect();
+        }
+        out.rows = rows.into_values().collect();
+        out.rows.sort_by(|a, b| {
+            let ordering = match sort {
+                Sort::Name => a.title.cmp(&b.title),
+                Sort::Tokens => a.measures.tokens.cmp(&b.measures.tokens),
+                Sort::Cost => a.measures.cost.total_cmp(&b.measures.cost),
+                Sort::Input => a.measures.tally.input.cmp(&b.measures.tally.input),
+                Sort::Output => a.measures.tally.output.cmp(&b.measures.tally.output),
+                Sort::CacheRead => a
+                    .measures
+                    .tally
+                    .cache_read
+                    .cmp(&b.measures.tally.cache_read),
+                Sort::CacheWrite => a
+                    .measures
+                    .tally
+                    .cache_write
+                    .cmp(&b.measures.tally.cache_write),
+            };
+            (if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            })
+            .then(a.id.cmp(&b.id))
+        });
+        out
+    }
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Group {
+    #[default]
+    Agents,
+    Models,
+    Days,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sort {
+    Name,
+    #[default]
+    Tokens,
+    Cost,
+    Input,
+    Output,
+    CacheRead,
+    CacheWrite,
+}
+impl Sort {
+    pub const ALL: [Self; 7] = [
+        Self::Name,
+        Self::Tokens,
+        Self::Cost,
+        Self::Input,
+        Self::Output,
+        Self::CacheRead,
+        Self::CacheWrite,
+    ];
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Measures {
+    pub tokens: i64,
+    pub tally: TokenTally,
+    pub cost: f64,
+    pub costs: TokenCost,
+    pub unpriced: i64,
+    pub unclassified: i64,
+}
+impl Measures {
+    fn add(&mut self, other: Self) {
+        self.tokens += other.tokens;
+        self.tally += other.tally;
+        self.cost += other.cost;
+        self.costs += other.costs;
+        self.unpriced += other.unpriced;
+        self.unclassified += other.unclassified;
+    }
+    pub fn cache_hit_rate(self) -> Option<f64> {
+        let input = self.tally.input + self.tally.cache_read + self.tally.cache_write;
+        (input > 0 && self.unclassified == 0).then(|| self.tally.cache_read as f64 / input as f64)
+    }
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub id: String,
+    pub title: String,
+    pub measures: Measures,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct Day {
+    pub date: NaiveDate,
+    pub measures: Measures,
+}
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Analysis {
+    pub total: Measures,
+    pub rows: Vec<Row>,
+    pub days: Vec<Day>,
+}
+impl Analysis {
+    pub fn page(&self, index: usize, size: usize) -> &[Row] {
+        let from = index.saturating_mul(size).min(self.rows.len());
+        &self.rows[from..from.saturating_add(size).min(self.rows.len())]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn date(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+    fn source(id: &str) -> Source {
+        let mut buckets = BTreeMap::new();
+        for (d, model, tally) in [
+            (
+                "2026-09-24 09:00",
+                "known",
+                TokenTally {
+                    input: 10,
+                    output: 20,
+                    ..Default::default()
+                },
+            ),
+            (
+                "2026-10-01 09:00",
+                "known",
+                TokenTally {
+                    input: 100,
+                    cache_read: 400,
+                    output: 50,
+                    ..Default::default()
+                },
+            ),
+            (
+                "2026-10-01 10:00",
+                "unknown",
+                TokenTally {
+                    input: 60,
+                    ..Default::default()
+                },
+            ),
+            (
+                "2026-10-02 09:00",
+                "known",
+                TokenTally {
+                    input: 900,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            buckets.insert(d.into(), BTreeMap::from([(model.into(), tally)]));
+        }
+        let prices = BTreeMap::from([(
+            "known".into(),
+            crate::model_prices::ModelPrice {
+                input: 2.0,
+                output: 10.0,
+                cache_read: Some(0.2),
+                cache_write: None,
+                name: None,
+            },
+        )]);
+        Source {
+            id: id.into(),
+            title: id.into(),
+            location: String::new(),
+            present: true,
+            ledger: crate::ledger::priced(&buckets, &prices, None),
+        }
+    }
+    #[test]
+    fn calendar_scope_model_drilldown_and_price_gaps() {
+        let s = Snapshot {
+            sources: vec![source("a"), source("b")],
+        };
+        let a = s.analyze(
+            Span::Week,
+            date("2026-10-01"),
+            Some("a"),
+            None,
+            Group::Models,
+            Sort::Tokens,
+            true,
+        );
+        assert_eq!(a.total.tokens, 610);
+        assert_eq!(a.total.unpriced, 60);
+        assert_eq!(a.rows[0].id, "known");
+        assert!((a.total.cost - 0.00078).abs() < 1e-10);
+        assert_eq!(a.total.costs.total(), a.total.cost);
+        let m = s.analyze(
+            Span::Today,
+            date("2026-10-01"),
+            None,
+            Some("unknown"),
+            Group::Agents,
+            Sort::Cost,
+            false,
+        );
+        assert_eq!(m.total.tokens, 120);
+        assert_eq!(m.total.unpriced, 120);
+        assert_eq!(m.rows.len(), 2);
+        assert_eq!(m.page(usize::MAX, 20).len(), 0);
+        assert_eq!(m.page(0, 1).len(), 1);
+    }
+    #[test]
+    fn unidentified_work_is_never_assigned_to_a_known_model() {
+        let mut s = source("a");
+        let today = date("2026-10-01");
+        let day = s.ledger.days.iter_mut().find(|d| d.date == today).unwrap();
+        day.tokens += 7;
+        day.unpriced_tokens += 7;
+        let a = Snapshot { sources: vec![s] }.analyze(
+            Span::Today,
+            today,
+            None,
+            None,
+            Group::Models,
+            Sort::Name,
+            false,
+        );
+        assert_eq!(a.total.tokens, 617);
+        assert_eq!(a.total.unclassified, 7);
+        assert!(a.total.cache_hit_rate().is_none());
+        assert_eq!(a.rows.iter().map(|r| r.measures.tokens).sum::<i64>(), 610);
+    }
+}
