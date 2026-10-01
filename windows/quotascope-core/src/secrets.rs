@@ -92,6 +92,6 @@ fn dpapi_protect(data: &[u8]) -> Option<Vec<u8>> {
     PROTECT.get().unwrap_or(&(crypt_fallback as CryptFn))(data)
 }
 
-fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
     UNPROTECT.get().unwrap_or(&(crypt_fallback as CryptFn))(data)
 }

@@ -242,6 +242,7 @@ enum Message {
     AddressEdit(usize, String),
     Save(usize),
     Refresh(usize),
+    ImportSession(usize),
     CopilotAuth,
     OpenGitHub,
 }
@@ -385,6 +386,38 @@ impl Component for SettingsApp {
                 if let Some(provider) = all_providers().get(index) {
                     self.shared
                         .send(SettingsAction::RefreshProvider(provider.raw().to_string()));
+                }
+            }
+            Message::ImportSession(index) => {
+                if let Some(provider) = all_providers().get(index) {
+                    let raw = provider.raw();
+                    match quotascope_core::providers::session_spec(*provider).and_then(|spec| {
+                        quotascope_core::browser_cookies::session(spec.hosts, spec.cookies)
+                    }) {
+                        Some(found) => {
+                            quotascope_core::secrets::set_key(raw, &found.header);
+                            self.keys.remove(raw);
+                            self.status.insert(
+                                raw.to_string(),
+                                quotascope_core::localization::t_fmt(
+                                    "Imported the session from {browser}.",
+                                    &[&found.browser.name()],
+                                ),
+                            );
+                            self.shared.send(SettingsAction::SaveKey);
+                            self.shared
+                                .send(SettingsAction::RefreshProvider(raw.to_string()));
+                        }
+                        None => {
+                            self.status.insert(
+                                raw.to_string(),
+                                quotascope_core::localization::t(
+                                    "No matching session found in your browsers.",
+                                )
+                                .to_string(),
+                            );
+                        }
+                    }
                 }
             }
             Message::CopilotAuth => {
@@ -936,6 +969,40 @@ impl SettingsApp {
                                 .on_click(context.message(Message::Refresh(index)))
                                 .content(quotascope_core::localization::t("Refresh")),
                         )),
+                    ))
+                    .into()
+            }
+            _ if quotascope_core::providers::session_spec(provider).is_some() => {
+                let stored = key_draft
+                    .or_else(|| quotascope_core::secrets::key_for(raw))
+                    .unwrap_or_default();
+                StackPanel::new()
+                    .spacing(6.0)
+                    .children((
+                        self.muted(&quotascope_core::localization::t(
+                            "Uses a browser session. Importing reads the site's cookies from your browsers — the one you open links with first. A pasted Cookie header works too.",
+                        )),
+                        row((
+                            Button::new()
+                                .on_click(context.message(Message::ImportSession(index)))
+                                .content(quotascope_core::localization::t("Import from browser")),
+                            Button::new()
+                                .on_click(context.message(Message::Refresh(index)))
+                                .content(quotascope_core::localization::t("Refresh")),
+                        )),
+                        TextBlock::new()
+                            .text(quotascope_core::localization::t("Or paste a Cookie header")),
+                        PasswordBox::new()
+                            .password(stored)
+                            .placeholder_text(quotascope_core::localization::t(
+                                "Paste the Cookie header",
+                            ))
+                            .on_password_changed(
+                                context.callback(move |text| Message::KeyEdit(index, text)),
+                            ),
+                        Button::new()
+                            .on_click(context.message(Message::Save(index)))
+                            .content(quotascope_core::localization::t("Save")),
                     ))
                     .into()
             }

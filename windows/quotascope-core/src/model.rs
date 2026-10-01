@@ -432,6 +432,24 @@ impl Provider {
                 | Provider::Bifrost
                 | Provider::LlmProxy
                 | Provider::LiteLlm
+                | Provider::Abacus
+                | Provider::Augment
+                | Provider::LongCat
+                | Provider::Manus
+                | Provider::Mistral
+                | Provider::NotionAi
+                | Provider::Perplexity
+                | Provider::QwenCloud
+                | Provider::RaycastAi
+                | Provider::Replicate
+                | Provider::Sakana
+                | Provider::T3Chat
+                | Provider::TypeSafe
+                | Provider::Zed
+                | Provider::ZoomMate
+                | Provider::Qoder
+                | Provider::StepFun
+                | Provider::XiaomiMiMo
                 | Provider::Extension
         )
     }
@@ -450,7 +468,6 @@ impl Provider {
             }
             Provider::Kiro => Some("Runs Kiro's local ACP client — the Windows route has not been ported yet."),
             Provider::Devin => Some("Reads Devin's local or API quota — the Windows route has not been ported yet."),
-            Provider::XiaomiMiMo | Provider::Qoder | Provider::StepFun => Some("Reads a browser session cookie — browser access has not been ported yet."),
             Provider::Sub2api | Provider::NewApi => Some("Enter the gateway address and API key to enable this account."),
             Provider::Windsurf => Some("Reads browser local storage — that Windows route has not been ported yet."),
             _ if self.is_profiled_unported() => Some("This provider is catalogued, but its Windows usage route has not been ported yet."),
@@ -462,25 +479,11 @@ impl Provider {
         matches!(
             self,
             Provider::AlibabaTokenPlan
-                | Provider::QwenCloud
                 | Provider::Gemini
-                | Provider::Augment
                 | Provider::JetBrainsAi
-                | Provider::T3Chat
                 | Provider::Windsurf
-                | Provider::LongCat
-                | Provider::ZoomMate
-                | Provider::NotionAi
                 | Provider::NousPortal
-                | Provider::RaycastAi
-                | Provider::Abacus
-                | Provider::Zed
-                | Provider::Sakana
-                | Provider::Mistral
-                | Provider::Perplexity
-                | Provider::Manus
-                | Provider::Replicate
-                | Provider::TypeSafe
+                | Provider::OllamaCloud
         )
     }
 
@@ -1044,6 +1047,11 @@ pub enum Unavailability {
     /// An extension's own word for "the account this program reads is
     /// signed out".
     ExtensionSignedOut,
+    /// No browser session has been imported for this account yet.
+    SessionMissing,
+    /// The imported browser session no longer answers — the site's own
+    /// refusal of a credential that used to work.
+    SessionExpired,
 }
 
 impl Unavailability {
@@ -1064,6 +1072,10 @@ impl Unavailability {
             Unavailability::NotSignedIn => "notSignedIn",
             Unavailability::ApiKeyMissing => "Add an API key in Settings.",
             Unavailability::ApiKeyRefused => "That key was refused. Check it in Settings.",
+            Unavailability::SessionMissing => "Import a browser session in Settings.",
+            Unavailability::SessionExpired => {
+                "The browser session has expired — import it again in Settings."
+            }
             Unavailability::ServerAddressMissing => "Add a gateway address in Settings.",
             Unavailability::ServerAddressRefused => "That gateway address is not allowed.",
             Unavailability::Unreachable => "The service didn't respond.",

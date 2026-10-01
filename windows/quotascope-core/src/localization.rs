@@ -293,6 +293,46 @@ const TABLE: &[Entry] = &[
         zh: "请在设置中登录以查看用量。",
     },
     Entry {
+        key: "Import a browser session in Settings.",
+        en: "Import a browser session in Settings.",
+        zh: "请在设置中导入浏览器会话。",
+    },
+    Entry {
+        key: "Import from browser",
+        en: "Import from browser",
+        zh: "从浏览器导入",
+    },
+    Entry {
+        key: "Imported the session from {browser}.",
+        en: "Imported the session from {browser}.",
+        zh: "已从 {browser} 导入会话。",
+    },
+    Entry {
+        key: "No matching session found in your browsers.",
+        en: "No matching session found in your browsers.",
+        zh: "在浏览器里没有找到匹配的会话。",
+    },
+    Entry {
+        key: "Uses a browser session. Importing reads the site's cookies from your browsers — the one you open links with first. A pasted Cookie header works too.",
+        en: "Uses a browser session. Importing reads the site's cookies from your browsers — the one you open links with first. A pasted Cookie header works too.",
+        zh: "使用浏览器会话。导入会从你的浏览器读取该站点的 Cookie——优先读取你设为默认的浏览器。也可以直接粘贴 Cookie 头。",
+    },
+    Entry {
+        key: "Or paste a Cookie header",
+        en: "Or paste a Cookie header",
+        zh: "或粘贴 Cookie 头",
+    },
+    Entry {
+        key: "Paste the Cookie header",
+        en: "Paste the Cookie header",
+        zh: "粘贴 Cookie 头",
+    },
+    Entry {
+        key: "The browser session has expired — import it again in Settings.",
+        en: "The browser session has expired — import it again in Settings.",
+        zh: "浏览器会话已过期——请在设置中重新导入。",
+    },
+    Entry {
         key: "Add an API key in Settings.",
         en: "Add an API key in Settings.",
         zh: "请在设置中添加 API 密钥。",

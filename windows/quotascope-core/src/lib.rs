@@ -6,6 +6,7 @@
 
 pub mod alerts;
 pub mod balance_ring;
+pub mod browser_cookies;
 pub mod cache;
 pub mod estimate;
 pub mod extension;

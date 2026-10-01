@@ -2,11 +2,13 @@
 //! that product actually offers — documented or borrowed — and invents
 //! nothing on the way.
 
+pub mod abacus;
 pub mod aixy;
 pub mod alibaba_coding_plan;
 pub mod amp;
 pub mod antigravity;
 pub mod atlas_cloud;
+pub mod augment;
 pub mod bifrost;
 pub mod chutes;
 pub mod claude_code;
@@ -32,28 +34,81 @@ pub mod kilo_code;
 pub mod kimi;
 pub mod litellm;
 pub mod llm_proxy;
+pub mod longcat;
+pub mod manus;
 pub mod minimax;
+pub mod mistral;
 pub mod moonshot;
 pub mod neuralwatt;
 pub mod new_api;
+pub mod notion_ai;
 pub mod openai_platform;
 pub mod opencode;
+pub mod perplexity;
 pub mod poe;
+pub mod qoder;
+pub mod qwen_cloud;
+pub mod raycast_ai;
+pub mod replicate;
+pub mod sakana;
+pub mod step_fun;
 pub mod sub2api;
 pub mod synthetic;
+pub mod t3chat;
+pub mod type_safe;
 pub mod v0;
 pub mod v2ex;
 pub mod venice;
 pub mod vercel_ai_gateway;
 pub mod warp;
 pub mod xaiapi;
+pub mod xiaomi_mimo;
 pub mod xkiro;
 pub mod zai;
+pub mod zed;
 pub mod zenmux;
+pub mod zoom_mate;
 
 use crate::http::HttpClient;
 use crate::model::{AccountKey, Provider, ProviderUsage, Unavailability};
 use std::sync::Arc;
+
+/// Where a browser-session credential lives: the site's host (or hosts, for
+/// the dual-site products) and the cookie names that authenticate. Settings'
+/// import button reads these; the fetch itself only ever sees the stored
+/// header, exactly like a pasted key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionSpec {
+    pub hosts: &'static [&'static str],
+    pub cookies: &'static [&'static str],
+}
+
+/// Where each browser-session provider's cookie comes from — the Settings
+/// import button reads this. `None` for every provider that keeps a pasted
+/// key or no credential at all.
+pub fn session_spec(provider: Provider) -> Option<SessionSpec> {
+    match provider {
+        Provider::Abacus => Some(abacus::SESSION),
+        Provider::Augment => Some(augment::SESSION),
+        Provider::LongCat => Some(longcat::SESSION),
+        Provider::Manus => Some(manus::SESSION),
+        Provider::Mistral => Some(mistral::SESSION),
+        Provider::NotionAi => Some(notion_ai::SESSION),
+        Provider::Perplexity => Some(perplexity::SESSION),
+        Provider::Qoder => Some(qoder::SESSION),
+        Provider::QwenCloud => Some(qwen_cloud::SESSION),
+        Provider::RaycastAi => Some(raycast_ai::SESSION),
+        Provider::Replicate => Some(replicate::SESSION),
+        Provider::Sakana => Some(sakana::SESSION),
+        Provider::StepFun => Some(step_fun::SESSION),
+        Provider::T3Chat => Some(t3chat::SESSION),
+        Provider::TypeSafe => Some(type_safe::SESSION),
+        Provider::XiaomiMiMo => Some(xiaomi_mimo::SESSION),
+        Provider::Zed => Some(zed::SESSION),
+        Provider::ZoomMate => Some(zoom_mate::SESSION),
+        _ => None,
+    }
+}
 
 /// The credentials a pass may need, resolved once per pass rather than once
 /// per request.
@@ -195,6 +250,24 @@ impl Services {
             Arc::new(alibaba_coding_plan::AlibabaCodingPlanService::new(
                 http.clone(),
             )),
+            Arc::new(abacus::AbacusService::new(http.clone())),
+            Arc::new(augment::AugmentService::new(http.clone())),
+            Arc::new(longcat::LongCatService::new(http.clone())),
+            Arc::new(manus::ManusService::new(http.clone())),
+            Arc::new(notion_ai::NotionAiService::new(http.clone())),
+            Arc::new(zed::ZedService::new(http.clone())),
+            Arc::new(perplexity::PerplexityService::new(http.clone())),
+            Arc::new(replicate::ReplicateService::new(http.clone())),
+            Arc::new(qwen_cloud::QwenCloudService::new(http.clone())),
+            Arc::new(mistral::MistralService::new(http.clone())),
+            Arc::new(qoder::QoderService::new(http.clone())),
+            Arc::new(step_fun::StepFunService::new(http.clone())),
+            Arc::new(xiaomi_mimo::XiaomiMiMoService::new(http.clone())),
+            Arc::new(raycast_ai::RaycastAiService::new(http.clone())),
+            Arc::new(sakana::SakanaService::new(http.clone())),
+            Arc::new(t3chat::T3ChatService::new(http.clone())),
+            Arc::new(type_safe::TypeSafeService::new(http.clone())),
+            Arc::new(zoom_mate::ZoomMateService::new(http.clone())),
         ];
         Services {
             list,

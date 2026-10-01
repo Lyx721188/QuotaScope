@@ -238,6 +238,7 @@ enum Standing {
 fn standing(reason: Unavailability) -> Standing {
     match reason {
         Unavailability::ApiKeyRefused
+        | Unavailability::SessionExpired
         | Unavailability::ClaudeLoginExpired
         | Unavailability::CursorLoginExpired
         | Unavailability::GrokLoginExpired
@@ -274,6 +275,7 @@ fn standing(reason: Unavailability) -> Standing {
         | Unavailability::GrokSignInRequired
         | Unavailability::NotSignedIn
         | Unavailability::ApiKeyMissing
+        | Unavailability::SessionMissing
         | Unavailability::ServerAddressMissing
         | Unavailability::ServerAddressRefused
         // A folder whose program has gone is a setup step, not news.
