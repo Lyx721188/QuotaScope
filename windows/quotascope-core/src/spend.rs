@@ -198,6 +198,18 @@ impl Snapshot {
                 crate::ledger::codebuff_ledger(),
             ),
             ("fx", "FX", ".fx/sessions", crate::ledger::fx_ledger()),
+            (
+                "reasonix",
+                "Reasonix",
+                ".reasonix/stats",
+                crate::ledger::reasonix_ledger(),
+            ),
+            (
+                "lmstudio",
+                "LM Studio",
+                ".lmstudio/server-logs",
+                crate::ledger::lmstudio_ledger(),
+            ),
         ] {
             let path = crate::model::home_path(root);
             sources.push(Source {

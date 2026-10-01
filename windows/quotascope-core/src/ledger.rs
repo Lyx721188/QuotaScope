@@ -3124,6 +3124,358 @@ fn collect_sidecars(root: &Path) -> Vec<(PathBuf, serde_json::Value)> {
     sidecars
 }
 
+/// Reasonix's daily JSONL stats. `turn` marks a marker row, not a call; a
+/// bare total names no kind and stays out rather than becoming a zero.
+pub fn reasonix_ledger() -> UsageLedger {
+    const KEY: &str = "reasonix";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let home = crate::home_dir();
+    let root = if let Some(state) = std::env::var("REASONIX_STATE_HOME")
+        .ok()
+        .and_then(|raw| environment_path(&raw, &home))
+    {
+        state
+    } else {
+        let base = std::env::var("REASONIX_HOME")
+            .ok()
+            .and_then(|raw| environment_path(&raw, &home))
+            .unwrap_or_else(|| home.join(".reasonix"));
+        base.join("stats")
+    };
+    let mut files = Vec::new();
+    collect_jsonl(&root, &mut files);
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if row.get("turn").and_then(serde_json::Value::as_bool) == Some(true) {
+                continue;
+            }
+            let Some(model) = json_text(&row, &["model"]).map(str::to_string) else {
+                continue;
+            };
+            let total = json_count(row.get("total")).unwrap_or(0);
+            let requests = json_count(row.get("requests")).unwrap_or(0);
+            if total <= 0 && requests <= 0 {
+                continue;
+            }
+            let Some(at) = json_timestamp(row.get("ts"), false).filter(|at| *at > 0) else {
+                continue;
+            };
+            let prompt = json_count(row.get("prompt"));
+            let completion = json_count(row.get("completion"));
+            let Some(tally) = (|| {
+                if prompt.is_none() && completion.is_none() {
+                    return None;
+                }
+                let cache_read = json_count(row.get("cache_hit")).unwrap_or(0);
+                let miss = json_count(row.get("cache_miss")).unwrap_or(0);
+                Some(TokenTally {
+                    input: if miss > 0 {
+                        miss
+                    } else {
+                        prompt.unwrap_or(0).saturating_sub(cache_read)
+                    },
+                    cache_write: 0,
+                    cache_read,
+                    output: completion.unwrap_or(0),
+                })
+            })() else {
+                continue;
+            };
+            if tally.total() == 0 {
+                continue;
+            }
+            let identity = format!(
+                "{KEY}:{}:{index}:{requests}:{total}",
+                file.to_string_lossy()
+            );
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += tally;
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+/// LM Studio's pretty-printed server logs. Usage appears as a balanced JSON
+/// object after a `"usage"` key; the model id and local timestamp must both
+/// appear in the preceding text, or the block is skipped.
+pub fn lmstudio_ledger() -> UsageLedger {
+    const KEY: &str = "lmstudio";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let home = crate::home_dir();
+    let root = std::env::var("LM_STUDIO_HOME")
+        .ok()
+        .and_then(|raw| environment_path(&raw, &home))
+        .unwrap_or_else(|| home.join(".lmstudio"))
+        .join("server-logs");
+    let mut files = Vec::new();
+    collect_files(&root, "log", &mut files);
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let mut cursor = 0usize;
+        while let Some(marker) = text[cursor..].find(r#""usage""#) {
+            let key_start = cursor + marker;
+            let after_key = key_start + r#""usage""#.len();
+            let Some((json_start, json_end)) = balanced_object(&text[after_key..]) else {
+                cursor = after_key;
+                continue;
+            };
+            cursor = after_key + json_end;
+            let Ok(usage) = serde_json::from_str::<serde_json::Value>(
+                &text[after_key + json_start..after_key + json_end],
+            ) else {
+                continue;
+            };
+            let context = text
+                .get(..key_start)
+                .and_then(|head| head.get(head.len().saturating_sub(4096)..))
+                .unwrap_or("")
+                .to_string();
+            let Some(at) = last_log_time(&context) else {
+                continue;
+            };
+            let Some(model) = last_quoted_field(&context, "model") else {
+                continue;
+            };
+            let count = |names: &[&str]| -> Option<i64> {
+                names.iter().find_map(|name| json_count(usage.get(*name)))
+            };
+            let prompt = count(&[
+                "prompt_tokens",
+                "promptTokens",
+                "input_tokens",
+                "inputTokens",
+            ]);
+            let completion = count(&[
+                "completion_tokens",
+                "completionTokens",
+                "output_tokens",
+                "outputTokens",
+            ]);
+            if prompt.is_none() && completion.is_none() {
+                continue;
+            }
+            let prompt_tokens = prompt.unwrap_or(0);
+            let completion_tokens = completion.unwrap_or(0);
+            let details = |names: &[&str]| -> Option<serde_json::Value> {
+                names.iter().find_map(|name| usage.get(*name)).cloned()
+            };
+            let prompt_details = details(&[
+                "prompt_tokens_details",
+                "input_tokens_details",
+                "inputTokensDetails",
+            ]);
+            let cached = prompt_details
+                .as_ref()
+                .and_then(|details| json_count(details.get("cached_tokens")))
+                .or_else(|| json_count(usage.get("cached_tokens")))
+                .unwrap_or(0);
+            let creation = prompt_details
+                .as_ref()
+                .and_then(|details| json_count(details.get("cache_creation_input_tokens")))
+                .or_else(|| json_count(usage.get("cache_creation_input_tokens")))
+                .unwrap_or(0);
+            let cache_read = cached.min(prompt_tokens);
+            let cache_write = creation.min(prompt_tokens.saturating_sub(cache_read));
+            let reported_total = count(&["total_tokens", "totalTokens"]).unwrap_or(0);
+            let total = reported_total.max(prompt_tokens + completion_tokens);
+            let tally = TokenTally {
+                input: total
+                    .saturating_sub(completion_tokens)
+                    .saturating_sub(cache_read)
+                    .saturating_sub(cache_write),
+                cache_write,
+                cache_read,
+                output: completion_tokens,
+            };
+            if tally.total() == 0 {
+                continue;
+            }
+            let identity = last_quoted_field(&context, "id")
+                .map(|id| format!("{KEY}:{id}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "{KEY}:{}:{key_start}:{model}:{}:{}:{}:{}",
+                        file.to_string_lossy(),
+                        tally.input,
+                        tally.cache_write,
+                        tally.cache_read,
+                        tally.output
+                    )
+                });
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += tally;
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+/// A balanced `{ ... }` following a colon; returns the JSON span offsets.
+fn balanced_object(text: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if index >= bytes.len() || bytes[index] != b':' {
+        return None;
+    }
+    index += 1;
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if index >= bytes.len() || bytes[index] != b'{' {
+        return None;
+    }
+    let start = index;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else if byte == b'"' {
+            in_string = true;
+        } else if byte == b'{' {
+            depth += 1;
+        } else if byte == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some((start, index + 1));
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn last_quoted_field(text: &str, name: &str) -> Option<String> {
+    let needle = format!(r#""{name}""#);
+    let mut result = None;
+    let mut from = 0usize;
+    while let Some(offset) = text[from..].find(&needle) {
+        let start = from + offset + needle.len();
+        let rest = text[start..].trim_start();
+        if let Some(value) = rest.strip_prefix(':') {
+            let value = value.trim_start();
+            if let Some(quoted) = value.strip_prefix('"') {
+                if let Some(end) = quoted.find('"') {
+                    result = Some(quoted[..end].to_string());
+                }
+            }
+        }
+        from = start;
+    }
+    result.filter(|value| !value.trim().is_empty())
+}
+
+fn last_log_time(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    let mut result = None;
+    for offset in 0..bytes.len().saturating_sub(19) {
+        if bytes[offset + 4] != b'-'
+            || bytes[offset + 7] != b'-'
+            || (bytes[offset + 10] != b' ' && bytes[offset + 10] != b'T')
+            || bytes[offset + 13] != b':'
+            || bytes[offset + 16] != b':'
+        {
+            continue;
+        }
+        if offset > 0 && bytes[offset - 1].is_ascii_digit() {
+            continue;
+        }
+        if !bytes[offset..offset + 4].iter().all(u8::is_ascii_digit)
+            || !bytes[offset + 5..offset + 7].iter().all(u8::is_ascii_digit)
+            || !bytes[offset + 8..offset + 10]
+                .iter()
+                .all(u8::is_ascii_digit)
+            || !bytes[offset + 11..offset + 13]
+                .iter()
+                .all(u8::is_ascii_digit)
+            || !bytes[offset + 14..offset + 16]
+                .iter()
+                .all(u8::is_ascii_digit)
+            || !bytes[offset + 17..offset + 19]
+                .iter()
+                .all(u8::is_ascii_digit)
+        {
+            continue;
+        }
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(
+            &text[offset..offset + 19].replace('T', " "),
+            "%Y-%m-%d %H:%M:%S",
+        ) {
+            use chrono::TimeZone;
+            let at = chrono::Local
+                .from_local_datetime(&naive)
+                .single()
+                .or_else(|| chrono::Local.from_local_datetime(&naive).earliest());
+            if let Some(at) = at {
+                result = Some(at.timestamp_millis());
+            }
+        }
+    }
+    result
+}
+
 /// Gemini CLI's chat JSON and headless JSONL shapes. Session JSON's cache
 /// overlap is proven only by a total equal to the non-cache sum; headless
 /// prompt-style inputs are cache-inclusive. A bare total is not assigned to
@@ -4472,6 +4824,41 @@ mod tests {
         assert_eq!(
             key.split_once(':').map(|(_, model)| model.to_string()),
             Some("claude-opus-4.6".to_string())
+        );
+    }
+
+    #[test]
+    fn lmstudio_scanner_finds_balanced_usage_and_log_times() {
+        let text = r#"2026-10-01 10:02:03 "id":"abc","model":"m1","usage": {"prompt_tokens": 10, "nested": {"output_tokens": 5}}"#;
+        let marker = text.find(r#""usage""#).unwrap();
+        let (start, end) = balanced_object(&text[marker + r#""usage""#.len()..]).expect("balanced");
+        let usage: serde_json::Value = serde_json::from_str(
+            &text[marker + r#""usage""#.len() + start..marker + r#""usage""#.len() + end],
+        )
+        .unwrap();
+        assert_eq!(usage["prompt_tokens"], 10);
+        assert_eq!(usage["nested"]["output_tokens"], 5);
+        let at = last_log_time(text).expect("log time");
+        assert_eq!(day_of_ms(at).to_string(), "2026-10-01");
+        assert_eq!(last_quoted_field(text, "model").as_deref(), Some("m1"));
+    }
+
+    #[test]
+    fn reasonix_rows_skip_turn_markers_and_bare_totals() {
+        let call = serde_json::json!({
+            "ts": "2026-10-01T10:00:00Z",
+            "model": "provider/m1",
+            "prompt": 100,
+            "completion": 20,
+            "cache_hit": 30,
+            "total": 120,
+            "requests": 1
+        });
+        assert!(json_count(call.get("total")).unwrap() > 0);
+        let marker = serde_json::json!({"turn": true});
+        assert_eq!(
+            marker.get("turn").and_then(serde_json::Value::as_bool),
+            Some(true)
         );
     }
 }

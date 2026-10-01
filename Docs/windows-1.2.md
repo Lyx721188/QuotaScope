@@ -49,8 +49,8 @@ Claude Code/Codex 的历史还需要常规 → Token spend → 读取 token 消�
 排序和降序/升序控制，支持按代理或模型钻取，并显示分页表格、日柱状图和来源覆盖状态。
 未公开价格的 token 不计入金额；金额是本机记录的估算，不是实际账单。目前分析
 Claude Code、Codex、Qwen Code、Gemini CLI、Pi、Oh My Pi、OmO Native、Kimchi、Amp、
-Droid、Prime Agent、OpenClaw、Mux、Junie、Augment、JCode、Gajae Code、Codebuff
-和 FX 的本机会话记录；更多本机来源在后续移植计划中。
+Droid、Prime Agent、OpenClaw、Mux、Junie、Augment、JCode、Gajae Code、Codebuff、
+FX、Reasonix 和 LM Studio 的本机会话记录；更多本机来源在后续移植计划中。
 Prime Agent 按 fork 血统合并副本，并把父会话聚合中已声明的子会话用量扣回；
 OpenClaw 同时读取 SQLite 与保留的 JSONL 原件，同一事件只计一次，镜像记录与
 zstd 压缩文件跳过。
@@ -60,7 +60,8 @@ JCode 按显式 schema 标记判断 cache 与 input 的关系，无法判断的 
 新输入计价；Gajae Code 按条目 id 折叠重放，字节相同的镜像文件只读一次。
 Codebuff 从同一消息的多份用量副本中逐字段取第一个非零值，不重复计数；
 FX 按会话快照每个模型计一次。Freebuff 不持久化 token 计数，只有字符估算，
-因此不作为数据源显示。
+因此不作为数据源显示。Reasonix 的 `turn` 标记行不计入；LM Studio 只解析
+日志中模型和时间都可定位的 usage 块。
 
 z.ai/智谱详细卡使用对应账户服务器的近 30 天统计，与本机 Token spend 开关独立：
 国际账号请求 `api.z.ai`，智谱账号请求 `open.bigmodel.cn`。只对启用且打开详细卡的账户读取。
