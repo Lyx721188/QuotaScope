@@ -18,7 +18,7 @@ Win32、Direct2D 和 WinUI 3 之上。它直接读取各服务商自己的客户
 - Provider 图标和本地化资源随 Windows 应用一起发布
 - 托盘逐账户用量摘要和用量页入口；设置页支持账户搜索、订阅/API 分组和凭据明文切换
 - 每账户余额口径、预算与低余额提醒；扩展程序可报告自己的用量
-- 可选的 Claude Code/Codex 本机 token 消耗分析，以及 z.ai/智谱近 30 天用量历史
+- 可选的 Claude Code/Codex/Antigravity 本机 token 消耗分析，以及 z.ai/智谱近 30 天用量历史
 
 ## 支持的服务商
 
@@ -62,7 +62,10 @@ cargo build --release
   Junie、Augment、JCode、Gajae Code、Codebuff、FX、Reasonix、LM Studio
   会话或日志文件，
   只解析 token 计数、
-  模型和时间；不会上传会话正文。定价功能会下载 models.dev 的公开价目表。
+  模型和时间；不会上传会话正文。开启账户详细卡后，Antigravity 还会读取本机
+  `~/.gemini/antigravity/conversations` 会话数据库中的用量元数据，同样不读取正文。
+  定价功能会下载 models.dev 的公开价目表，超过 24 小时后在下次读取时自动更新，
+  离线时使用本地缓存；models.dev 没有公开价目的模型单独标记，不会用相近模型的价格代替。
 - 浏览器 cookie 仅在点击“从浏览器导入”时读取，并用 DPAPI 保存；扩展程序只在启用后运行。
 - QuotaScope 不上传源码、Prompt 或模型生成内容。启用的扩展程序使用自己的网络和登录通道。
 

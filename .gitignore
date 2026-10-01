@@ -13,6 +13,9 @@ windows/target/
 # Local test and coverage output
 coverage/
 
+# Local build/validation artifacts and scratch diagnostics
+work/
+
 # Local collaboration and handoff notes
 HANDOFF.md
 PORT_PLAN.md

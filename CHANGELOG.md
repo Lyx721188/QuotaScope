@@ -5,7 +5,14 @@ What each release changed, written for somebody deciding whether to install it.
 Windows releases use their own version sequence. Entries below 1.1.1 include
 inherited macOS history and do not establish Windows feature availability.
 
-## 1.2.0 (Windows, unreleased)
+## 1.2.1 (Windows)
+
+- **Antigravity's own history on this machine.** With Token spend enabled, a detailed Antigravity card reads the conversation databases the IDE keeps under `~/.gemini/antigravity/conversations` and shows per-day tokens and their published API value, the same way the Claude Code and Codex cards do. Counts whose meaning has not been established are left out rather than guessed, a turn with no recorded time is filed under the conversation's start, and the card says both. These records stay out of the Token spend overview, which counts the agents whose transcripts name a model per line.
+- **A price for the way agents actually write a model name.** The table still comes from models.dev and still refreshes on the first read after 24 hours, but a missing rate was too often a spelling problem rather than a pricing one. The lookup now recognises a provider's own display name (`Gemini 3.7 Flash (High)`), an id that names its vendor (`deepseek/deepseek-v4-flash`, as LM Studio logs write it), and the arm a client appends to the model — Antigravity records `gemini-3.8-flash-control` with the same `model_enum` as `gemini-3.8-flash`, and thinking tokens are billed at the model's own rates. On the machine this was developed on, Antigravity's unpriced tokens fell from 145 million of 281 million to 81 thousand.
+- **What still has no number.** An experimental build is not a spelling of the model beside it, so `gemini-3.7-flash-exp-b` is counted, and marked, as unpriced — along with the stealth coding-plan models no provider publishes a rate for. A model with no published price is never priced at a neighbouring model's rate.
+- Run `cargo run -p quotascope-core --example spend-coverage` to see, per agent on your own machine, which spellings reached a published rate and which did not.
+
+## 1.2.0 (Windows, released 2026-10-01)
 
 - **Correct allowance forecasts.** Millisecond reset times now stay in milliseconds throughout the calculation. A five-hour limit with 39% used after 17% of its time predicts exhaustion in about 80 minutes, rather than incorrectly claiming the allowance lasts until reset. The Chinese copy now says “预计够用至重置” or “预计在重置前用尽”. Predictions assume the cycle's average consumption rate continues.
 - **A quieter interface.** Compact usage cards follow the upstream 250-point layout, with three activity summaries and a restrained daily chart. Progress bars use a single capsule to avoid dark seam dots at the ends. Pointer-following accent glow is removed. Settings use aligned rows and account cards with expandable configuration, enabled accounts first and compact inactive summaries.
@@ -16,8 +23,8 @@ inherited macOS history and do not establish Windows feature availability.
 - **Optional detailed cards.** Per-account cards include the plan, last update and reported window clocks. Claude Code/Codex local transcripts can supply token histories and labelled API-value estimates when Token spend is enabled. z.ai and Zhipu statistics use their separate hosts, show thirty-day token history, distinguish empty/missing/failed reads, and never infer a money value.
 - **Extensions and display controls.** User-enabled extension programs report limits or balances; configurable warning threshold, clock direction, tray visibility and second-launch settings entry. Read [the Windows guide](Docs/windows-1.2.md) and [extension contract](Docs/extensions.md).
 
-This entry describes the local implementation. It is not a published Release
-or confirmation of interactive UI acceptance on every display.
+Published as GitHub Release `windows-v1.2.0` (zip, installer and SHA-256).
+Interactive UI acceptance on every display is still not claimed.
 
 ## 1.1.1
 

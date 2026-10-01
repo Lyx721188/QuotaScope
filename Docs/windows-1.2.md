@@ -39,11 +39,25 @@ DeepSeek 旧的全局余额口径/预算仍兼容；明确保存账户设置后�
 账户行的“详细用量卡”按账户保存，默认关闭。开启后悬停用量环显示 plan、更新时间，
 以及有实际长度和 reset 的窗口时钟。后台读数变化后会重新测量悬停卡高度。
 
-Claude Code/Codex 的历史还需要常规 → Token spend → 读取 token 消耗。
-开启后会扫描本机 `~/.claude/projects` 或 `~/.codex/sessions` 会话文件，解析 token 计数、
-模型和时间；会话文件可能包含正文，但正文不会上传。模型价目下载自 `https://models.dev/api.json`。
+Claude Code、Codex 和 Antigravity 的历史还需要常规 → Token spend → 读取 token 消耗。
+开启后会扫描本机 Claude Code、Codex 的会话文件，或 Antigravity IDE 的会话数据库，
+解析 token 计数、模型和时间；只读取 Antigravity 的用量元数据，不读取会话正文。
+Antigravity 中含义未确认的计数会省略，部分缺少调用时间的记录按会话开始时间归日，
+并在卡片上标明。模型价目下载自 `https://models.dev/api.json`。
+Antigravity 记录只显示在账户详细卡，不纳入 Token spend 总览。
 数值是公开 API 价格下的价值估算，不能当成订阅账单，也不能反推出服务商额度百分比。
 没有公开价格的 token 单独标记；被删除或不可读的会话不会出现在本机历史中。
+
+价目表在读取时已超过 24 小时才重新下载，离线继续使用本地缓存
+（`%APPDATA%\QuotaScope\model-prices-4.json`），下载失败 5 分钟后允许重试。价格是基础档单价：
+部分模型超长上下文加价，而会话记录只有 token 数量、没有每次请求的上下文占用，
+所以不加价档也不打折。代理写出的模型名常常不是 models.dev 的 id，会按已确认的写法归一：
+服务商显示名（`Gemini 3.7 Flash (High)`）、把厂商写进 id 的形式
+（`deepseek/deepseek-v4-flash`）、客户端加在模型后面的通道后缀（Antigravity 的
+`gemini-3.8-flash-control` 在本机会话库里与 `gemini-3.8-flash` 共用同一个 `model_enum`，
+thinking token 按模型自身费率计费）。实验版本（`gemini-3.7-flash-exp-b`）和没有任何
+服务商公开价目的 stealth 模型仍计入“无公开价格”，绝不用邻近模型的价格代替。
+用 `cargo run -p quotascope-core --example spend-coverage` 可查看本机哪些写法命中了价格。
 
 “Token spend”页可按今天、最近 7/30/90 天或全部记录汇总。页面提供来源、模型、分组、
 排序和降序/升序控制，支持按代理或模型钻取，并显示分页表格、日柱状图和来源覆盖状态。
