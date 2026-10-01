@@ -635,12 +635,12 @@ const TABLE: &[Entry] = &[
     Entry {
         key: "Won't last the window",
         en: "Won't last the window",
-        zh: "撑不到窗口结束",
+        zh: "预计在重置前用尽",
     },
     Entry {
         key: "Expected to last the window",
         en: "Expected to last the window",
-        zh: "预计能撑到窗口结束",
+        zh: "预计够用至重置",
     },
     Entry {
         key: "{n} points",

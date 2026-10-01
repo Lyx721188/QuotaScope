@@ -1,6 +1,6 @@
 # QuotaScope Windows 1.2 交接
 
-更新：2026-10-01 16:32（Asia/Shanghai）。工作区 `D:\Projects\QuotaScope`，分支 `main`。
+更新：2026-10-01 16:42（Asia/Shanghai）。工作区 `D:\Projects\QuotaScope`，分支 `main`。
 
 ## 恢复来源与当前范围
 
@@ -62,32 +62,43 @@
   DirectWrite 使用三字重字体集合；WinUI 通过应用字体资源使用包内字体，未安装系统字体。
   Windows 标题栏/菜单及图标字体由系统控制。
 
+## 预测单位修正（用户截图触发）
+
+“预计能撑到窗口结束”的含义是按当前周期平均速度，剩余额度够用至重置。
+用户截图为 5 小时窗口已过 17%、已用 39%，旧实现却显示能撑到结束。
+核对发现 reset 毫秒用于 `elapsed_seconds`，再转换至毫秒，将耗尽时间放大 1000 倍。
+修正为全程毫秒，并按 `used > elapsed` 判断是否提前用尽，避免重置边界受整毫秒截断影响。
+截图对应约 51 分钟已过，剩余时间约 51 × 61/39 = 79.77 分钟，应提示提前用尽。
+中文文案改为“预计够用至重置”/“预计在重置前用尽”。它是线性预测，不是服务商保证。
+新增四项回归覆盖截图数值、周窗口及重置边界、两小时 ETA 展示范围、无有效窗口和零/满用量。
+
 ## 验证证据
 
 最终源码检查均退出 0：
 
 - `cargo fmt --all -- --check`
-- `cargo test --workspace`：476 core + 3 M7 integration + 31 existing integration + 7 Windows tests，
-  **517 passed，2 ignored**。忽略的真实环境测试没有运行。
+- `cargo test --workspace`：476 core + 4 forecast regression + 3 M7 integration + 31 existing integration + 7 Windows tests，
+  **521 passed，2 ignored**。忽略的真实环境测试没有运行。
 - 新字体测试验证实际字体家族、三种非合成字重及中文字形；新增卡片测试覆盖短格式数字、CJK 换行及三个面板尺寸。
 - `cargo clippy --workspace --all-targets`：退出 0，仍有风格警告；不是 `-D warnings` 零警告验收。
-- `cargo build --release -p quotascope-win`：最终构建约 1m21s。
+- `cargo build --release -p quotascope-win`：预测修正后最终构建约 1m41s。
 - `git diff --check`：通过。
 
-日志：`work/visual-tests.log`、`work/visual-clippy.log`、`work/visual-final-build.log`。
-本地包：`work/quotascope-windows-1.2.0.zip`（43,293,789 bytes），
+最终日志：`work/forecast-tests.log`、`work/forecast-clippy.log`、`work/forecast-build.log`。
+此前视觉检查日志：`work/visual-tests.log`、`work/visual-clippy.log`、`work/visual-final-build.log`。
+本地包：`work/quotascope-windows-1.2.0.zip`（43,293,794 bytes），
 展开目录 `work/quotascope-windows-1.2.0/` 包含 exe、DLL、PRI、语言资源和完整 `Fonts/`。
 Windows FileVersion 为 1.2.0。
 
-- exe SHA256：`DD95C5776CDB702426CE5D1D66DB008AF20DBFDA2CAAB758F257A61D04A644B4`。
-- zip SHA256：`740AE9AA1329C62923A2DFC34FDDC48C622835A520644772A8B8DED22784535D`。
-- 包清单：`work/visual-package.json`（2026-10-01T16:29:35+08:00）。
-- 最终包 exe 的 `--json` 退出 0、0 账户、字段正确；隔离配置哈希不变且未写新数据文件：
+- exe SHA256：`D9141835D64EAAD15C0ADFDB233B5675A56CFA4A71B57AC271F1CB1C89BFB7AC`。
+- zip SHA256：`19A8346C474D65C1D09F2A23CB7DF4174FCDD7827093A3612D644BC90AB9438D`。
+- 预测修正包：`work/forecast-validation.json`（2026-10-01T16:41:26+08:00）；字体/资源清单保持与 `work/visual-package.json` 相同。
+- 视觉改进包 exe 的 `--json` 退出 0、0 账户、字段正确；隔离配置哈希不变且未写新数据文件：
   `work/visual-json-validation.json`。
 
 ## 交互验收与证据边界
 
-通过 computer-use 原生窗口快照验收，实际运行的是包内 exe：
+视觉验收使用 `3844f1d` 包的 computer-use 原生窗口快照；预测修正另由四项确定性测试验证，已替换包内 exe 并重启同一隔离配置（PID 38360）。以下快照属于预测修正前的视觉布局：
 
 - 常规页右侧控制列对齐、分区卡片和 HarmonyOS Sans 生效；账户页默认紧凑摘要、启用账户排序、独立卡片和配置展开/收起均已实测。
 - 真实 Codex OAuth 读数成功，本机历史/估值成功；最终卡片为 250 × 497 点（启用预测时），

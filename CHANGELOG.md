@@ -7,6 +7,7 @@ inherited macOS history and do not establish Windows feature availability.
 
 ## 1.2.0 (Windows, unreleased)
 
+- **Correct allowance forecasts.** Millisecond reset times now stay in milliseconds throughout the calculation. A five-hour limit with 39% used after 17% of its time predicts exhaustion in about 80 minutes, rather than incorrectly claiming the allowance lasts until reset. The Chinese copy now says “预计够用至重置” or “预计在重置前用尽”. Predictions assume the cycle's average consumption rate continues.
 - **A quieter interface.** Compact usage cards follow the upstream 250-point layout, with three activity summaries and a restrained daily chart. Progress bars use a single capsule to avoid dark seam dots at the ends. Pointer-following accent glow is removed. Settings use aligned rows and account cards with expandable configuration, enabled accounts first and compact inactive summaries.
 - **HarmonyOS Sans.** Regular, Medium and Bold fonts ship with the app, including their license; the rail, usage cards and settings load the bundled family without installing system fonts.
 - **More provider routes.** The built-in catalog has 77 providers, with 67 Windows routes implemented, including API keys, self-hosted gateways and eighteen browser-session providers. Parser fixtures cover these routes; real-account verification varies by provider. See [the Windows support table](Docs/providers/windows-ports.md).

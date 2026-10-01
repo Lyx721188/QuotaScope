@@ -1365,22 +1365,25 @@ pub mod burn_rate {
         }
 
         let used = window.used_fraction.clamp(0.0, 1.0);
-        // The window's own length, from the two figures that describe it.
-        let elapsed_seconds = until_reset as f64 / (1.0 - elapsed) * elapsed;
-        if elapsed_seconds <= 0.0 {
+        // Reset timestamps are milliseconds; keep the rate and projection
+        // in the same unit instead of treating milliseconds as seconds.
+        let elapsed_ms = window.window_seconds as f64 * 1000.0 * elapsed;
+        if elapsed_ms <= 0.0 {
             return None;
         }
 
-        let per_hour = used / elapsed_seconds * 3600.0;
-        if !(used < 1.0) || per_hour <= 0.0 {
+        let per_ms = used / elapsed_ms;
+        if !(used < 1.0) || per_ms <= 0.0 {
             return Some(Reading {
                 exhausts_before_reset: used >= 1.0,
                 time_to_exhaustion_ms: if used >= 1.0 { Some(0) } else { None },
             });
         }
 
-        let until_empty_ms = ((1.0 - used) / per_hour * 3600.0 * 1000.0) as i64;
-        let first = until_empty_ms < until_reset;
+        let until_empty_ms = ((1.0 - used) / per_ms) as i64;
+        // Equivalent to comparing the projected exhaustion with reset,
+        // without truncating an exact-at-reset forecast a millisecond early.
+        let first = used > elapsed;
 
         Some(Reading {
             exhausts_before_reset: first,
