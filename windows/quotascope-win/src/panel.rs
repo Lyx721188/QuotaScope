@@ -357,30 +357,17 @@ impl PanelWindow {
     /// Recomputes everything a settings change can move: metrics, edge,
     /// dock, window size, placement.
     pub fn reload_settings(&mut self) {
-        let (scale, label_leads, side_pct, top_pct, floating, side) =
-            quotascope_core::settings::with(|s| {
-                (
-                    s.scale(),
-                    s.label_above_ring,
-                    s.side_rail_shows_percentages,
-                    s.top_rail_shows_percentages,
-                    s.floating,
-                    s.dock_side.clone(),
-                )
-            });
-
-        self.m = Metrics {
-            scale,
-            label_leads,
-            side_percentages: side_pct,
-            top_percentages: top_pct,
-        };
-        self.edge = Edge::from_name(&side);
-        self.docked = !floating;
+        let settings = quotascope_core::settings::with(|s| s.clone());
+        self.m = Metrics::from_settings(&settings);
+        self.edge = Edge::from_name(&settings.dock_side);
+        self.docked = true;
         // A setting that forbids retreating also summons a retreated bar
         // straight back out.
         if !self.can_retreat() {
             self.set_hidden(false);
+            self.hide_at = None;
+        } else if !self.tracking_mouse && !self.card_shown() && !self.hidden {
+            self.hide_at = Some(quotascope_core::timeutil::now_ms() + RETREAT_DELAY_MS);
         }
         self.compute_window_size();
         self.place();
@@ -485,11 +472,13 @@ impl PanelWindow {
         let peek = (PEEK_PX as f64 * dpi_scale) as i32;
         self.base_pos = (px, py);
         self.phys_size = physical;
-        self.hidden_pos = match self.edge {
-            Edge::Right => (work.right - peek, py),
-            Edge::Left => (work.left, py),
-            Edge::Top => (px, work.top),
-        };
+        self.hidden_pos = dock::retreat_position(
+            self.edge,
+            self.base_pos,
+            physical,
+            (work.left, work.top, work.right),
+            peek,
+        );
         self.apply_position();
     }
 
@@ -538,7 +527,9 @@ impl PanelWindow {
         // sunk, and let the rings bounce in again — the arrival the launch
         // eased through.
         self.set_hidden(false);
-        self.hide_at = None;
+        self.hide_at = self
+            .can_retreat()
+            .then(|| quotascope_core::timeutil::now_ms() + RETREAT_DELAY_MS);
         self.presence = 0.0;
         self.presence_v = 0.0;
         self.place();
@@ -1094,8 +1085,12 @@ impl PanelWindow {
     pub fn on_card_pointer(&mut self, entered: bool) {
         if entered {
             self.leave_at = None;
+            self.hide_at = None;
         } else {
             self.leave_at = Some(quotascope_core::timeutil::now_ms() + CARD_LINGER_MS);
+            if self.can_retreat() {
+                self.hide_at = Some(quotascope_core::timeutil::now_ms() + RETREAT_DELAY_MS);
+            }
         }
     }
 
@@ -1158,28 +1153,7 @@ impl PanelWindow {
 
     /// Re-runs placement without resetting the arrival ease.
     fn reload_settings_preserving_openness(&mut self) {
-        let (scale, label_leads, side_pct, top_pct, floating, side) =
-            quotascope_core::settings::with(|s| {
-                (
-                    s.scale(),
-                    s.label_above_ring,
-                    s.side_rail_shows_percentages,
-                    s.top_rail_shows_percentages,
-                    s.floating,
-                    s.dock_side.clone(),
-                )
-            });
-        self.m = Metrics {
-            scale,
-            label_leads,
-            side_percentages: side_pct,
-            top_percentages: top_pct,
-        };
-        self.edge = Edge::from_name(&side);
-        self.docked = !floating;
-        self.compute_window_size();
-        self.place();
-        self.redraw();
+        self.reload_settings();
     }
 
     fn drag_move(&mut self, x: i32, y: i32) {

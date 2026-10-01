@@ -50,8 +50,9 @@ pub struct AppSettings {
     /// Collapse to the 6pt sliver while docked and unhovered.
     pub auto_collapse: bool,
     pub follows_active_display: bool,
-    /// left | right | top — or none of these with `floating`.
+    /// left | right | top.
     pub dock_side: String,
+    /// Legacy field retained for old files. Interactive startup clears it.
     pub floating: bool,
     /// The rail's position as fractions of the display it sits on. The rail's
     /// position is stored, never the window's — the window is wider than the
@@ -203,6 +204,8 @@ impl AppSettings {
     /// something to say on this machine, so nobody gets a rail of rings
     /// asking to be configured.
     pub fn resolve_first_run(&mut self) {
+        // Free-floating placement was retired; retain the selected edge.
+        self.floating = false;
         if self.has_run {
             return;
         }

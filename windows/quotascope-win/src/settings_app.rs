@@ -844,7 +844,7 @@ impl SettingsApp {
                     s.floating = false;
                     s.dock_side = "top".into();
                 }
-                _ => s.floating = true,
+                _ => {}
             },
             ChoiceKey::PanelSize => {
                 s.panel_size = match selected {
@@ -957,14 +957,10 @@ impl SettingsApp {
 
     fn general_view(&self, context: &ViewContext<Self>) -> View {
         let s = quotascope_core::settings::with(|s| s.clone());
-        let dock_selected = if s.floating {
-            3
-        } else {
-            match s.dock_side.as_str() {
-                "left" => 1,
-                "top" => 2,
-                _ => 0,
-            }
+        let dock_selected = match s.dock_side.as_str() {
+            "left" => 1,
+            "top" => 2,
+            _ => 0,
         };
         let size_selected = match s.panel_size.as_str() {
             "small" => 0,
@@ -1008,7 +1004,7 @@ impl SettingsApp {
                         self.choice(
                             ChoiceKey::Dock,
                             "Dock to",
-                            &["Right", "Left", "Top", "Floating"],
+                            &["Right", "Left", "Top"],
                             dock_selected,
                             context,
                         ),

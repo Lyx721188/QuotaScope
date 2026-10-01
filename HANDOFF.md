@@ -1,6 +1,24 @@
 # QuotaScope Windows 1.2 交接
 
-更新：2026-10-01 16:42（Asia/Shanghai）。工作区 `D:\Projects\QuotaScope`，分支 `main`。
+更新：2026-10-01（Asia/Shanghai）。工作区 `D:\Projects\QuotaScope`，分支 `main`。
+
+## 最新：GitHub 构建、停靠修复与上游审计
+
+- 用户已授权推送与 Actions 构建。`59a97c2` 已推送到 `Lyx721188/QuotaScope` 的 main。
+  [第一轮 Windows 构建](https://github.com/Lyx721188/QuotaScope/actions/runs/36838239032) 成功；
+  fmt、Clippy、tests、release、JSON smoke、打包后的 settings smoke、artifact upload 各步均成功。
+  Artifact 名为 `quotascope-windows-x64`。没有打 tag 或创建线上 Release。
+- 新增修复：左侧/顶部收起位置减去窗口尺寸，仅保留 5 DIP 入口；间距设置进入同一套尺寸、环中心与点击命中布局。
+  启动/切换设置后无需先悬停一次就可以收起；指针进入详细卡时暂停收起。
+- 取消悬浮选项。保留旧字段兼容 JSON，但交互启动会迁移回原先选中的停靠边；只读 `--json` 不做迁移写入。
+- 本轮源码回归：524 passed / 2 ignored；fmt check、Clippy、release build 退出 0。Clippy 仍有既有警告。
+  日志 `work/dock-tests.log`、`work/dock-clippy.log`、`work/dock-build.log`。
+  新增几何测试覆盖三边、负坐标显示器、1/1.5/2 倍 DPI、三档面板大小/间距及命中位置。
+- 独立 APPDATA 测试窗口已换用本轮 release exe，成功启动并显示常规设置。
+  用户按物理 Esc 停止 computer-use，随即停止界面输入；左/顶收起与唤回、间距动态变化的真实 UI 验收仍未完成，不能用几何测试代替。
+- 已 fetch 上游：`a3415cc7c8265152646015680e80329c09f2f62f`。完整差距与建议顺序见 [UPSTREAM_PARITY.md](UPSTREAM_PARITY.md)。
+  更正旧数量：上游本机来源实际 54 项，Windows 两项；图标映射实际覆盖 17 个 provider，60 个仍用回退。
+- 新修复的推送/Actions 结果将在构建完成后补充；下文的“没有推送”等描述是先前阶段记录。
 
 ## 恢复来源与当前范围
 
@@ -116,14 +134,14 @@ Windows FileVersion 为 1.2.0。
 ## 后续验收
 
 当前用户要求的视觉改进已实现，并更新本地包；如要正式发布，下一项是扩大主题/DPI 和实际 z.ai/智谱统计验收。
-尚无真实 key 的成功证据，不能把 fixture 成功当作账户接口成功。推送与线上 Release 仍需按用户后续要求执行。
+尚无真实 key 的成功证据，不能把 fixture 成功当作账户接口成功。推送已获授权并执行，线上 Release 尚未要求。
 
 ## 仍未移植/保留差距
 
 - 10 个 provider：Kiro、Ollama Cloud、Grok Bot、Volcengine、Devin、Alibaba Token Plan、
   Gemini、JetBrains AI、Windsurf、Nous Portal。
 - 浏览器 localStorage（Windsurf 及 Devin 第三路）、Codex reset credits、window starter、
-  完整 55 个本机 token reader、附加账号登录、52 个新增 provider 的完整位图图标。
+  上游 54 个本机来源中剩余 52 个 reader、附加账号登录、60 个 provider 的位图图标映射。
 - Kind 中 daily/credits/messages/topUp/sharedCredits 仍映射为 other/spend；
   noPlan 仍使用 NoLimitsReported；bonus pack 仅到期时间、没有到期金额。
 - macOS 专属刘海/Liquid Glass/Sparkle 等不属于 Windows实现。

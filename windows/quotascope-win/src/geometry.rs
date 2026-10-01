@@ -42,6 +42,7 @@ impl Edge {
 #[derive(Debug, Clone, Copy)]
 pub struct Metrics {
     pub scale: f64,
+    pub spacing: f64,
     /// Whether the percent label sits above its ring rather than below.
     pub label_leads: bool,
     /// Whether the ring carries a percent label, per axis.
@@ -53,6 +54,7 @@ impl Metrics {
     pub fn from_settings(settings: &quotascope_core::settings::AppSettings) -> Metrics {
         Metrics {
             scale: settings.scale(),
+            spacing: settings.spacing(),
             label_leads: settings.label_above_ring,
             side_percentages: settings.side_rail_shows_percentages,
             top_percentages: settings.top_rail_shows_percentages,
@@ -145,8 +147,24 @@ pub mod dock {
     }
 
     /// The gap between the ring+label items, along the rail.
-    pub fn item_spacing(_m: &Metrics) -> f64 {
-        30.0
+    pub fn item_spacing(m: &Metrics) -> f64 {
+        30.0 * m.spacing
+    }
+
+    /// Window origin that leaves only `peek` pixels inside the work area.
+    /// Coordinates are physical pixels; work areas can have negative origins.
+    pub fn retreat_position(
+        edge: Edge,
+        base: (i32, i32),
+        size: (i32, i32),
+        work: (i32, i32, i32),
+        peek: i32,
+    ) -> (i32, i32) {
+        match edge {
+            Edge::Right => (work.2 - peek, base.1),
+            Edge::Left => (work.0 - size.0 + peek, base.1),
+            Edge::Top => (base.0, work.1 - size.1 + peek),
+        }
     }
 
     /// The rail's full size, laid the way `edge` lays it — which is the
@@ -257,5 +275,72 @@ pub mod card {
             height += m.s(ROW_INTERNAL_SPACING) + m.s(ROW_TEXT_LINE_HEIGHT);
         }
         height
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retreat_leaves_only_a_sliver_on_every_edge_and_monitor_origin() {
+        for (left, top, right) in [(0, 0, 1920), (-1920, -1080, 0), (300, 200, 2860)] {
+            for scale in [1.0, 1.5, 2.0] {
+                let size = ((64.0 * scale) as i32, (240.0 * scale) as i32);
+                let peek = (5.0 * scale) as i32;
+                let base = (left + 40, top + 60);
+                for edge in [Edge::Left, Edge::Right, Edge::Top] {
+                    let (x, y) = dock::retreat_position(edge, base, size, (left, top, right), peek);
+                    match edge {
+                        Edge::Left => assert_eq!(x + size.0 - left, peek),
+                        Edge::Right => assert_eq!(right - x, peek),
+                        Edge::Top => assert_eq!(y + size.1 - top, peek),
+                    }
+                    if edge.is_vertical() {
+                        assert_eq!(y, base.1);
+                    } else {
+                        assert_eq!(x, base.0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spacing_changes_extent_centres_and_hit_testing_without_scaling_rings() {
+        use quotascope_core::settings::AppSettings;
+        for edge in [Edge::Left, Edge::Right, Edge::Top] {
+            for panel_size in ["small", "standard", "large"] {
+                let mut previous_length = 0.0;
+                for spacing in ["compact", "standard", "roomy"] {
+                    let settings = AppSettings {
+                        panel_size: panel_size.into(),
+                        rail_spacing: spacing.into(),
+                        ..Default::default()
+                    };
+                    let m = Metrics::from_settings(&settings);
+                    let axis = edge.axis();
+                    let length = dock::length(&m, 3, axis);
+                    assert!(length > previous_length);
+                    previous_length = length;
+                    assert_eq!(dock::thickness(&m, axis), 64.0 * settings.scale());
+                    let first = dock::ring_centre_along(&m, 0, axis);
+                    let second = dock::ring_centre_along(&m, 1, axis);
+                    assert!(
+                        (second
+                            - first
+                            - dock::item_length(&m, axis)
+                            - 30.0 * settings.scale() * settings.spacing())
+                        .abs()
+                            < 1e-8
+                    );
+                    for slot in 0..3 {
+                        let centre = dock::ring_centre_along(&m, slot, axis);
+                        assert_eq!(dock::slot_at(&m, centre, axis, 3), Some(slot));
+                    }
+                    assert_eq!(dock::slot_at(&m, (first + second) / 2.0, axis, 3), None);
+                }
+            }
+        }
     }
 }

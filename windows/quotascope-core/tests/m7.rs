@@ -2,6 +2,18 @@ use quotascope_core::model::{AccountKey, Provider, ALL_PROVIDERS};
 use quotascope_core::settings::AppSettings;
 
 #[test]
+fn old_floating_configuration_returns_to_its_dock_even_after_first_run() {
+    let mut settings: AppSettings = serde_json::from_str(
+        r#"{"hasRun":true,"floating":true,"dockSide":"left","railSpacing":"roomy"}"#,
+    )
+    .unwrap();
+    settings.resolve_first_run();
+    assert!(!settings.floating);
+    assert_eq!(settings.dock_side, "left");
+    assert_eq!(settings.rail_spacing, "roomy");
+}
+
+#[test]
 fn usage_pages_are_the_eighteen_known_https_pages() {
     let pages: Vec<_> = ALL_PROVIDERS
         .iter()
