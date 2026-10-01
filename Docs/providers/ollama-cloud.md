@@ -1,11 +1,5 @@
 # Ollama Cloud (index)
 
-Authoritative setup, cookie filter, page parser, storage, and security notes:
-
-**[`../ollama-cloud.md`](../ollama-cloud.md)**
-
-Do not duplicate that document here. This page only places Ollama in the provider matrix.
-
 ## Place in QuotaScope
 
 - `Provider.ollamaCloud`. Icon `ollama`. Extra accounts: no. Transcripts: no. First-run: none (`canReportWithoutSetup` is false until a session is stored).

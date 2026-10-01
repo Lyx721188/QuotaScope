@@ -138,7 +138,7 @@ QuotaScope does **not** read `~/Library/Application Support/Grok Bot/sand-secret
 
 ## Browser cookies — Ollama Cloud only
 
-[`BrowserCookies.swift`](../../Sources/Pulse/Auth/BrowserCookies.swift) exists because Ollama publishes no quota API. Setup, host filter, and parser rules: [`../ollama-cloud.md`](../ollama-cloud.md).
+[`BrowserCookies.swift`](../../Sources/Pulse/Auth/BrowserCookies.swift) exists because Ollama publishes no quota API.
 
 **User-browser cookie reading is not how Claude, Cursor, or anyone else authenticates.** Claude Desktop borrows the *desktop app’s* Chromium cookie store (`sessionKey` / `sessionKeyV3` on `claude.ai`) via [`ClaudeDesktopSession`](../../Sources/Pulse/Providers/ClaudeDesktopSession.swift) — a different path, gated on a Keychain grant for `Claude Safe Storage`. Cursor **builds** a `WorkosCursorSessionToken` from the editor’s SQLite token; it does not open Safari or Chrome.
 
