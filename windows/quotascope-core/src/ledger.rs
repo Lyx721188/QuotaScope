@@ -750,14 +750,26 @@ pub fn transcript_root(provider: Provider) -> Option<PathBuf> {
 }
 
 fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
+    collect_files(dir, "jsonl", out);
+}
+
+fn collect_json(dir: &Path, out: &mut Vec<PathBuf>) {
+    collect_files(dir, "json", out);
+}
+
+fn collect_files(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_jsonl(&path, out);
-        } else if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            collect_files(&path, extension, out);
+        } else if path
+            .extension()
+            .map(|candidate| candidate == extension)
+            .unwrap_or(false)
+        {
             out.push(path);
         }
     }
@@ -1267,6 +1279,8 @@ fn json_count(value: Option<&serde_json::Value>) -> Option<i64> {
 pub enum PiClient {
     Pi,
     Omp,
+    Senpi,
+    Kimchi,
 }
 
 impl PiClient {
@@ -1274,15 +1288,56 @@ impl PiClient {
         match self {
             Self::Pi => "pi",
             Self::Omp => "omp",
+            Self::Senpi => "senpi",
+            Self::Kimchi => "kimchi",
         }
     }
 
-    pub fn root(self) -> PathBuf {
-        crate::model::home_path(match self {
-            Self::Pi => ".pi/agent/sessions",
-            Self::Omp => ".omp/agent/sessions",
-        })
+    pub fn root(self) -> Vec<PathBuf> {
+        match self {
+            Self::Pi => vec![crate::model::home_path(".pi/agent/sessions")],
+            Self::Omp => vec![crate::model::home_path(".omp/agent/sessions")],
+            Self::Senpi => {
+                let home = crate::home_dir();
+                let base = std::env::var("SENPI_CODING_AGENT_DIR")
+                    .ok()
+                    .and_then(|raw| environment_path(&raw, &home))
+                    .unwrap_or_else(|| home.join(".senpi/agent"));
+                let mut roots = vec![base.join("sessions")];
+                if let Some(state) = std::env::var("SENPI_CODING_AGENT_SESSION_DIR")
+                    .ok()
+                    .and_then(|raw| environment_path(&raw, &home))
+                {
+                    roots.push(state);
+                }
+                roots
+            }
+            Self::Kimchi => {
+                let home = crate::home_dir();
+                let root = std::env::var("KIMCHI_CODING_AGENT_DIR")
+                    .ok()
+                    .and_then(|raw| environment_path(&raw, &home))
+                    .unwrap_or_else(|| home.join(".config/kimchi/harness"));
+                vec![root.join("sessions")]
+            }
+        }
     }
+}
+
+/// A path from an agent's environment, with `~` and `~/...` against Home.
+/// An empty value is absent, not the current directory.
+fn environment_path(raw: &str, home: &Path) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "~" {
+        return Some(home.to_path_buf());
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return Some(home.join(rest));
+    }
+    Some(PathBuf::from(trimmed))
 }
 
 /// Decodes the Pi transcript's four independent buckets. A total larger than
@@ -1333,8 +1388,8 @@ fn pi_usage(object: &serde_json::Value) -> Option<(TokenTally, i64)> {
     Some((tally, 0))
 }
 
-/// Reads Pi and Oh My Pi transcripts. Branch copies fold by response id, or by
-/// the message's own fields when a provider response id was not recorded.
+/// Reads the Pi-shaped clients. Branch copies fold by response id, or by the
+/// message's own fields; Kimchi's older scheme keeps each session separate.
 pub fn pi_ledger(client: PiClient) -> UsageLedger {
     let key = client.id();
     {
@@ -1351,7 +1406,9 @@ pub fn pi_ledger(client: PiClient) -> UsageLedger {
     }
 
     let mut files = Vec::new();
-    collect_jsonl(&client.root(), &mut files);
+    for root in client.root() {
+        collect_jsonl(&root, &mut files);
+    }
     files.sort();
 
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
@@ -1407,14 +1464,18 @@ pub fn pi_ledger(client: PiClient) -> UsageLedger {
                     };
                     let provider = json_text(message, &["provider"]).unwrap_or("");
                     let response_id = json_text(message, &["responseId"]).map(str::to_string);
-                    let identity = match response_id {
-                        Some(id) => format!("{key}:response:{id}"),
-                        None => format!(
-                            "{key}:message:{}:{}:{provider}:{model}:{}",
-                            json_text(&row, &["id"]).unwrap_or(""),
-                            at,
-                            tally.total()
-                        ),
+                    let identity = if client == PiClient::Kimchi {
+                        format!("{key}:{}:{}", json_text(&row, &["id"]).unwrap_or(""), at)
+                    } else {
+                        match response_id {
+                            Some(id) => format!("{key}:response:{id}"),
+                            None => format!(
+                                "{key}:message:{}:{}:{provider}:{model}:{}",
+                                json_text(&row, &["id"]).unwrap_or(""),
+                                at,
+                                tally.total()
+                            ),
+                        }
                     };
                     if !seen.insert(identity) {
                         continue;
@@ -1449,6 +1510,676 @@ fn ledger_from_slot_buckets(
     let entry = guard.get_or_insert_with(|| (Instant::now(), HashMap::new()));
     entry.1.insert(cache_key.to_string(), built.clone());
     built
+}
+
+/// Gemini CLI's chat JSON and headless JSONL shapes. Session JSON's cache
+/// overlap is proven only by a total equal to the non-cache sum; headless
+/// prompt-style inputs are cache-inclusive. A bare total is not assigned to
+/// a kind here.
+pub fn gemini_ledger() -> UsageLedger {
+    const KEY: &str = "gemini";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    let root = crate::model::home_path(".gemini");
+    let root = std::env::var("GEMINI_CLI_HOME")
+        .ok()
+        .and_then(|raw| environment_path(&raw, &crate::home_dir()))
+        .unwrap_or(root);
+    collect_json(&root, &mut files);
+    collect_jsonl(&root, &mut files);
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let stem = file
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let extension = file
+            .extension()
+            .map(|ext| ext.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let is_chat_json = extension == "json"
+            && file
+                .components()
+                .any(|component| component.as_os_str() == "chats");
+        let is_session_json = extension == "json" && stem.starts_with("session-");
+        if extension == "jsonl" {
+            let mut current_model: Option<String> = None;
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            for (line_index, line) in text.lines().enumerate() {
+                let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if row.get("type").and_then(serde_json::Value::as_str) == Some("init") {
+                    if let Some(model) = json_text(&row, &["model"]).map(str::to_string) {
+                        current_model = Some(model);
+                    }
+                    continue;
+                }
+                if row.get("tokens").is_none() {
+                    match (
+                        row.get("stats"),
+                        row.get("result").and_then(|result| result.get("stats")),
+                    ) {
+                        (Some(_stats), _) | (_, Some(_stats)) => {
+                            // A headless stream may close with aggregate stats. They
+                            // are line-owned records and follow upstream's same
+                            // identity rules.
+                            let stats = row.get("stats").or_else(|| {
+                                row.get("result").and_then(|result| result.get("stats"))
+                            });
+                            let Some(stats) = stats else {
+                                continue;
+                            };
+                            let at = json_timestamp(
+                                stats.get("timestamp").or_else(|| row.get("timestamp")),
+                                false,
+                            );
+                            let line_time = json_timestamp(
+                                row.get("timestamp").or_else(|| row.get("created_at")),
+                                false,
+                            );
+                            if let Some(models) =
+                                stats.get("models").and_then(serde_json::Value::as_object)
+                            {
+                                for (model, counts) in models {
+                                    let Some((tally, _)) = gemini_usage(counts, false) else {
+                                        continue;
+                                    };
+                                    if tally.total() == 0 {
+                                        continue;
+                                    }
+                                    let Some(at) = json_timestamp(counts.get("timestamp"), false)
+                                        .or(at)
+                                        .or(line_time)
+                                    else {
+                                        continue;
+                                    };
+                                    let identity = json_text(&row, &["id"])
+                                        .map(|id| format!("gemini:line:{id}:{model}"))
+                                        .unwrap_or_else(|| {
+                                            format!("gemini:headless:{stem}:{line_index}:{model}")
+                                        });
+                                    if seen.insert(identity) {
+                                        *buckets
+                                            .entry(slot_key_from_ms(at))
+                                            .or_default()
+                                            .entry(model.to_string())
+                                            .or_default() += tally;
+                                    }
+                                }
+                            } else {
+                                let Some((tally, _)) = gemini_usage(stats, false) else {
+                                    continue;
+                                };
+                                if tally.total() == 0 {
+                                    continue;
+                                }
+                                let Some(model) = json_text(stats, &["model"])
+                                    .map(str::to_string)
+                                    .or_else(|| current_model.clone())
+                                else {
+                                    continue;
+                                };
+                                let Some(at) = at.or(line_time) else {
+                                    continue;
+                                };
+                                let identity = json_text(&row, &["id"])
+                                    .map(|id| format!("gemini:line:{id}"))
+                                    .unwrap_or_else(|| {
+                                        format!("gemini:headless:{stem}:{line_index}")
+                                    });
+                                if seen.insert(identity) {
+                                    *buckets
+                                        .entry(slot_key_from_ms(at))
+                                        .or_default()
+                                        .entry(model)
+                                        .or_default() += tally;
+                                }
+                                continue;
+                            }
+                        }
+                        _ => continue,
+                    }
+                }
+                let tokens = row.get("tokens").unwrap();
+                let Some((tally, _)) = gemini_usage(tokens, true) else {
+                    continue;
+                };
+                if tally.total() == 0 {
+                    continue;
+                }
+                let Some(model) = json_text(&row, &["model"])
+                    .map(str::to_string)
+                    .or_else(|| current_model.clone())
+                else {
+                    continue;
+                };
+                let Some(at) = json_timestamp(row.get("timestamp"), false) else {
+                    continue;
+                };
+                let identity = json_text(&row, &["id"])
+                    .map(|id| format!("gemini:line:{id}"))
+                    .unwrap_or_else(|| format!("gemini:headless:{stem}:{line_index}"));
+                if seen.insert(identity) {
+                    *buckets
+                        .entry(slot_key_from_ms(at))
+                        .or_default()
+                        .entry(model)
+                        .or_default() += tally;
+                }
+            }
+        } else if is_chat_json || is_session_json {
+            let Ok(bytes) = std::fs::read(&file) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let Some(messages) = value.get("messages").and_then(serde_json::Value::as_array) else {
+                continue;
+            };
+            let session = json_text(&value, &["sessionId", "session_id"])
+                .map(str::to_string)
+                .unwrap_or_else(|| stem.clone());
+            for message in messages {
+                if message.get("type").and_then(serde_json::Value::as_str) != Some("gemini") {
+                    continue;
+                }
+                let Some(tokens) = message.get("tokens") else {
+                    continue;
+                };
+                let Some((tally, _)) = gemini_usage(tokens, false) else {
+                    continue;
+                };
+                if tally.total() == 0 {
+                    continue;
+                }
+                let Some(model) = json_text(message, &["model"]).map(str::to_string) else {
+                    continue;
+                };
+                let Some(at) = json_timestamp(
+                    message
+                        .get("timestamp")
+                        .or_else(|| message.get("created_at")),
+                    false,
+                ) else {
+                    continue;
+                };
+                let identity = json_text(message, &["id"])
+                    .map(|id| format!("gemini:session:{session}:{id}"))
+                    .unwrap_or_else(|| format!("gemini:session:{session}:{at}"));
+                if seen.insert(identity) {
+                    *buckets
+                        .entry(slot_key_from_ms(at))
+                        .or_default()
+                        .entry(model)
+                        .or_default() += tally;
+                }
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+fn gemini_usage(object: &serde_json::Value, headless: bool) -> Option<(TokenTally, i64)> {
+    let object = object.as_object()?;
+    let count = |names: &[&str]| -> Option<(i64, bool)> {
+        names
+            .iter()
+            .find_map(|name| json_count(object.get(*name)).map(|value| (value, *name != "input")))
+    };
+    let (input, prompt_style) = count(&[
+        "input",
+        "prompt",
+        "input_tokens",
+        "prompt_tokens",
+        "promptTokenCount",
+    ])
+    .unwrap_or((0, false));
+    let output = count(&[
+        "output",
+        "candidates",
+        "output_tokens",
+        "completion_tokens",
+        "candidatesTokenCount",
+    ])
+    .map(|(value, _)| value)
+    .unwrap_or(0);
+    let reasoning = count(&["thoughts", "reasoning", "thoughts_tokens"])
+        .map(|(value, _)| value)
+        .unwrap_or(0);
+    let cached = count(&["cached", "cached_tokens", "cachedContentTokenCount"])
+        .map(|(value, _)| value)
+        .unwrap_or(0);
+    let any_kind = [
+        "input",
+        "prompt",
+        "input_tokens",
+        "prompt_tokens",
+        "promptTokenCount",
+    ]
+    .iter()
+    .any(|name| json_count(object.get(*name)).is_some())
+        || [
+            "output",
+            "candidates",
+            "output_tokens",
+            "completion_tokens",
+            "candidatesTokenCount",
+        ]
+        .iter()
+        .any(|name| json_count(object.get(*name)).is_some())
+        || ["cached", "cached_tokens", "cachedContentTokenCount"]
+            .iter()
+            .any(|name| json_count(object.get(*name)).is_some())
+        || ["thoughts", "reasoning", "thoughts_tokens"]
+            .iter()
+            .any(|name| json_count(object.get(*name)).is_some());
+    if !any_kind {
+        return None;
+    }
+    if input < 0 || output < 0 || reasoning < 0 || cached < 0 {
+        return None;
+    }
+    let cache_inclusive = if headless { prompt_style } else { false };
+    Some((
+        TokenTally {
+            input: if cache_inclusive {
+                input.saturating_sub(cached)
+            } else {
+                input
+            },
+            cache_write: 0,
+            cache_read: cached,
+            output: output.saturating_add(reasoning),
+        },
+        0,
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenericAgent {
+    Amp,
+    Droid,
+}
+
+impl GenericAgent {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Amp => "amp",
+            Self::Droid => "droid",
+        }
+    }
+
+    pub fn root(self) -> PathBuf {
+        crate::model::home_path(match self {
+            Self::Amp => ".local/share/amp/threads",
+            Self::Droid => ".factory/sessions",
+        })
+    }
+}
+
+/// Reads Amp's thread JSON and Droid's session settings. Both emit their
+/// own store-native increments; Amp reconciles message usage against its
+/// ledger, while Droid keeps one aggregate session total.
+pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
+    let key = agent.id();
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(key) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let root = agent.root();
+    let mut files = Vec::new();
+    collect_json(&root, &mut files);
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let name = file
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let stem = file
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        match agent {
+            GenericAgent::Amp => {
+                if !name.starts_with("T-") || !name.ends_with(".json") {
+                    continue;
+                }
+                let thread = json_text(&value, &["id"])
+                    .map(str::to_string)
+                    .unwrap_or(stem);
+                let created = json_timestamp(value.get("created"), true);
+                let mut message_calls: Vec<(String, TokenTally, Option<i64>)> = Vec::new();
+                let mut events: Vec<(i64, String, TokenTally, Option<i64>, Option<i64>)> =
+                    Vec::new();
+                if let Some(messages) = value.get("messages").and_then(serde_json::Value::as_array)
+                {
+                    for message in messages {
+                        if message.get("role").and_then(serde_json::Value::as_str)
+                            != Some("assistant")
+                        {
+                            continue;
+                        }
+                        let Some(usage) = message.get("usage") else {
+                            continue;
+                        };
+                        let Some(tally) = anthropic_style_usage(
+                            usage,
+                            &[
+                                "inputTokens",
+                                "cacheCreationInputTokens",
+                                "cacheReadInputTokens",
+                                "outputTokens",
+                            ],
+                        ) else {
+                            continue;
+                        };
+                        let Some(model) = json_text(usage, &["model"]).map(str::to_string) else {
+                            continue;
+                        };
+                        message_calls.push((model, tally, json_count(message.get("messageId"))));
+                    }
+                }
+                if let Some(events_value) = value
+                    .get("usageLedger")
+                    .and_then(|ledger| ledger.get("events"))
+                    .and_then(serde_json::Value::as_array)
+                {
+                    for (index, row) in events_value.iter().enumerate() {
+                        let Some(tokens) = row.get("tokens") else {
+                            continue;
+                        };
+                        let Some(tally) = anthropic_style_usage(
+                            tokens,
+                            &[
+                                "input",
+                                "cacheCreationInputTokens",
+                                "cacheReadInputTokens",
+                                "output",
+                            ],
+                        ) else {
+                            continue;
+                        };
+                        let Some(model) = json_text(row, &["model"]).map(str::to_string) else {
+                            continue;
+                        };
+                        events.push((
+                            index as i64,
+                            model,
+                            tally,
+                            json_count(row.get("toMessageId")),
+                            json_count(row.get("fromMessageId")),
+                        ));
+                    }
+                }
+                let mut consumed = vec![false; events.len()];
+                let mut unmatched = Vec::new();
+                for (model, tally, message_id) in message_calls {
+                    let match_index = message_id.and_then(|id| {
+                        events
+                            .iter()
+                            .position(|event| !consumed[event.0 as usize] && event.3 == Some(id))
+                    });
+                    let match_index = match_index.or_else(|| {
+                        events.iter().position(|event| {
+                            !consumed[event.0 as usize] && event.1 == model && event.2 == tally
+                        })
+                    });
+                    if let Some(index) = match_index {
+                        consumed[events[index].0 as usize] = true;
+                    } else {
+                        unmatched.push((model, tally, message_id));
+                    }
+                }
+                if let Some(rows) = value
+                    .get("usageLedger")
+                    .and_then(|ledger| ledger.get("events"))
+                    .and_then(serde_json::Value::as_array)
+                {
+                    for (index, model, tally, to_id, from_id) in events {
+                        let row = &rows[index as usize];
+                        let Some(at) = json_timestamp(row.get("timestamp"), false).or(created)
+                        else {
+                            continue;
+                        };
+                        let suffix = to_id
+                            .map(|id| id.to_string())
+                            .or_else(|| from_id.map(|id| id.to_string()))
+                            .unwrap_or_else(|| index.to_string());
+                        let identity = format!("amp:{thread}:event:{suffix}");
+                        if seen.insert(identity) {
+                            *buckets
+                                .entry(slot_key_from_ms(at))
+                                .or_default()
+                                .entry(model)
+                                .or_default() += tally;
+                        }
+                    }
+                }
+                for (model, tally, message_id) in unmatched {
+                    let Some(at) = created else {
+                        continue;
+                    };
+                    let suffix = message_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "0".into());
+                    let identity = format!("amp:{thread}:message:{suffix}");
+                    if seen.insert(identity) {
+                        *buckets
+                            .entry(slot_key_from_ms(at))
+                            .or_default()
+                            .entry(model)
+                            .or_default() += tally;
+                    }
+                }
+            }
+            GenericAgent::Droid => {
+                if !name.ends_with(".settings.json") {
+                    continue;
+                }
+                let Some(usage) = value.get("tokenUsage") else {
+                    continue;
+                };
+                let Some((tally, _partial)) = droid_usage(usage) else {
+                    continue;
+                };
+                if tally.total() == 0 {
+                    continue;
+                }
+                let Some(at) = json_timestamp(value.get("providerLockTimestamp"), false) else {
+                    continue;
+                };
+                let Some(model) = json_text(&value, &["model"])
+                    .map(str::to_string)
+                    .or_else(|| droid_provider_model(json_text(&value, &["providerLock"])))
+                else {
+                    continue;
+                };
+                let session = name.strip_suffix(".settings.json").unwrap_or(&stem);
+                let identity = format!("droid:{session}");
+                if seen.insert(identity) {
+                    *buckets
+                        .entry(slot_key_from_ms(at))
+                        .or_default()
+                        .entry(model)
+                        .or_default() += tally;
+                }
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, key)
+}
+
+fn anthropic_style_usage(object: &serde_json::Value, names: &[&str; 4]) -> Option<TokenTally> {
+    let object = object.as_object()?;
+    let count = |name: &str| json_count(object.get(name));
+    let tally = TokenTally {
+        input: count(names[0])?,
+        cache_write: count(names[1]).unwrap_or(0),
+        cache_read: count(names[2]).unwrap_or(0),
+        output: count(names[3]).unwrap_or(0),
+    };
+    (tally.total() > 0
+        && [
+            tally.input,
+            tally.cache_write,
+            tally.cache_read,
+            tally.output,
+        ]
+        .iter()
+        .copied()
+        .all(|value| value >= 0))
+    .then_some(tally)
+}
+
+fn droid_usage(object: &serde_json::Value) -> Option<(TokenTally, bool)> {
+    let object = object.as_object()?;
+    let count = |name: &str| json_count(object.get(name));
+    let input = count("inputTokens");
+    let output = count("outputTokens");
+    let thinking = count("thinkingTokens");
+    let cache_write = count("cacheCreationTokens");
+    let cache_read = count("cacheReadTokens");
+    let total = count("totalTokens")
+        .or_else(|| count("total"))
+        .or_else(|| count("total_tokens"));
+    if input.is_none()
+        && output.is_none()
+        && thinking.is_none()
+        && cache_write.is_none()
+        && cache_read.is_none()
+        && total.is_none()
+    {
+        return None;
+    }
+    let input = input.unwrap_or(0);
+    let output = output.unwrap_or(0);
+    let thinking = thinking.unwrap_or(0);
+    let cache_write = cache_write.unwrap_or(0);
+    let cache_read = cache_read.unwrap_or(0);
+    if [input, output, thinking, cache_write, cache_read]
+        .iter()
+        .copied()
+        .any(|value| value < 0)
+    {
+        return None;
+    }
+    if let Some(total) = total {
+        if total < 0 {
+            return None;
+        }
+        let variants = [
+            (
+                input,
+                cache_write,
+                cache_read,
+                output.checked_add(thinking)?,
+            ),
+            (
+                input.saturating_sub(cache_read).saturating_sub(cache_write),
+                cache_write,
+                cache_read,
+                output.checked_add(thinking)?,
+            ),
+            (input, cache_write, cache_read, output),
+            (
+                input.saturating_sub(cache_read).saturating_sub(cache_write),
+                cache_write,
+                cache_read,
+                output,
+            ),
+        ];
+        for variant in variants {
+            let sum = TokenTally {
+                input: variant.0,
+                cache_write: variant.1,
+                cache_read: variant.2,
+                output: variant.3,
+            };
+            if sum.total() == total {
+                return Some((sum, false));
+            }
+        }
+        return Some((TokenTally::default(), false));
+    }
+    if cache_read == 0 && cache_write == 0 {
+        return Some((
+            TokenTally {
+                input,
+                cache_write: 0,
+                cache_read: 0,
+                output,
+            },
+            thinking > 0,
+        ));
+    }
+    Some((
+        TokenTally {
+            input: 0,
+            cache_write: 0,
+            cache_read: 0,
+            output,
+        },
+        true,
+    ))
+}
+
+fn droid_provider_model(provider: Option<&str>) -> Option<String> {
+    let provider = provider?.trim().to_ascii_lowercase();
+    if provider.is_empty() {
+        return None;
+    }
+    if provider.contains("anthropic") || provider.contains("claude") {
+        return Some("claude-unknown".into());
+    }
+    if provider.contains("openai") || provider.contains("gpt") {
+        return Some("gpt-unknown".into());
+    }
+    if provider.contains("google") || provider.contains("gemini") {
+        return Some("gemini-unknown".into());
+    }
+    if provider.contains("xai") || provider.contains("grok") {
+        return Some("grok-unknown".into());
+    }
+    Some(format!("{provider}-unknown"))
 }
 
 #[cfg(test)]
@@ -1906,5 +2637,95 @@ mod tests {
             expected
         );
         assert_eq!(json_timestamp(Some(&serde_json::json!(true)), true), None);
+    }
+
+    #[test]
+    fn gemini_prompt_style_headless_input_subtracts_cached_content() {
+        let usage = serde_json::json!({
+            "prompt": 120,
+            "candidates": 30,
+            "thoughts": 5,
+            "cached": 80
+        });
+        assert_eq!(
+            gemini_usage(&usage, true),
+            Some((
+                TokenTally {
+                    input: 40,
+                    cache_write: 0,
+                    cache_read: 80,
+                    output: 35
+                },
+                0
+            ))
+        );
+        let bare_input = serde_json::json!({"input": 20, "output": 5, "cached": 4});
+        assert_eq!(
+            gemini_usage(&bare_input, true),
+            Some((
+                TokenTally {
+                    input: 20,
+                    cache_write: 0,
+                    cache_read: 4,
+                    output: 5
+                },
+                0
+            ))
+        );
+    }
+
+    #[test]
+    fn droid_total_selects_a_supported_split_and_bare_total_stays_counted() {
+        let usage = serde_json::json!({
+            "inputTokens": 100,
+            "cacheReadTokens": 20,
+            "cacheCreationTokens": 10,
+            "outputTokens": 30,
+            "thinkingTokens": 5,
+            "totalTokens": 165
+        });
+        assert_eq!(
+            droid_usage(&usage),
+            Some((
+                TokenTally {
+                    input: 100,
+                    cache_write: 10,
+                    cache_read: 20,
+                    output: 35
+                },
+                false
+            ))
+        );
+        let bare = serde_json::json!({"totalTokens": 123});
+        assert_eq!(droid_usage(&bare), Some((TokenTally::default(), false)));
+    }
+
+    #[test]
+    fn anthropic_style_usage_requires_a_reported_input() {
+        let names = [
+            "inputTokens",
+            "cacheCreationInputTokens",
+            "cacheReadInputTokens",
+            "outputTokens",
+        ];
+        let usage = serde_json::json!({
+            "inputTokens": 10,
+            "cacheCreationInputTokens": 2,
+            "cacheReadInputTokens": 3,
+            "outputTokens": 4
+        });
+        assert_eq!(
+            anthropic_style_usage(&usage, &names),
+            Some(TokenTally {
+                input: 10,
+                cache_write: 2,
+                cache_read: 3,
+                output: 4
+            })
+        );
+        assert_eq!(
+            anthropic_style_usage(&serde_json::json!({"outputTokens": 4}), &names),
+            None
+        );
     }
 }

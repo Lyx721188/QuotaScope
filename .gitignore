@@ -12,3 +12,8 @@ windows/target/
 
 # Local test and coverage output
 coverage/
+
+# Local collaboration and handoff notes
+HANDOFF.md
+PORT_PLAN.md
+UPSTREAM_PARITY.md

@@ -79,18 +79,74 @@ impl Snapshot {
             present: path.is_dir(),
             ledger: crate::ledger::qwen_ledger(),
         });
+        let path = crate::model::home_path(".gemini/tmp");
+        sources.push(Source {
+            id: "gemini".into(),
+            title: "Gemini CLI".into(),
+            location: path.display().to_string(),
+            present: path.is_dir(),
+            ledger: crate::ledger::gemini_ledger(),
+        });
         for client in [crate::ledger::PiClient::Pi, crate::ledger::PiClient::Omp] {
             let path = client.root();
+            let path = path.first().cloned().unwrap_or_default();
             sources.push(Source {
                 id: client.id().into(),
                 title: match client {
                     crate::ledger::PiClient::Pi => "Pi",
                     crate::ledger::PiClient::Omp => "Oh My Pi",
+                    crate::ledger::PiClient::Senpi => "OmO Native",
+                    crate::ledger::PiClient::Kimchi => "Kimchi",
                 }
                 .into(),
                 location: path.display().to_string(),
                 present: path.is_dir(),
                 ledger: crate::ledger::pi_ledger(client),
+            });
+        }
+        sources.push(Source {
+            id: "senpi".into(),
+            title: "OmO Native".into(),
+            location: crate::ledger::PiClient::Senpi
+                .root()
+                .first()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            present: crate::ledger::PiClient::Senpi
+                .root()
+                .iter()
+                .any(|path| path.is_dir()),
+            ledger: crate::ledger::pi_ledger(crate::ledger::PiClient::Senpi),
+        });
+        sources.push(Source {
+            id: "kimchi".into(),
+            title: "Kimchi".into(),
+            location: crate::ledger::PiClient::Kimchi
+                .root()
+                .first()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            present: crate::ledger::PiClient::Kimchi
+                .root()
+                .iter()
+                .any(|path| path.is_dir()),
+            ledger: crate::ledger::pi_ledger(crate::ledger::PiClient::Kimchi),
+        });
+        for agent in [
+            crate::ledger::GenericAgent::Amp,
+            crate::ledger::GenericAgent::Droid,
+        ] {
+            let path = agent.root();
+            sources.push(Source {
+                id: agent.id().into(),
+                title: match agent {
+                    crate::ledger::GenericAgent::Amp => "Amp",
+                    crate::ledger::GenericAgent::Droid => "Droid",
+                }
+                .into(),
+                location: path.display().to_string(),
+                present: path.is_dir(),
+                ledger: crate::ledger::generic_agent_ledger(agent),
             });
         }
         Self { sources }
