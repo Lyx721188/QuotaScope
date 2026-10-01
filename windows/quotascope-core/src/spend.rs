@@ -179,6 +179,18 @@ impl Snapshot {
                 ".augment/sessions",
                 crate::ledger::augment_ledger(),
             ),
+            (
+                "jcode",
+                "JCode",
+                ".jcode/sessions",
+                crate::ledger::jcode_ledger(),
+            ),
+            (
+                "gjc",
+                "Gajae Code",
+                ".gjc/agent/sessions",
+                crate::ledger::gjc_ledger(),
+            ),
         ] {
             let path = crate::model::home_path(root);
             sources.push(Source {

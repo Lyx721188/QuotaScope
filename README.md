@@ -56,7 +56,7 @@ cargo build --release
 - 应用请求已配置服务商的用量接口，或读取本机已登录工具的状态。
 - 启用“Token spend”后会在本机扫描已支持的 Claude Code、Codex、Qwen Code、Gemini CLI、
   Pi、Oh My Pi、OmO Native、Kimchi、Amp、Droid、Prime Agent、OpenClaw、Mux、
-  Junie、Augment 会话文件，
+  Junie、Augment、JCode、Gajae Code 会话文件，
   只解析 token 计数、
   模型和时间；不会上传会话正文。定价功能会下载 models.dev 的公开价目表。
 - 浏览器 cookie 仅在点击“从浏览器导入”时读取，并用 DPAPI 保存；扩展程序只在启用后运行。

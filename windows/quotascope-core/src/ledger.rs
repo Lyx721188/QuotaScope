@@ -2422,6 +2422,318 @@ pub fn augment_ledger() -> UsageLedger {
     ledger_from_slot_buckets(&buckets, KEY)
 }
 
+/// Jcode's sessions plus their append-only journals. Cache shape is decided
+/// only by an explicit schema marker; ambiguous input stays uncounted rather
+/// than priced fresh.
+pub fn jcode_ledger() -> UsageLedger {
+    const KEY: &str = "jcode";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let mut base = crate::model::home_path(".jcode");
+    if let Some(raw) = std::env::var("JCODE_HOME").ok() {
+        if let Some(path) = environment_path(&raw, &crate::home_dir()) {
+            base = path;
+        }
+    }
+    let mut files = Vec::new();
+    collect_files(base.join("sessions").as_path(), "json", &mut files);
+    files.retain(|file| {
+        file.file_name()
+            .map(|name| name.to_string_lossy().starts_with("session_"))
+            == Some(true)
+    });
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
+        let Ok(session) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let session_id = json_text(&session, &["id"])
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                file.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        let session_model = json_text(&session, &["model"]).map(str::to_string);
+        let mut messages: Vec<(serde_json::Value, Option<String>)> = session
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .cloned()
+                    .map(|row| (row, session_model.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let journal = file.with_file_name(format!(
+            "{}.journal.jsonl",
+            file.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ));
+        if let Ok(text) = std::fs::read_to_string(&journal) {
+            let mut journal_model = session_model.clone();
+            for line in text.lines() {
+                let Ok(line) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if let Some(meta) = line.get("meta") {
+                    if let Some(model) = json_text(meta, &["model"]).map(str::to_string) {
+                        journal_model = Some(model);
+                    }
+                }
+                if let Some(appended) = line
+                    .get("append_messages")
+                    .and_then(serde_json::Value::as_array)
+                {
+                    messages.extend(
+                        appended
+                            .iter()
+                            .cloned()
+                            .map(|row| (row, journal_model.clone())),
+                    );
+                }
+            }
+        }
+
+        for (message, carried_model) in messages {
+            let Some(usage) = message.get("token_usage") else {
+                continue;
+            };
+            let Some(at) = json_timestamp(message.get("timestamp"), false).filter(|at| *at > 0)
+            else {
+                continue;
+            };
+            let Some(model) = json_text(&message, &["model"])
+                .map(str::to_string)
+                .or(carried_model)
+                .or_else(|| session_model.clone())
+            else {
+                continue;
+            };
+            let count = |name: &str| json_count(usage.get(name)).unwrap_or(0);
+            let input = count("input_tokens");
+            let cache_write = count("cache_creation_input_tokens");
+            let cache_read = count("cache_read_input_tokens");
+            let output = count("output_tokens");
+            let tally = if usage.get("cache_creation_input_tokens").is_some() {
+                TokenTally {
+                    input,
+                    cache_write,
+                    cache_read,
+                    output,
+                }
+            } else if [
+                "prompt_tokens_details",
+                "promptTokensDetails",
+                "input_tokens_details",
+                "inputTokensDetails",
+            ]
+            .iter()
+            .any(|name| usage.get(*name).is_some())
+            {
+                TokenTally {
+                    input: input.saturating_sub(cache_read.min(input)),
+                    cache_write,
+                    cache_read,
+                    output,
+                }
+            } else if cache_read > 0 {
+                TokenTally {
+                    input: 0,
+                    cache_write: 0,
+                    cache_read: 0,
+                    output,
+                }
+            } else {
+                TokenTally {
+                    input,
+                    cache_write: 0,
+                    cache_read: 0,
+                    output,
+                }
+            };
+            if tally.total() == 0 {
+                continue;
+            }
+            let name = json_text(&message, &["id"])
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}:{at}:{}:{}:{}:{}",
+                        model, input, cache_write, cache_read, output
+                    )
+                });
+            let identity = format!("{KEY}:{session_id}:{name}");
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += tally;
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
+/// Gajae Code's Pi-like JSONL with byte-identical mirror folding.
+pub fn gjc_ledger() -> UsageLedger {
+    const KEY: &str = "gjc";
+    {
+        let guard = MEMORY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LIFETIME {
+                if let Some(known) = map.get(KEY) {
+                    return known.clone();
+                }
+            }
+        }
+    }
+
+    let home = crate::home_dir();
+    let mut roots = Vec::new();
+    let agent = std::env::var("GJC_CODING_AGENT_DIR")
+        .ok()
+        .and_then(|raw| environment_path(&raw, &home))
+        .unwrap_or_else(|| home.join(".gjc/agent"));
+    roots.push(agent.join("sessions"));
+    for key in ["GJC_CONFIG_DIR", "PI_CONFIG_DIR"] {
+        if let Some(raw) = std::env::var(key)
+            .ok()
+            .and_then(|raw| environment_path(&raw, &home))
+        {
+            roots.push(raw.join("agent/sessions"));
+        }
+    }
+    let data_home = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .and_then(|raw| environment_path(&raw, &home))
+        .unwrap_or_else(|| home.join(".local/share"));
+    roots.push(data_home.join("gjc/sessions"));
+
+    let mut files = Vec::new();
+    for root in &roots {
+        collect_jsonl(root, &mut files);
+    }
+    files.sort();
+
+    let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut seen_files: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        Default::default();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let digest = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            format!("{:016x}", hasher.finish())
+        };
+        let mut header_id: Option<String> = None;
+        for line in text.lines() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if row.get("type").and_then(serde_json::Value::as_str) == Some("session")
+                && header_id.is_none()
+            {
+                header_id = json_text(&row, &["id"]).map(str::to_string);
+            }
+        }
+        if let Some(header_id) = &header_id {
+            let mirror = format!(
+                "{header_id}|{}",
+                file.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            );
+            if !seen_files.entry(mirror).or_default().insert(digest) {
+                continue;
+            }
+        }
+        let session = header_id.unwrap_or_else(|| {
+            file.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+        for (index, line) in text.lines().enumerate() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if row.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+                continue;
+            }
+            let Some(message) = row.get("message") else {
+                continue;
+            };
+            if json_text(message, &["role"])
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+                != Some("assistant")
+            {
+                continue;
+            }
+            let Some(usage) = message.get("usage") else {
+                continue;
+            };
+            let Some(model) = json_text(message, &["model"]).map(str::to_string) else {
+                continue;
+            };
+            let at = json_timestamp(message.get("timestamp"), true)
+                .filter(|at| *at > 0)
+                .or_else(|| json_timestamp(row.get("timestamp"), false));
+            let Some(at) = at else {
+                continue;
+            };
+            let count = |name: &str| json_count(usage.get(name)).unwrap_or(0);
+            let tally = TokenTally {
+                input: count("input"),
+                cache_write: count("cacheWrite"),
+                cache_read: count("cacheRead"),
+                output: count("output"),
+            };
+            if tally.total() == 0 {
+                continue;
+            }
+            let identity = json_text(&row, &["id"])
+                .map(|id| format!("{KEY}:{session}:{id}"))
+                .unwrap_or_else(|| format!("{KEY}:{session}:{file:?}:{index}"));
+            if seen.insert(identity) {
+                *buckets
+                    .entry(slot_key_from_ms(at))
+                    .or_default()
+                    .entry(model)
+                    .or_default() += tally;
+            }
+        }
+    }
+
+    ledger_from_slot_buckets(&buckets, KEY)
+}
+
 /// Gemini CLI's chat JSON and headless JSONL shapes. Session JSON's cache
 /// overlap is proven only by a total equal to the non-cache sum; headless
 /// prompt-style inputs are cache-inclusive. A bare total is not assigned to
