@@ -256,18 +256,17 @@ pub fn aliases(model: &str) -> Vec<String> {
         push_bases(&mut candidates, model, effort);
     }
 
-    // What served the turn, written onto the model rather than beside it.
+    // Which arm served the turn, written onto the model rather than beside it.
     // Antigravity's own conversation databases record
-    // `gemini-3.8-flash-control` with the same `model_enum` as
+    // `gemini-3.8-flash-control` under the same `model_enum` as
     // `gemini-3.8-flash`, so the arm is that model spelling one of its
     // channels. Thinking is billed at the model's own token rates — the rates
     // models.dev publishes for `gemini-3.5-flash-thinking` are
     // `gemini-3.5-flash`'s — and Antigravity writes
-    // `claude-opus-4-6-thinking` for the turn its label calls
-    // "Claude Opus 4.6 (Thinking)".
-    //
-    // An experimental build is not a spelling: `gemini-3.7-flash-exp-b` stays
-    // unpriced, because no published rate covers a model nobody has priced.
+    // `claude-opus-4-6-thinking` for what its label calls
+    // "Claude Opus 4.6 (Thinking)". An experimental build is not a spelling:
+    // `gemini-3.7-flash-exp-b` stays unpriced, because no published rate covers
+    // a build nobody has published.
     for arm in ["-thinking", "-control"] {
         push_bases(&mut candidates, model, arm);
     }
