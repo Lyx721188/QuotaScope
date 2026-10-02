@@ -3,6 +3,8 @@
 QuotaScope 是一个原生 Windows 屏幕边缘 AI 编码额度监视器，用 Rust 编写，运行在
 Win32、Direct2D 和 WinUI 3 之上。它直接读取各服务商自己的客户端通道，展示
 剩余额度、重置倒计时、消耗速率和耗尽预测；无 QuotaScope 后端、无 QuotaScope 账号、无遥测。
+本项目移植自 macOS 版 [Pulse](https://github.com/qunqin24/Pulse)，哪些是沿用的、哪些是这边
+写的，见[致谢](#致谢)。
 
 [![Windows 构建](https://github.com/Lyx721188/QuotaScope/actions/workflows/windows.yml/badge.svg)](https://github.com/Lyx721188/QuotaScope/actions/workflows/windows.yml)
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%201809%2B%20%2F%2011-0078D4?logo=windows&logoColor=white)
@@ -74,3 +76,24 @@ cargo build --release
 本项目遵循 [Apache 2.0](LICENSE) 开源许可。第三方图标和依赖的许可见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。服务商名称和商标归其所有者所有，
 仅用于标识兼容服务，不构成背书。
+
+## 致谢
+
+QuotaScope for Windows 移植自 [qunqin24/Pulse](https://github.com/qunqin24/Pulse)——同一个项目
+的 macOS 原生版（Swift），同样采用 [Apache 2.0](LICENSE) 许可。从那边过来的部分：
+
+- **数据模型和整套记账行为。** 额度窗口的口径、缓存、刷新节奏、告警规则、models.dev 价目表、
+  本机 token 账本，以及“一个窗口值多少钱”的推算。这部分有出处可查：9 个 Rust 源文件在模块
+  注释里点名了各自的 `*.swift` 来源（`model.rs` ← `UsageProvider.swift`、`estimate.rs` ←
+  `BudgetEstimate.swift`，如此等等）。
+- **17 个服务商通道的判读。** 上游实测过的那些客户端接口——字段含义、单位、到期口径，以及
+  哪些数字不能信——由 `Docs/providers/` 保留下来；那下面的文档几乎每篇都指向
+  `Sources/Pulse/` 里的对应实现。这些写的是上游行为，不等于 Windows 支持情况，Windows 以
+  [`Docs/providers/windows-ports.md`](Docs/providers/windows-ports.md) 为准。
+- **用量卡的排版基线**，即上游的 250 点宽度。
+
+Windows 这一侧自己做的：Rust 实现、Win32/Direct2D 渲染、真 Mica 与 DWM 圆角、WinUI 3 设置
+窗口、托盘、DPAPI 凭据存储、Inno Setup 安装包与 CI，以及上游那 17 个之外的 60 个 provider。
+
+本仓库已从 fork 网络中独立出来，不再自动获得上游的更新，也不代表上游对 Windows 版负责；
+macOS 版的问题请报到 [qunqin24/Pulse](https://github.com/qunqin24/Pulse)。
