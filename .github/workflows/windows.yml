@@ -96,26 +96,16 @@ jobs:
 
       # Exercise the files users actually download. Missing PRI files can let
       # WinUI launch and then fail several seconds later with 0xc000027b.
-      - name: Packaged --settings smoke test
+      - name: Packaged settings lifecycle regression
         shell: pwsh
         run: |
           $package = Join-Path $env:RUNNER_TEMP "quotascope-package-smoke"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Expand-Archive target/release/quotascope-windows-x64.zip -DestinationPath $package -Force
 
-          $process = Start-Process -FilePath (Join-Path $package "quotascope.exe") -ArgumentList "--settings" -PassThru
-          try {
-            Start-Sleep -Seconds 20
-            $process.Refresh()
-            if ($process.HasExited) {
-              throw "packaged --settings exited with code $($process.ExitCode)"
-            }
-            Write-Host "packaged settings smoke test OK: process $($process.Id) stayed alive"
-          } finally {
-            if (-not $process.HasExited) {
-              Stop-Process -Id $process.Id -Force
-            }
-          }
+          $env:QUOTASCOPE_TEST_EXE = Join-Path $package "quotascope.exe"
+          cargo test -p quotascope-win --test settings_lifecycle -- --ignored --nocapture --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw "Packaged Settings lifecycle regression failed" }
 
       - name: Upload quotascope-windows-x64
         uses: actions/upload-artifact@v4

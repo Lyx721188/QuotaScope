@@ -61,7 +61,7 @@ fn main() {
     // Win32 layered windows; they live on a worker thread with their own
     // message pump. The settings window is WinUI 3 (Windows Reactor), and
     // its host stays on the main thread, where the composition stack is
-    // happiest — opened on request and gone when closed.
+    // happiest — started on request and kept alive while Settings is hidden.
     let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
     let (shared_tx, shared_rx) = std::sync::mpsc::channel();
     {
@@ -78,10 +78,11 @@ fn main() {
     }
     drop(open_tx);
 
-    // Serve settings windows until the app thread goes away.
+    // Keep the WinUI host for the application's lifetime. Restarting it
+    // after tearing down the Settings controls crashes the current runtime.
     if let Ok(shared) = shared_rx.recv() {
-        while let Ok(()) = open_rx.recv() {
-            settings_app::serve_once(&shared);
+        if open_rx.recv().is_ok() {
+            settings_app::serve(&shared, open_rx);
         }
     }
 }
