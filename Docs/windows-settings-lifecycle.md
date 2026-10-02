@@ -53,24 +53,57 @@ Report.wer，没有转储；后续独立复现已取得转储，分析如下。`
 - 未处理错误经过 `DirectUI::ErrorHelper::ProcessUnhandledError` 和
   `FailFastWithStowedExceptions`，最终终止进程。
 
-匹配二进制的反汇编显示，该失败分支在解析样式 setter 的属性时，发现类型指针
-或返回的依赖属性指针为空，转入 `OnFailure<82>` 并返回 `E_FAIL`。因此现在可以
-具体定位为“第二次宿主启动后，复杂控件的默认样式属性解析失败”，不是账户请求
-或数据缓存过期导致。WinUI 当前
+在匹配二进制的失败分支之前设置断点，再次运行无账户的独立程序，取得失败瞬间
+的完整内存转储，确认：
+
+- 第一个未解析的样式 setter 是 `NavigationView.PaneToggleButtonStyle`。
+- 所属 `XamlType` 对象非空，名称为 `NavigationView`，类型 token 为
+  `0x20000425`；其 schema context 仍有强引用，不是类型指针为空或 weak_ptr 已过期。
+- `GetDependencyProperty` 返回后，输出 `shared_ptr<XamlProperty>` 为空。
+- 该类型的依赖属性解析缓存中，`PaneToggleButtonStyle` 对应的属性 token 和
+  属性类型 token 均为 `0`。匹配反汇编显示这些空 token 可以经过
+  `GetXamlProperty` 返回空属性，最终触发样式检查的 `E_FAIL`。
+
+因此现在可以具体定位为“第二次宿主启动后，NavigationView 默认样式中的依赖属性
+元数据解析失败”，不是账户请求或数据缓存过期导致。WinUI 当前
 [公开源码中的对应属性解析检查](https://github.com/microsoft/microsoft-ui-xaml/blob/7b68d3e0b771a57d80098799406234efee479517/dxaml/xcp/components/style/OptimizedStyle.cpp#L166)
 也在属性无法解析时返回 `E_FAIL`；此链接不是该发布二进制的精确构建源码。
 
-还不能把这进一步解释为已证实的“某个全局缓存悬空”：目前未取得失败瞬间的
-具体类型、属性名及其对象生命周期证据，也未完成绕过 Reactor 的纯 WinUI 对照。
-失败发生在 WinUI 内部，与宿主重启相关；原生库、封装的清理策略和调用方式之间的
-责任仍需进一步区分。
+使用 `Microsoft.UI.Xaml.Controls.dll` 的匹配公共 PDB 继续读取该属性的静态句柄，
+发现更具体的生命周期不一致：
+
+- `NavigationViewProperties::s_PaneToggleButtonStyleProperty` 仍为非空，所指
+  `DependencyPropertyHandle` 有有效引用计数，底层属性名仍是 `PaneToggleButtonStyle`。
+- 该属性的 declaring/target type index 都为 `0x3f0`，property index 为 `0x7c5`。
+- 全局类型表中，旧 `0x3f0` 与新 `0x425` 都名为
+  `Microsoft.UI.Xaml.Controls.NavigationView`；第二轮的 parser 使用后者。
+- 当前 `m_customDPsByTypeAndNameCache` 为空。匹配二进制的
+  `NavigationViewProperties::EnsureProperties` 仅在静态属性句柄为空时调用
+  `InitializeDependencyProperty`，因此保留的非空句柄会跳过重新注册。
+
+这将机制缩小为“控件保留的属性注册信息与第二轮宿主的元数据类型表不一致”，
+不只是笼统的内部初始化失败，也没有证据指向已释放对象的非法地址访问。
+公开源码中对应的
+[静态属性注册条件](https://github.com/microsoft/microsoft-ui-xaml/blob/7b68d3e0b771a57d80098799406234efee479517/controls/dev/Generated/NavigationView.properties.cpp#L412)
+与该二进制相符；
+[属性名查找](https://github.com/microsoft/microsoft-ui-xaml/blob/7b68d3e0b771a57d80098799406234efee479517/dxaml/xcp/components/metadata/MetadataAPI.cpp#L1304)
+依赖运行时注册表。
+
+尚未捕获第一轮退出时每一步元数据 reset 的调用栈，也未完成绕过 Reactor 的
+纯 WinUI 对照。因此不能宣布为“已确认、只能等待上游修复的 WinUI bug”。目前可
+确认旧 QuotaScope 生命周期设计触发了这条宿主重启路径；原生库、封装的清理策略
+和调用方式之间的最终责任仍需区分。
 
 直接由调试器创建进程时，还观察到首次宿主关闭期间的 `0xc0000374`；这与原始
 异常不同，不能用来替代上述结论。后续匹配转储采用进程启动后附加并设置
 `_NO_DEBUG_HEAP=1`，恢复了第一轮正常关闭、第二轮原始 stowed exception 的路径。
 
 取证文件保留在本地忽略目录：`windows/target/native-nav-attach-dump/`、
-`nav-stowed-raw.log`、`nav-stowed-symbols.log`、`nav-style-disassembly.log`。
+`nav-stowed-raw.log`、`nav-stowed-symbols.log`、`nav-style-disassembly.log`、
+`nav-live-property4.log`、`nav-failed-property-objects.log`、
+`nav-failed-property-cache.log`、`nav-property-resolution-native.log`、
+`nav-controls-registration-state.log`、`nav-property-generation-mismatch.log`、
+`nav-old-new-class-state.log`、`nav-registration-table.log`。
 转储和完整日志不上传仓库。
 
 ## 修复与验证
