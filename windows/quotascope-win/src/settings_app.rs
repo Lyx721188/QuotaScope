@@ -6,14 +6,14 @@
 //! `ComboBox`, `PasswordBox` — so the look and the accessibility tree are
 //! WinUI's own.
 //!
-//! The window lives on its own thread with its own Reactor host, opened on
-//! demand and gone when closed. The app pushes per-provider status lines
+//! The window lives on the main thread with one Reactor host, opened on
+//! demand and hidden when closed. The app pushes per-provider status lines
 //! into a shared snapshot; a background poller wakes the component when it
 //! changes.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -49,9 +49,11 @@ struct SettingsSnapshot {
 pub(crate) struct Shared {
     snapshot: Mutex<SettingsSnapshot>,
     actions: Sender<SettingsAction>,
-    /// One settings window at a time: claimed by `show`, released when the
-    /// window closes.
+    /// Whether Settings is visible. The WinUI host survives hiding it.
     alive: AtomicBool,
+    show_requested: AtomicBool,
+    shutdown_requested: AtomicBool,
+    window_ready: AtomicBool,
 }
 
 impl Shared {
@@ -119,6 +121,9 @@ impl SettingsHost {
                 snapshot: Mutex::new(SettingsSnapshot::default()),
                 actions,
                 alive: AtomicBool::new(false),
+                show_requested: AtomicBool::new(false),
+                shutdown_requested: AtomicBool::new(false),
+                window_ready: AtomicBool::new(false),
             }),
             open_tx,
         }
@@ -151,24 +156,94 @@ impl SettingsHost {
         self.shared.alive.load(Ordering::SeqCst)
     }
 
-    /// Opens the window, unless it is already open.
+    /// Opens or foregrounds the existing window.
     pub fn show(&mut self) {
-        if !self.shared.alive.swap(true, Ordering::SeqCst) {
-            let _ = self.open_tx.send(());
+        self.shared.alive.store(true, Ordering::SeqCst);
+        if self.open_tx.send(()).is_err() {
+            self.shared.alive.store(false, Ordering::SeqCst);
         }
     }
 }
 
-/// Mounts one settings window on the calling (main) thread and pumps it
-/// until the user closes it.
-pub(crate) fn serve_once(shared: &Arc<Shared>) {
+/// Starts the sole WinUI host on the main thread. Closing Settings hides
+/// the window; disconnecting the tray's request channel ends the host.
+pub(crate) fn serve(shared: &Arc<Shared>, open_rx: Receiver<()>) {
     // The window is up: flips the worker's gate so statuses start flowing.
     // `show` already set this for the tray path; setting it here too covers
     // a launch that skipped the host — `quotascope --settings`.
     shared.alive.store(true, Ordering::SeqCst);
     SHARED.with(|cell| *cell.borrow_mut() = Some(shared.clone()));
-    let _ = App::run_component::<SettingsApp>(());
+    let relay = shared.clone();
+    std::thread::spawn(move || {
+        while open_rx.recv().is_ok() {
+            relay.show_requested.store(true, Ordering::SeqCst);
+        }
+        relay.shutdown_requested.store(true, Ordering::SeqCst);
+    });
+    if let Err(error) = App::run_component::<SettingsApp>(()) {
+        eprintln!("Settings host: {error}");
+    }
     shared.alive.store(false, Ordering::SeqCst);
+    SHARED.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Destroying the final WinUI window ends its Application. Intercept the
+/// native close on the owning UI thread so reopening never restarts XAML.
+unsafe extern "system" fn settings_subclass(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, WM_CLOSE, WM_NCDESTROY};
+    if msg == WM_CLOSE {
+        let hide = SHARED.with(|cell| {
+            let shared = cell.borrow();
+            let Some(shared) = shared.as_ref() else {
+                return false;
+            };
+            if shared.shutdown_requested.load(Ordering::SeqCst) {
+                return false;
+            }
+            shared.alive.store(false, Ordering::SeqCst);
+            shared.snapshot.lock().unwrap().generation += 1;
+            true
+        });
+        if hide {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            return windows::Win32::Foundation::LRESULT(0);
+        }
+    } else if msg == WM_NCDESTROY {
+        let _ = windows::Win32::UI::Shell::RemoveWindowSubclass(hwnd, Some(settings_subclass), id);
+    }
+    windows::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+fn settings_hwnd() -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, GetWindowTextW};
+    unsafe extern "system" fn find(hwnd: HWND, data: LPARAM) -> windows::core::BOOL {
+        let mut title = [0u16; 128];
+        let len = GetWindowTextW(hwnd, &mut title);
+        if String::from_utf16_lossy(&title[..len.max(0) as usize])
+            == quotascope_core::localization::t("QuotaScope Settings")
+        {
+            *(data.0 as *mut Option<HWND>) = Some(hwnd);
+            return false.into();
+        }
+        true.into()
+    }
+    let mut hwnd = None;
+    unsafe {
+        let _ = EnumThreadWindows(
+            windows::Win32::System::Threading::GetCurrentThreadId(),
+            Some(find),
+            LPARAM(&mut hwnd as *mut _ as isize),
+        );
+    }
+    hwnd
 }
 
 thread_local! {
@@ -306,6 +381,7 @@ enum Message {
 
 struct SettingsApp {
     shared: Arc<Shared>,
+    hwnd: Option<windows::Win32::Foundation::HWND>,
     page: Page,
     spend_group: quotascope_core::spend::Group,
     spend_sort: quotascope_core::spend::Sort,
@@ -344,6 +420,7 @@ impl Component for SettingsApp {
         let scan = quotascope_core::extension::scan();
         SettingsApp {
             shared: shared.clone(),
+            hwnd: None,
             page: Page::General,
             spend_group: Default::default(),
             spend_sort: Default::default(),
@@ -371,6 +448,47 @@ impl Component for SettingsApp {
     fn update(&mut self, message: Message, context: &ComponentContext<Self>) {
         match message {
             Message::Tick => {
+                if self.hwnd.is_none() {
+                    if let Some(hwnd) = settings_hwnd() {
+                        if unsafe {
+                            windows::Win32::UI::Shell::SetWindowSubclass(
+                                hwnd,
+                                Some(settings_subclass),
+                                1,
+                                0,
+                            )
+                        }
+                        .as_bool()
+                        {
+                            self.hwnd = Some(hwnd);
+                            self.shared.window_ready.store(true, Ordering::SeqCst);
+                        }
+                    }
+                }
+                if self.shared.shutdown_requested.load(Ordering::SeqCst) {
+                    let _ = context.window().request_close();
+                } else if self.hwnd.is_some()
+                    && self.shared.show_requested.swap(false, Ordering::SeqCst)
+                {
+                    self.page = Page::General;
+                    self.revealed_keys.clear();
+                    self.keys.clear();
+                    self.addresses =
+                        quotascope_core::settings::with(|s| s.server_addresses.clone());
+                    self.dark = crate::theme::panel::is_dark();
+                    unsafe {
+                        use windows::Win32::UI::WindowsAndMessaging::{
+                            SetForegroundWindow, ShowWindow, SW_RESTORE,
+                        };
+                        let hwnd = self.hwnd.unwrap();
+                        let _ = ShowWindow(hwnd, SW_RESTORE);
+                        let _ = SetForegroundWindow(hwnd);
+                    }
+                }
+                if !self.shared.alive.load(Ordering::SeqCst) {
+                    self.revealed_keys.clear();
+                    self.keys.clear();
+                }
                 self.status = self.shared.read_status();
             }
             Message::Nav(tag) => {
@@ -1319,16 +1437,18 @@ impl SettingsApp {
     }
     fn spawn_watcher(shared: &Arc<Shared>, context: &ComponentContext<Self>) -> ComponentTask {
         let watcher = shared.clone();
-        context.spawn_background(move |_| {
-            // Sleep until the app pushes something new, then wake the
-            // component. `seen` starts at the generation observed now, so
-            // changes that landed during the previous dispatch are caught.
-            let seen = AtomicU64::new(watcher.generation());
+        let seen = watcher.generation();
+        context.spawn_background(move |cancel| {
+            // Lifecycle requests must wake an idle window even when no
+            // account statuses change. Cancelled tasks must also terminate.
             loop {
                 std::thread::sleep(Duration::from_millis(250));
-                let generation = watcher.generation();
-                if generation != seen.load(Ordering::SeqCst) {
-                    seen.store(generation, Ordering::SeqCst);
+                if cancel.is_cancelled()
+                    || !watcher.window_ready.load(Ordering::SeqCst)
+                    || watcher.show_requested.load(Ordering::SeqCst)
+                    || watcher.shutdown_requested.load(Ordering::SeqCst)
+                    || watcher.generation() != seen
+                {
                     return Message::Tick;
                 }
             }
