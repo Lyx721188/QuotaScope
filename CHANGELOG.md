@@ -5,6 +5,11 @@ What each release changed, written for somebody deciding whether to install it.
 Windows releases use their own version sequence. Entries below 1.1.1 include
 inherited macOS history and do not establish Windows feature availability.
 
+## 1.2.3 (Windows, released 2026-10-02)
+
+- **Settings can be reopened safely from the tray.** Closing Settings previously shut down the WinUI host while the tray stayed running. Reopening could then crash the process, including after a long idle. The host now lasts until the tray application exits; closing Settings hides its window and reopening restores it. This release retains the Settings window and controls in memory.
+- **Idle tray commands remain responsive.** Reopening Settings, activating the running application from a second launch, and exiting while Settings is hidden no longer depend on account data changing.
+
 ## 1.2.2 (Windows)
 
 - **Antigravity's limits are now worth money.** Its detailed card had the day-by-day history but no "Estimated value" line under the windows, because every Antigravity limit is scoped to a model group and the estimator refused all scoped windows. It can now price one: each quarter-hour of the ledger keeps its money split by model, and a window of the Gemini allowance is divided from the Gemini models' spending alone, the Claude-and-GPT window from Claude and GPT. Which group a model belongs to is read from the model's own name (`gemini-3.8-flash-control`, `claude-sonnet-4-6`), which is the guess in this figure — a stretch holding a model whose name says nothing gives up entirely rather than counting the uncertain part as zero.
