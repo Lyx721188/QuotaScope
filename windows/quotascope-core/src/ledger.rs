@@ -146,6 +146,11 @@ pub struct Slot {
     /// The quarter-hour's tokens split by raw model id, where the reader kept
     /// them.
     pub models: BTreeMap<String, TokenTally>,
+    /// The same split in money: what each model contributed to `cost`. These
+    /// sum to `cost`, and a model with no published rate is absent from it
+    /// exactly as its tokens are absent from `cost`. A window scoped to one
+    /// model group is priced from this and never from `cost` itself.
+    pub costs: BTreeMap<String, f64>,
 }
 
 /// One day's work, priced.
@@ -1263,6 +1268,7 @@ pub fn priced(
         let mut tokens = 0i64;
         let mut cost = 0.0f64;
         let mut unpriced_tokens = 0i64;
+        let mut costs: BTreeMap<String, f64> = BTreeMap::new();
 
         for (model, tally) in models {
             tokens += tally.total();
@@ -1280,7 +1286,9 @@ pub fn priced(
 
             if let Some(price) = model_prices::price_for(model, prices, vendor) {
                 let money = tally.cost_breakdown(&price);
-                cost += money.total();
+                let total = money.total();
+                cost += total;
+                *costs.entry(model.clone()).or_default() += total;
                 *day_model_costs
                     .entry(day)
                     .or_default()
@@ -1301,6 +1309,7 @@ pub fn priced(
             cost,
             unpriced_tokens,
             models: models.clone(),
+            costs,
         });
 
         *day_tokens.entry(day).or_insert(0) += tokens;
@@ -4943,6 +4952,13 @@ mod tests {
         // $3/M input + 2M × $0.3/M cache read + 1M × $15/M output = 18.60.
         assert!((ledger.slots[0].cost - 18.6).abs() < 1e-9);
         assert_eq!(ledger.slots[0].unpriced_tokens, 500);
+        // The money split by model, so a window scoped to one model group can
+        // be priced without the other groups' spending inside it. The unpriced
+        // model is counted in `models` and absent from `costs`, which is why
+        // the estimator places models by `models`, not by `costs`.
+        assert_eq!(ledger.slots[0].models.len(), 2);
+        assert!((ledger.slots[0].costs["claude-opus-4.6"] - 18.6).abs() < 1e-9);
+        assert!(!ledger.slots[0].costs.contains_key("mystery-model"));
         // One calendar day: the day buckets fold to a single row.
         assert_eq!(ledger.days.len(), 1);
         assert_eq!(ledger.days[0].tokens, 4_000_500);

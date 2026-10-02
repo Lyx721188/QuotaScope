@@ -555,7 +555,12 @@ impl App {
         let subjects: Vec<ProviderUsage> = self
             .readings
             .values()
-            .filter(|r| matches!(r.account.provider, Provider::ClaudeCode | Provider::Codex))
+            .filter(|r| {
+                matches!(
+                    r.account.provider,
+                    Provider::ClaudeCode | Provider::Codex | Provider::Antigravity
+                )
+            })
             .cloned()
             .collect();
         if subjects.is_empty() {
@@ -576,9 +581,17 @@ impl App {
             let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
             for reading in subjects {
                 let ledger = quotascope_core::ledger::ledger(reading.account.provider);
+                // Only Antigravity can say which of its logged models spent a
+                // given window; every other provider's windows are priced as
+                // account-wide or not at all.
+                let rule = match reading.account.provider {
+                    Provider::Antigravity => quotascope_core::providers::antigravity::ESTIMATE,
+                    _ => quotascope_core::estimate::Rule::default(),
+                };
                 let mut lines = HashMap::new();
                 for window in &reading.windows {
-                    if let Some(text) = quotascope_core::estimate::window_text(window, &ledger, now)
+                    if let Some(text) =
+                        quotascope_core::estimate::window_text(window, &ledger, now, rule)
                     {
                         lines.insert(window.id.clone(), text);
                     }

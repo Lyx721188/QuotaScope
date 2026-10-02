@@ -5,6 +5,11 @@ What each release changed, written for somebody deciding whether to install it.
 Windows releases use their own version sequence. Entries below 1.1.1 include
 inherited macOS history and do not establish Windows feature availability.
 
+## Unreleased (Windows)
+
+- **Antigravity's limits are now worth money.** Its detailed card had the day-by-day history but no "Estimated value" line under the windows, because every Antigravity limit is scoped to a model group and the estimator refused all scoped windows. It can now price one: each quarter-hour of the ledger keeps its money split by model, and a window of the Gemini allowance is divided from the Gemini models' spending alone, the Claude-and-GPT window from Claude and GPT. Which group a model belongs to is read from the model's own name (`gemini-3.8-flash-control`, `claude-sonnet-4-6`), which is the guess in this figure — a stretch holding a model whose name says nothing gives up entirely rather than counting the uncertain part as zero.
+- **A window is only priced when its own provider can be divided.** Antigravity reports its remaining share to seven decimals where the others report whole percents, so the rounding floor that makes 2% the least usable figure elsewhere is 0.2% here. The other conditions are unchanged and still withhold rather than round down: the logs must start before the window did, and the stretch must hold at least twenty cents.
+
 ## 1.2.1 (Windows)
 
 - **Antigravity's own history on this machine.** With Token spend enabled and Antigravity's detailed card switched on, the card reads the conversation databases the IDE keeps under `~/.gemini/antigravity/conversations` and shows per-day tokens and their published API value, the way the Claude Code and Codex cards do. Counts whose meaning has not been established are left out rather than guessed, a turn with no recorded time is filed under the conversation's start, and the card says both. These records show on the account's card only, not in the Token spend overview.

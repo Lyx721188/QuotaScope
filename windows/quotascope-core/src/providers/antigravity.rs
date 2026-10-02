@@ -28,15 +28,17 @@
 //! carries the token, and the owned-TCP table for the ports each pid holds.
 
 use super::{KeyRing, ProviderService};
+use crate::estimate::{Placement, Rule};
 use crate::model::{AccountKey, Kind, Provider, ProviderUsage, Unavailability, UsageWindow};
 use std::time::Duration;
 
 /// The RPCs this uses. Antigravity is built on Codeium's language server,
 /// hence the `exa.` package and the `x-codeium-` header.
 ///
-/// Those two are all there is: the quota summary and the plan's name. The
-/// spending history and the window estimate other providers get are built
-/// from per-model token counts, which do not exist here to be read.
+/// Those two are all the language server offers on quota: the summary and the
+/// plan's name. The spending history and the window estimate are built from
+/// the per-model token counts in the conversation databases under
+/// `~/.gemini/antigravity` — see [`crate::ledger`].
 const QUOTA_METHOD: &str = "exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary";
 const STATUS_METHOD: &str = "exa.language_server_pb.LanguageServerService/GetUserStatus";
 const CSRF_HEADER: &str = "x-codeium-csrf-token";
@@ -627,6 +629,61 @@ fn model_group(name: Option<&str>) -> Option<String> {
     Some(name.to_string())
 }
 
+// --- What these windows are worth ---------------------------------------
+
+/// The estimator's inputs for this provider.
+pub const ESTIMATE: Rule = Rule {
+    // `remainingFraction` reaches this as `0.9949068` — seven decimals, where
+    // the other providers report whole percents. The floor that keeps a whole
+    // percent from being divided by its own rounding would discard a figure
+    // good to a hundredth of a percent, so the binding coarseness here is the
+    // ledger's instead: its quarter-hour slots, where work counted at the
+    // window's boundary is already a large share of a window barely begun.
+    minimum_used: 0.002,
+    place: Some(place),
+};
+
+/// Which of the plan's two allowances a model's spending counts against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Allowance {
+    Gemini,
+    ThirdParty,
+}
+
+/// The two allowances, named the way the language server names its groups.
+fn allowance(name: &str) -> Option<Allowance> {
+    let name = name.to_lowercase();
+    let gemini = name.contains("gemini");
+    let third = name.contains("claude") || name.contains("gpt");
+    match (gemini, third) {
+        (true, false) => Some(Allowance::Gemini),
+        (false, true) => Some(Allowance::ThirdParty),
+        // A name claiming both families, or neither, is not one this can pick
+        // a side for.
+        _ => None,
+    }
+}
+
+/// Whether one of the logged models spent a window of the given scope.
+///
+/// The plan has two allowances, Gemini and Claude-and-GPT, and each timed
+/// window arrives under its group's name as its `scope`. The reply names the
+/// group but never its members, so membership comes from the model's own name.
+/// What the ids actually look like, from this machine's conversation
+/// databases: `gemini-3.8-flash-control`, `gemini-3.7-flash`,
+/// `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, and the display label a
+/// turn with no recorded model falls back to ("Gemini 3.7 Flash (High)"). A
+/// name that says nothing — `unknown` among them — withholds the estimate
+/// rather than picking a side, because a window priced from part of its own
+/// spending reads too low.
+pub fn place(scope: &str, model: &str) -> Placement {
+    match (allowance(scope), allowance(model)) {
+        (Some(scope), Some(model)) if scope == model => Placement::InScope,
+        (Some(_), Some(_)) => Placement::OutOfScope,
+        _ => Placement::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -772,6 +829,50 @@ mod tests {
                 Kind::Other(30 * 86_400)
             ]
         );
+    }
+
+    #[test]
+    fn each_allowance_is_spent_by_its_own_models_and_nobody_elses() {
+        // The names are the ones this machine's conversation databases carry,
+        // the last of them the display label a turn with no recorded model
+        // falls back to.
+        let pairs = [
+            ("Gemini", "gemini-3.8-flash"),
+            ("Gemini", "gemini-3.8-flash-control"),
+            ("Gemini", "Gemini 3.7 Flash (High)"),
+            ("Claude and GPT", "claude-opus-4-6-thinking"),
+            ("Claude and GPT", "claude-sonnet-4-6"),
+        ];
+        for (scope, model) in pairs {
+            assert_eq!(place(scope, model), Placement::InScope, "{model}");
+        }
+        assert_eq!(place("Gemini", "claude-sonnet-4-6"), Placement::OutOfScope);
+        assert_eq!(
+            place("Claude and GPT", "gemini-3.7-flash"),
+            Placement::OutOfScope
+        );
+    }
+
+    #[test]
+    fn a_model_that_names_no_allowance_withholds_the_estimate() {
+        // `unknown` is what the ledger records when a turn says nothing about
+        // its model; the others are families this plan has never routed here.
+        for model in ["unknown", "mistral-large", ""] {
+            assert_eq!(place("Gemini", model), Placement::Unknown, "{model}");
+            assert_eq!(
+                place("Claude and GPT", model),
+                Placement::Unknown,
+                "{model}"
+            );
+        }
+        // So is a group the server names something new.
+        assert_eq!(place("Everything", "gemini-3.8-flash"), Placement::Unknown);
+        // And a name claiming both families: it spends one allowance or the
+        // other, and picking by which word came first is a coin toss.
+        for both in ["Claude and Gemini", "gemini-3-claude-bridge"] {
+            assert_eq!(place(both, "gemini-3.8-flash"), Placement::Unknown);
+            assert_eq!(place("Gemini", both), Placement::Unknown);
+        }
     }
 
     #[test]

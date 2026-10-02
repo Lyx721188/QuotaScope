@@ -13,7 +13,16 @@
 //!
 //! - Too little used, and the percentage's own rounding swamps the answer —
 //!   at 1% used, a provider reporting whole numbers could mean anywhere from
-//!   0.5% to 1.5%, a three-fold spread in the result.
+//!   0.5% to 1.5%, a three-fold spread in the result. How coarse a provider's
+//!   percentages are is itself something only the provider knows, so it comes
+//!   in as [`Rule::minimum_used`]: Antigravity reports its fraction to seven
+//!   decimals and can be divided at a tenth of what the others allow.
+//! - A window scoped to one model group is spent by that group alone, but the
+//!   logs' spending for the period is everything together — dividing one by
+//!   the other priced Claude Code's 2%-used Fable window at ten thousand
+//!   dollars, because almost all the money in it had gone through Opus. Such a
+//!   window is priced only where the provider can say which of the logged
+//!   models spend it ([`Rule::place`]), and only from those models' money.
 //! - Logs that start after the window did miss part of the spending, which
 //!   would put the window's worth too low.
 //! - Work done on another machine is invisible here, and pulls the same way.
@@ -32,6 +41,45 @@ pub const MINIMUM_USED: f64 = 0.02;
 
 /// And below this there isn't enough money in play to be worth reporting.
 pub const MINIMUM_SPEND: f64 = 0.20;
+
+/// Where one of the ledger's models sits relative to one window's scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Its spending counts against this window.
+    InScope,
+    /// It counts against a different window of the same account, so leaving it
+    /// out of this one's spending is correct rather than lossy.
+    OutOfScope,
+    /// Nobody can say. The estimate is withheld: a window priced from part of
+    /// its own spending reads too low, and that is the one error this figure
+    /// cannot be labelled its way out of.
+    Unknown,
+}
+
+/// What only the provider knows about the figures it reports, as far as the
+/// estimator is concerned.
+#[derive(Debug, Clone, Copy)]
+pub struct Rule {
+    /// The smallest share of a window worth dividing by, given how coarsely
+    /// this provider reports it.
+    pub minimum_used: f64,
+    /// For a window scoped to a model group: whether a given model's spending
+    /// counts against a window of the given scope. `None` says the provider
+    /// cannot tell, and its scoped windows are then never priced.
+    pub place: Option<fn(scope: &str, model: &str) -> Placement>,
+}
+
+impl Default for Rule {
+    /// Whole percentages, and no way to separate one model group's spending
+    /// from another's: the shape Claude Code and Codex report, and the safe
+    /// assumption for anything new.
+    fn default() -> Self {
+        Rule {
+            minimum_used: MINIMUM_USED,
+            place: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BudgetEstimate {
@@ -60,20 +108,17 @@ pub fn approximate(amount: f64) -> String {
     }
 }
 
-pub fn estimate(window: &UsageWindow, ledger: &UsageLedger, now_ms: i64) -> Option<BudgetEstimate> {
+pub fn estimate(
+    window: &UsageWindow,
+    ledger: &UsageLedger,
+    now_ms: i64,
+    rule: Rule,
+) -> Option<BudgetEstimate> {
     if window.window_seconds <= 0 {
         return None;
     }
     let resets = window.resets_at?;
-    // Account-wide windows only. A limit scoped to one model is spent by that
-    // model alone, but the logs' spending for the period is everything
-    // together — dividing one by the other priced Claude Code's 2%-used
-    // Fable window at ten thousand dollars, because almost all of the money
-    // in it had gone through Opus.
-    if window.scope.is_some() {
-        return None;
-    }
-    if window.used_fraction < MINIMUM_USED {
+    if window.used_fraction < rule.minimum_used {
         return None;
     }
 
@@ -89,7 +134,16 @@ pub fn estimate(window: &UsageWindow, ledger: &UsageLedger, now_ms: i64) -> Opti
         return None;
     }
 
-    let spent = ledger.spend_since(opened_ms).1;
+    let spent = match (&window.scope, rule.place) {
+        (None, _) => ledger.spend_since(opened_ms).1,
+        (Some(scope), Some(place)) => scoped_spend(ledger, opened_ms, scope, place)?,
+        // A limit scoped to one model is spent by that model alone, but the
+        // logs' spending for the period is everything together — dividing one
+        // by the other priced Claude Code's 2%-used Fable window at ten
+        // thousand dollars, because almost all of the money in it had gone
+        // through Opus.
+        (Some(_), None) => return None,
+    };
     if spent < MINIMUM_SPEND {
         return None;
     }
@@ -102,12 +156,49 @@ pub fn estimate(window: &UsageWindow, ledger: &UsageLedger, now_ms: i64) -> Opti
     })
 }
 
+/// What the models of one group spent since the window opened.
+///
+/// Every model in the stretch has to be placed, and `None` is the answer where
+/// one cannot be: the unplaced spending belongs to the window or it does not,
+/// and either guess puts a figure on the card that this machine's own records
+/// do not support.
+fn scoped_spend(
+    ledger: &UsageLedger,
+    opened_ms: i64,
+    scope: &str,
+    place: fn(&str, &str) -> Placement,
+) -> Option<f64> {
+    let mut spent = 0.0;
+    for slot in &ledger.slots {
+        if slot.start_ms < opened_ms {
+            continue;
+        }
+        // Placed by what was logged, not by what reached a price: a model the
+        // table has no rate for is absent from `costs` and still spent the
+        // window, so it has to be recognised as one of the group's own — or as
+        // something nobody can say.
+        for model in slot.models.keys() {
+            match place(scope, model) {
+                Placement::InScope => spent += slot.costs.get(model).copied().unwrap_or(0.0),
+                Placement::OutOfScope => {}
+                Placement::Unknown => return None,
+            }
+        }
+    }
+    Some(spent)
+}
+
 /// The card's estimate line for one window — "Estimated value ≈$220 ·
 /// ≈$57 used" — or nothing where the estimator withholds it. The line says
 /// "estimated" wherever it appears, because this is the one number in
 /// QuotaScope that is inferred rather than reported.
-pub fn window_text(window: &UsageWindow, ledger: &UsageLedger, now_ms: i64) -> Option<String> {
-    let e = estimate(window, ledger, now_ms)?;
+pub fn window_text(
+    window: &UsageWindow,
+    ledger: &UsageLedger,
+    now_ms: i64,
+    rule: Rule,
+) -> Option<String> {
+    let e = estimate(window, ledger, now_ms, rule)?;
     Some(crate::localization::t_fmt(
         "Estimated value {value} · {spent} used",
         &[&approximate(e.full), &approximate(e.spent)],
@@ -117,7 +208,7 @@ pub fn window_text(window: &UsageWindow, ledger: &UsageLedger, now_ms: i64) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::Slot;
+    use crate::ledger::{Slot, TokenTally};
     use std::collections::BTreeMap;
 
     fn window(
@@ -146,13 +237,29 @@ mod tests {
         )
     }
 
+    /// A quarter-hour of work by one unnamed model — all the account-wide
+    /// tests care about is the money in it.
     fn slot(start_ms: i64, cost: f64) -> Slot {
+        slot_by(start_ms, &[("some-model", cost)])
+    }
+
+    /// A quarter-hour of work, split by the models that did it.
+    fn slot_by(start_ms: i64, models: &[(&str, f64)]) -> Slot {
+        let mut tallies = BTreeMap::new();
+        let mut costs = BTreeMap::new();
+        let mut total = 0.0;
+        for (model, cost) in models {
+            tallies.insert((*model).to_string(), TokenTally::default());
+            costs.insert((*model).to_string(), *cost);
+            total += cost;
+        }
         Slot {
             start_ms,
             tokens: 0,
-            cost,
+            cost: total,
             unpriced_tokens: 0,
-            models: BTreeMap::new(),
+            models: tallies,
+            costs,
         }
     }
 
@@ -177,7 +284,7 @@ mod tests {
         // window opened is this ledger's older history and stays out.
         let ledger = ledger_with(vec![slot(opened, 40.0), slot(opened + 60_000, 60.0)]);
         let now = resets - 1000;
-        let e = estimate(&w, &ledger, now).expect("estimated");
+        let e = estimate(&w, &ledger, now, Rule::default()).expect("estimated");
         assert!((e.full - 400.0).abs() < 1e-9);
         assert!((e.spent - 100.0).abs() < 1e-9);
         assert!((e.remaining - 300.0).abs() < 1e-9);
@@ -190,7 +297,7 @@ mod tests {
         let opened = resets - 3 * 3600 * 1000;
         let w = window(0.01, 3 * 3600, resets, None);
         let ledger = ledger_with(vec![slot(opened + 60_000, 60.0)]);
-        assert_eq!(estimate(&w, &ledger, resets - 1000), None);
+        assert_eq!(estimate(&w, &ledger, resets - 1000, Rule::default()), None);
     }
 
     #[test]
@@ -199,7 +306,7 @@ mod tests {
         let opened = resets - 3 * 3600 * 1000;
         let w = window(0.25, 3 * 3600, resets, None);
         let ledger = ledger_with(vec![slot(opened + 60_000, 0.10)]);
-        assert_eq!(estimate(&w, &ledger, resets - 1000), None);
+        assert_eq!(estimate(&w, &ledger, resets - 1000, Rule::default()), None);
     }
 
     #[test]
@@ -208,16 +315,74 @@ mod tests {
         let opened = resets - 3 * 3600 * 1000;
         let w = window(0.25, 3 * 3600, resets, None);
         let ledger = ledger_with(vec![slot(opened + 3600 * 1000, 60.0)]);
-        assert_eq!(estimate(&w, &ledger, resets - 1000), None);
+        assert_eq!(estimate(&w, &ledger, resets - 1000, Rule::default()), None);
     }
 
     #[test]
-    fn scoped_windows_are_never_priced() {
+    fn scoped_windows_are_never_priced_without_a_way_to_place_models() {
         let resets = 1_792_915_200_000i64;
         let opened = resets - 3 * 3600 * 1000;
         let w = window(0.25, 3 * 3600, resets, Some("Opus"));
         let ledger = ledger_with(vec![slot(opened - 3600 * 1000, 60.0)]);
-        assert_eq!(estimate(&w, &ledger, resets - 1000), None);
+        assert_eq!(estimate(&w, &ledger, resets - 1000, Rule::default()), None);
+    }
+
+    #[test]
+    fn a_scoped_window_is_priced_from_its_own_group_alone() {
+        let resets = 1_792_915_200_000i64;
+        let opened = resets - 3 * 3600 * 1000;
+        // The quarter-hour held $100 of work, but split across two allowances:
+        // $30 of Gemini and $70 of Claude. Each window is worth what its own
+        // share divided by its own percentage — not what the whole hour was.
+        let ledger = ledger_with(vec![slot_by(
+            opened,
+            &[("gemini-3.8-flash", 30.0), ("claude-opus-4-6", 70.0)],
+        )]);
+        let now = resets - 1000;
+
+        let gemini = window(0.25, 3 * 3600, resets, Some("Gemini"));
+        let e = estimate(&gemini, &ledger, now, GROUPED).expect("estimated");
+        assert!((e.spent - 30.0).abs() < 1e-9);
+        assert!((e.full - 120.0).abs() < 1e-9);
+
+        let other = window(0.25, 3 * 3600, resets, Some("Claude and GPT"));
+        let e = estimate(&other, &ledger, now, GROUPED).expect("estimated");
+        assert!((e.spent - 70.0).abs() < 1e-9);
+        assert!((e.full - 280.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_scoped_window_is_withheld_where_a_model_cannot_be_placed() {
+        let resets = 1_792_915_200_000i64;
+        let opened = resets - 3 * 3600 * 1000;
+        // A model nobody can assign: it spent one window or the other, and
+        // guessing would put one of the two figures on the card wrong.
+        let ledger = ledger_with(vec![slot_by(
+            opened,
+            &[("gemini-3.8-flash", 30.0), ("unheard-of-9", 70.0)],
+        )]);
+        let gemini = window(0.25, 3 * 3600, resets, Some("Gemini"));
+        assert_eq!(estimate(&gemini, &ledger, resets - 1000, GROUPED), None);
+        // The account-wide path is untouched by it — that model's money is in
+        // the total either way.
+        let whole = window(0.25, 3 * 3600, resets, None);
+        assert!(estimate(&whole, &ledger, resets - 1000, Rule::default()).is_some());
+    }
+
+    #[test]
+    fn a_provider_that_reports_exact_fractions_can_be_divided_lower() {
+        let resets = 1_792_915_200_000i64;
+        let opened = resets - 7 * 86_400 * 1000;
+        let ledger = ledger_with(vec![slot(opened, 60.0)]);
+        let w = window(0.005, 7 * 86_400, resets, None);
+        // Half a percent used: the whole-percent floor throws this away.
+        assert_eq!(estimate(&w, &ledger, resets - 1000, Rule::default()), None);
+        let exact = Rule {
+            minimum_used: 0.002,
+            ..Rule::default()
+        };
+        let e = estimate(&w, &ledger, resets - 1000, exact).expect("estimated");
+        assert!((e.full - 12_000.0).abs() < 1e-6);
     }
 
     #[test]
@@ -226,7 +391,32 @@ mod tests {
         let w = window(0.25, 3 * 3600, resets, None);
         let ledger = ledger_with(vec![slot(0, 60.0)]);
         // `now` before the window opened.
-        assert_eq!(estimate(&w, &ledger, resets - 3 * 3600 * 1000 - 1), None);
+        assert_eq!(
+            estimate(&w, &ledger, resets - 3 * 3600 * 1000 - 1, Rule::default()),
+            None
+        );
+    }
+
+    /// A provider with two allowances and a way to say which model spends
+    /// which — the shape Antigravity reports, with its names.
+    const GROUPED: Rule = Rule {
+        minimum_used: MINIMUM_USED,
+        place: Some(place_by_name),
+    };
+
+    fn place_by_name(scope: &str, model: &str) -> Placement {
+        let group = if model.starts_with("gemini") {
+            Some("Gemini")
+        } else if model.starts_with("claude") {
+            Some("Claude and GPT")
+        } else {
+            None
+        };
+        match group {
+            Some(group) if group == scope => Placement::InScope,
+            Some(_) => Placement::OutOfScope,
+            None => Placement::Unknown,
+        }
     }
 
     #[test]

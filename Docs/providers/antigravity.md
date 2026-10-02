@@ -4,6 +4,8 @@ Service: [`AntigravityUsageService.swift`](../../Sources/Pulse/Providers/Antigra
 
 The odd one out. Extra accounts are not supported. `keepsLocalTranscripts` is false: it is an editor, not a CLI, and leaves no session files QuotaScope can read. History, the money estimate, and the activity mark are left out rather than shown as zeroes.
 
+**That last sentence is the macOS route, and the Windows port does not hold to it.** Antigravity's IDE keeps conversation databases under `~/.gemini/antigravity/conversations` (`antigravity-ide` too) carrying per-generation model names, token counts and timestamps, and [`antigravity.rs`](../../windows/quotascope-core/src/providers/antigravity.rs) reads them: the Windows card shows a per-day history and prices its windows, the way the Claude Code and Codex cards do. See [../windows-1.2.md](../windows-1.2.md).
+
 ## Route
 
 Antigravity starts a `language_server` of its own and talks to it over HTTPS on loopback. That process is the only thing that knows the quota, so **these figures exist only while something of Antigravity’s is running** — `.antigravityNotRunning` says that plainly rather than dressing it up as a failure.
@@ -63,7 +65,7 @@ Second call: `GetUserStatus`. Only `planName` is decoded. The same reply holds n
 
 Of the 306 methods the language server exposes, not one has “usage” or “credit” in its name; `GetUserAnalyticsSummary` answers `{}`; `~/.antigravity` holds only binaries and extensions; the editor’s `state.vscdb` keeps conversation titles and two sentinel values under `modelCredits`, no token counts.
 
-So history, money estimate, and activity cannot be built — they need per-model token counts that do not exist to be read.
+So history, money estimate, and activity cannot be built **from the language server** — they need per-model token counts, and it publishes none. The Windows port found those counts where this list did not look: the IDE's conversation databases under `~/.gemini/antigravity`, which is what its history and per-window value estimate are built from.
 
 `~/.gemini` was **not** on that list and should have been: it holds `antigravity/`, `antigravity-ide/` and a `jetski-standalone-oauth-token` of `{auth_method, token}`. That is the Google OAuth route CodexBar calls experimental, and its own notes say the OAuth payload can only prove model availability — an all-100% placeholder rather than real quota. Worth knowing before anyone spends a day on it. It carries no token counts either, so it changes nothing above.
 
