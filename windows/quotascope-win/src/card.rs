@@ -230,7 +230,16 @@ fn activity(data: &CardData) -> Option<Activity> {
     let lines = &mut section.notes;
     match &data.history {
         None => lines.push(t("Reading history…").into()),
-        Some(HistoryRead::NotConfigured) => lines.push(t("Add an API key to read history.").into()),
+        Some(HistoryRead::NotConfigured) => lines.push(
+            t(
+                if data.usage.provider() == quotascope_core::model::Provider::DeepSeek {
+                    "Import a browser session in Settings."
+                } else {
+                    "Add an API key to read history."
+                },
+            )
+            .into(),
+        ),
         Some(HistoryRead::Failed(reason)) => {
             lines.push(t("Couldn't read the history.").into());
             lines.push(reason.message().to_string());
@@ -1257,6 +1266,29 @@ mod tests {
             codex_details: None,
             shows_codex_reset_credits: false,
         }
+    }
+
+    #[test]
+    fn deepseek_empty_and_loading_history_are_whole_account_and_require_console_login() {
+        let mut payload = data(HistoryRead::NotConfigured);
+        payload.usage.account = AccountKey::primary(Provider::DeepSeek);
+        let section = activity(&payload).unwrap();
+        assert_eq!(
+            section.heading,
+            quotascope_core::localization::t("Whole account")
+        );
+        assert_eq!(
+            section.notes,
+            vec![quotascope_core::localization::t(
+                "Import a browser session in Settings."
+            )]
+        );
+        assert!(!section.priced && section.figures.is_empty());
+        payload.history = None;
+        assert_eq!(
+            activity(&payload).unwrap().heading,
+            quotascope_core::localization::t("Whole account")
+        );
     }
 
     #[test]

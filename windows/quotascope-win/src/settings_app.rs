@@ -67,6 +67,14 @@ struct SettingsSnapshot {
     account_details: HashMap<Provider, Arc<AccountDetails>>,
     account_detail_controls: HashMap<Provider, Arc<quotascope_core::scan::Control>>,
     account_detail_generation: u64,
+    console_operations: HashMap<String, ConsoleOperation>,
+}
+
+#[derive(Default)]
+struct ConsoleOperation {
+    generation: u64,
+    running: bool,
+    message: Option<String>,
 }
 
 struct AccountDetails {
@@ -192,6 +200,104 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    fn change_deepseek_console(
+        self: &Arc<Self>,
+        account: quotascope_core::model::AccountKey,
+        import: bool,
+    ) {
+        if account.provider != Provider::DeepSeek {
+            return;
+        }
+        let generation = {
+            let mut state = self.snapshot.lock().unwrap();
+            let operation = state.console_operations.entry(account.id()).or_default();
+            if operation.running {
+                return;
+            }
+            operation.generation = operation.generation.wrapping_add(1);
+            operation.running = true;
+            operation.message = None;
+            let generation = operation.generation;
+            state.generation = state.generation.wrapping_add(1);
+            generation
+        };
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            let found = if import {
+                std::panic::catch_unwind(quotascope_core::deepseek_session::from_browser)
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            let mut state = shared.snapshot.lock().unwrap();
+            let Some(operation) = state.console_operations.get_mut(&account.id()) else {
+                return;
+            };
+            if operation.generation != generation {
+                return;
+            }
+            // Removing an additional account invalidates this operation under
+            // the same lock before clearing its encrypted credential slots.
+            let (saved, message) = if import {
+                match found {
+                    Some((token, browser)) => {
+                        let saved = quotascope_core::deepseek_session::set_token(&account, &token);
+                        (
+                            saved,
+                            if saved {
+                                quotascope_core::localization::t_fmt(
+                                    "Imported the session from {browser}.",
+                                    &[&browser],
+                                )
+                            } else {
+                                quotascope_core::localization::t(
+                                    "Couldn't save the console session.",
+                                )
+                                .into()
+                            },
+                        )
+                    }
+                    None => (
+                        false,
+                        quotascope_core::localization::t(
+                            "No matching session found in your browsers.",
+                        )
+                        .into(),
+                    ),
+                }
+            } else {
+                let saved = quotascope_core::deepseek_session::set_token(&account, "");
+                (
+                    saved,
+                    quotascope_core::localization::t(if saved {
+                        "Console session cleared."
+                    } else {
+                        "Couldn't save the console session."
+                    })
+                    .into(),
+                )
+            };
+            if saved {
+                quotascope_core::deepseek_history::forget(&account);
+            }
+            operation.running = false;
+            operation.message = Some(message);
+            state.generation = state.generation.wrapping_add(1);
+            drop(state);
+            if saved {
+                shared.send(SettingsAction::SaveKey);
+                if quotascope_core::settings::with(|s| s.enabled_accounts.contains(&account.id())) {
+                    shared.send(SettingsAction::RefreshAccount(account));
+                }
+            }
+        });
+    }
+
+    fn invalidate_console_operation(&self, id: &str) {
+        self.snapshot.lock().unwrap().console_operations.remove(id);
+    }
+
     pub(crate) fn request_dashboard(&self) {
         let mut state = self.snapshot.lock().unwrap();
         state.dashboard_requested = true;
@@ -906,6 +1012,8 @@ enum Message {
     ImportClaudeSession,
     ForgetClaudeSession,
     ForgetOpenCodeConsole,
+    DeepSeekConsole(String, bool),
+    DetailedAccount(String, bool),
     CopilotAuth,
     OpenGitHub,
     CheckUpdates,
@@ -1541,6 +1649,7 @@ impl Component for SettingsApp {
             }
             Message::RemoveAccount(id) => {
                 if let Some(account) = quotascope_core::model::AccountKey::from_id(&id) {
+                    self.shared.invalidate_console_operation(&id);
                     quotascope_core::accounts::remove(&account);
                     self.shared.send(SettingsAction::SaveKey);
                     self.shared.send(SettingsAction::Changed);
@@ -1570,6 +1679,21 @@ impl Component for SettingsApp {
                         );
                     }
                 }
+            }
+            Message::DeepSeekConsole(id, import) => {
+                if let Some(account) = quotascope_core::model::AccountKey::from_id(&id) {
+                    self.shared.change_deepseek_console(account, import);
+                }
+            }
+            Message::DetailedAccount(id, detailed) => {
+                quotascope_core::settings::mutate(|s| {
+                    if detailed {
+                        s.detailed_cards.insert(id);
+                    } else {
+                        s.detailed_cards.remove(&id);
+                    }
+                });
+                self.shared.send(SettingsAction::Changed);
             }
             Message::ForgetOpenCodeConsole => {
                 quotascope_core::secrets::set_key(quotascope_core::opencode_console::SECRET, "");
@@ -1807,6 +1931,17 @@ impl SettingsApp {
                                     .into()
                             },
                         )),
+                        if account.provider == Provider::DeepSeek && !account.is_primary() {
+                            let operation = state.console_operations.get(&account.id());
+                            self.deepseek_console_controls(
+                                &account,
+                                operation.is_some_and(|op| op.running),
+                                operation.and_then(|op| op.message.as_deref()),
+                                context,
+                            )
+                        } else {
+                            View::empty()
+                        },
                         if let Some(window) = headline {
                             ProgressBar::new()
                                 .maximum(100.0)
@@ -2998,6 +3133,22 @@ impl SettingsApp {
                     )),
                 )).into()
             }
+            Provider::DeepSeek => {
+                let (running, message) = {
+                    let state = self.shared.snapshot.lock().unwrap();
+                    let operation = state.console_operations.get(raw);
+                    (operation.is_some_and(|op| op.running), operation.and_then(|op| op.message.clone()))
+                };
+                StackPanel::new().spacing(6.0).children((
+                    TextBlock::new().text(quotascope_core::localization::t("API key")),
+                    self.credential_field(index, key_draft.or_else(|| quotascope_core::secrets::key_for(raw)).unwrap_or_default(), false, context),
+                    row((
+                        Button::new().on_click(context.message(Message::Save(index))).content(quotascope_core::localization::t("Save")),
+                        Button::new().on_click(context.message(Message::Refresh(index))).content(quotascope_core::localization::t("Refresh")),
+                    )),
+                    self.deepseek_console_controls(&quotascope_core::model::AccountKey::primary(provider), running, message.as_deref(), context),
+                ))
+            }
             _ if provider.needs_server_address() => {
                 let value = self
                     .addresses
@@ -3237,6 +3388,33 @@ impl SettingsApp {
                 .enumerate()
                 .map(|(index, view)| (index.to_string(), view)),
         )
+    }
+
+    fn deepseek_console_controls(
+        &self,
+        account: &quotascope_core::model::AccountKey,
+        running: bool,
+        message: Option<&str>,
+        context: &ViewContext<Self>,
+    ) -> View {
+        use quotascope_core::localization::t;
+        let id = account.id();
+        let detailed = quotascope_core::settings::with(|s| s.detailed_cards.contains(&id));
+        StackPanel::new().spacing(6.0).children((
+            self.muted(t("Import the DeepSeek console session to read 30 calendar days of account-wide tokens and actual bills. API keys stay separate.")),
+            if account.is_primary() { View::empty() } else {
+                self.muted(t("Sign in to the intended DeepSeek account in your browser before importing. Additional accounts never renew from another browser login.")).into()
+            },
+            row((
+                Button::new().is_enabled(!running).on_click(context.message(Message::DeepSeekConsole(id.clone(), true))).content(t("Import from browser")),
+                Button::new().is_enabled(!running).on_click(context.message(Message::DeepSeekConsole(id.clone(), false))).content(t("Forget console session")),
+            )),
+            self.muted(if running { t("Working…") } else { message.unwrap_or("") }),
+            if account.is_primary() { View::empty() } else {
+                self.aligned("Detailed cards", ToggleSwitch::new().is_on(detailed)
+                    .on_toggled(context.callback(move |on| Message::DetailedAccount(id.clone(), on))).into())
+            },
+        ))
     }
 
     fn accounts_view(&self, context: &ViewContext<Self>) -> View {

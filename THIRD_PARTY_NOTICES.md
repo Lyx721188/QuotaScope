@@ -8,6 +8,12 @@ commit `3696a65b428272aa25c3ba611de8df2536983515`.
 the upstream fixture. Source: <https://github.com/qunqin24/Pulse>.
 The Apache-2.0 license is included in this repository's `LICENSE`.
 
+The DeepSeek console protocol and balance fallback are adapted from Pulse by
+qunqin24, Copyright (c) 2026 qunqin24, under Apache License 2.0:
+`Sources/Pulse/Providers/DeepSeekConsole.swift`, `DeepSeekUsageService.swift`
+and `Tests/PulseTests/DeepSeekConsoleTests.swift` at the same fixed commit above.
+The Windows implementation uses its own DPAPI storage, bounded cache and tests.
+
 QuotaScope uses **HarmonyOS Sans SC**, Copyright 2021 Huawei Device Co., Ltd.
 Unmodified Regular, Medium and Bold font files are bundled in `Fonts/` beside
 the Windows executable. They are loaded privately by the application; no system

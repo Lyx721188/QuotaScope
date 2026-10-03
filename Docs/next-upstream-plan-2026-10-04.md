@@ -1,9 +1,9 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1、N2a/N2b/N2c 本地已验证，N2d 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1/N2 本地已验证，N3a 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N2d：DeepSeek 控制台设置入口与隔离 profile 验证**。N2c 的缓存、账户历史与余额回退已通过定向检查；真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
+当前唯一下一项是 **N3a：Codex 本地异常线索的纯解析与误报回归**。N2 的设置、DPAPI、合成 HTTP/WinUI 与完整工作区检查已通过；真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
 
 执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
@@ -305,7 +305,8 @@ before / after 性能样本、构建 profile 与程序哈希：
 | N2b 控制台解析 | 本地已验证 | 独立 token/envelope/range/amount/cost/summary；9 项固定合成样本通过，普通 core Clippy exit 0；此批无网络或凭据读取 |
 | N2c-1 传输与凭据 | 本地定向已验证，未联网 | deepseek_session 的固定 route、有界 body、401/403 分类、一次不同 token 重读；KeyRing 仅传各账户自己的 console 槽 |
 | N2c-2 缓存与接线 | 本地定向已验证，未联网 | 60 秒/4 项缓存（含错误）、单个并发读取、账户/token hash/币种/range key、取消与清除拒绝迟到缓存；账户历史与 API Key 优先余额 fallback |
-| N2d 设置与验收 | 当前下一项 | 异步显式浏览器导入、各账户清除、中文空态；独立 profile 的浏览器 fixture/DPAPI/UI 回归与整仓检查；真实账户单列未验证 |
+| N2d 设置与验收 | 本地已验证，真实账户未验证 | 独立 WinUI/浏览器 fixture/DPAPI 通过；679 passed / 6 ignored，fmt/Clippy/Release 通过；完整 Debug 安装生命周期/卸载通过，Release 包仅构建 |
+| N3a 纯解析 | 当前下一项 | settings applied 的 next-task 时序、helper/fork/replay、未知 effort、响应去重、样本阈值；完成后做有界后台读取与中文 UI |
 | N2 / N3 / N4 | 待实现 | 不使用 fixture 成功替代实际账号/客户端验收 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
@@ -355,3 +356,15 @@ N2c-2：新增 `deepseek_history.rs`。缓存键包括账户、token SHA-256（�
 Provider 接线保持 API Key 优先，仅 ApiKeyRefused/Unreachable/ServerError/UnreadableReply 允许控制台余额成功接替；控制台失败保留原 Key 错误，RateLimited/NoLimitsReported 不切换。无 Key 时传回真实 session 错误，不制造余额零。余额峰值保留主账户旧币种 key，附加账户加入 id 隔离；串行更新防并发账户丢失。非有限、负数和超界金额不当作余额。4 项策略测试通过。Store 调用实际 AccountKey/自己的 basis，官网历史不受本机 Token 开关控制，DeepSeek 附加账户也可显示历史。App 历史 worker 新增取消作用域，generation 继续拒绝旧完成结果；阻塞 HTTP 最多仍等待原有 20 秒 timeout。
 
 N2c-2 检查：`n2c2-core-tests-final.log` 共 20 passed（含 9 parser、3 session、3 cache、4 provider 策略与 1 既有集成），Windows 单元 17 passed；`n2c2-clippy-final.log` exit 0，仍有既有告警。首轮 Clippy 发现新 App 控制句柄的 import/可见性编译错误，已修正并保存失败日志，不把它算成成功。这一批没有执行网络、读取真实浏览器或安装程序；N1 包哈希不能覆盖此批新代码。
+
+N2d：设置页后台导入和清除 DeepSeek 官网会话，附加账户在用量概览有自己的导入、清除和详细卡片开关。导入不输出 token；没有找到会话不清除旧凭据，主/附加账户与 API Key 分开。删除账户使进行中的导入失效；自动续期持久化前在互斥范围确认原 token 仍存在，清除或替换后不能复活旧凭据。余额 fetch 每次取得该账户当前加密会话，解决自动续期后 KeyRing 仍留旧 token 的问题。手动刷新清除相应官网历史缓存。用户配置见 `Docs/providers/windows-deepseek-console.md`。
+
+N2d 当前验证：`n2d-workspace-tests-current.log` 679 passed / 6 ignored；`n2d-clippy-current.log` exit 0，Windows 仍为既有 83/84 告警；fmt、Debug 与 Release 构建完成。新增真实 loopback HTTP 测试验证 Bearer GET、JSON、401/403/429 和不跟随 302。`deepseek_console_ui_smoke.ps1` 使用 Edge Default 的其他站点、Profile 1 的目标站点和删除记录；真实 WinUI 操作及 DPAPI 解密确认两个账户导入/清除互不覆盖，API Key 保留；官网请求仅经不转发的本机代理，无真实账户请求。
+
+N2 整仓首轮失败追溯：旧 Stamp 的 f64 秒在 JSON 回读时可差 1 ULP；独立 `stamp-roundtrip-probe.log` 固定例为 1791051801.0000021，读回少 0.0000002384185791015625 秒。`9615472` 改用整数纳秒；旧缓存保留可读，缺少新纳秒字段会安全重读一次。48 项 ledger 定向与完整工作区回归通过。首次 UI 脚本文案/页面切换等待问题已修正；首个 Debug 验证 payload 缺失 WinUI 资源目录导致 idle 退出，补齐全部非 Cargo 运行时目录后通过。保存失败日志，不把失败轮计作成功。
+
+N2 冻结程序：Debug `529F9268E8A03073711244C182480E0F62AA75B56202B52DB2EA893281588272`，Release `E82B54B741FD55143E2B17C9D9D3F4CE1E01200121498E05C1C6BFB50EB21B1A`。最新 UI 证据 `n2d-console-ui-current.log` / `n2d-console-ui-result.json`；完整 Debug 安装、托盘关闭/重开/二次启动、隐藏退出与卸载在 `target/installer-validation-e7f64eda9d4142d9b1a8076c33f154f4/` 全部通过，用户安装版保留。Release 包 `n2-release-installer-current/QuotaScope-1.3.1-windows-x64-Setup.exe` SHA-256 `C68C6E8F665C840A78D8B481620646FA9434F353DC1B8BCC034000CC1CE7947C` 仅构建，无 Release 桌面/安装或发布验证。
+
+整数时间戳后的 40 万行流式 UI 样本见 `n2d-stream-result.json`：150/450/600/750 Token、筛选复用、跨进程缓存不变均通过；5037/902/732/775 ms 为这一轮观察，非性能承诺。该轮 Debug SHA 为中途 `4A96B4C...`，后续只更改官网凭据刷新/手动历史缓存接线；最新程序另经整仓和官网 UI/安装检查，避免将旧 SHA 的流式样本冒充最新 SHA。冻结的 `n2-debug-payload` / `n2-release-payload` 均包含所有 DLL、PRI、Fonts 和语言/WinUI 资源目录以及许可证。`n2d-results.json` 汇总本地检查；真实 DeepSeek 统计与多币种账户、Release 桌面、用户升级及 CI/发布保持未验证。
+
+后续 N3 先验证纯 parser 再注册后台/缓存/UI。只读取本机 rollouts，分离请求设置事实与格点分布启发式；不发送模型探测，不把任何标签写成服务端实际模型结论。未知 max/ultra effort 不排序；缺累计计数无法去重时跳过并标记部分记录，不以 0 补齐。无 applied 事件、旧版本、helper/reviewer 和 fork 回放必须固定误报样本。完成后才能进入 N4a DSH 实际 Zstandard 解码。

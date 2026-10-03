@@ -6,6 +6,8 @@ use crate::model::{AccountKey, Unavailability};
 use serde_json::Value;
 use std::io::Read;
 
+static MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn secret(account: &AccountKey) -> String {
     format!("{}:console", account.id())
 }
@@ -15,6 +17,11 @@ pub fn token(account: &AccountKey) -> Option<String> {
 }
 
 pub fn set_token(account: &AccountKey, token: &str) -> bool {
+    let _write = MUTATION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    persist_token(account, token)
+}
+
+fn persist_token(account: &AccountKey, token: &str) -> bool {
     crate::secrets::set_key(&secret(account), token);
     let stored = self::token(account);
     if token.is_empty() {
@@ -39,7 +46,11 @@ pub fn renew_from_browser(account: &AccountKey, refused: &str) -> Option<String>
         return None;
     }
     let (new, _) = from_browser()?;
-    if new == refused || !set_token(account, &new) {
+    let _write = MUTATION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // A user may have cleared or replaced the login while browser scanning
+    // was in flight. Renewal must never restore that old credential slot.
+    if new == refused || token(account).as_deref() != Some(refused) || !persist_token(account, &new)
+    {
         return None;
     }
     Some(new)
@@ -86,8 +97,15 @@ pub fn get(
     if let Some(range) = range {
         url.query_pairs_mut().extend_pairs(range.query());
     }
-    let response = http
-        .client_for_login()
+    fetch(http.client_for_login(), url, token)
+}
+
+fn fetch(
+    client: reqwest::blocking::Client,
+    url: url::Url,
+    token: &str,
+) -> Result<Value, Unavailability> {
+    let response = client
         .get(url)
         .bearer_auth(token)
         .header("Accept", "application/json")
@@ -135,6 +153,57 @@ mod tests {
     use super::*;
     use crate::model::Provider;
     use std::cell::Cell;
+
+    #[test]
+    fn raw_transport_sends_one_bearer_get_and_classifies_real_http_replies() {
+        use std::io::{BufRead, Write};
+        for (status, body, expected) in [
+            (200, "{\"code\":0}", None),
+            (200, "not json", Some(Unavailability::UnreadableReply)),
+            (401, "{}", Some(Unavailability::SessionExpired)),
+            (403, "{}", Some(Unavailability::ServerError)),
+            (429, "{}", Some(Unavailability::RateLimited)),
+            (302, "{}", Some(Unavailability::ServerError)),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    request.push_str(&line);
+                }
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nLocation: http://127.0.0.1:1/redirect-must-not-follow\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                request
+            });
+            let client = reqwest::blocking::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap();
+            let url = url::Url::parse(&format!("http://{address}/console-test?tz=28800")).unwrap();
+            let answer = fetch(client, url, "synthetic-console-token");
+            if let Some(reason) = expected {
+                assert_eq!(answer.unwrap_err(), reason);
+            } else {
+                assert_eq!(answer.unwrap()["code"], 0);
+            }
+            let request = server.join().unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("get /console-test?tz=28800 http/1.1\r\n"));
+            assert!(request.contains("authorization: bearer synthetic-console-token\r\n"));
+            assert!(request.contains("accept: application/json\r\n"));
+        }
+    }
     #[test]
     fn console_slots_do_not_alias_api_keys_or_other_accounts() {
         let primary = AccountKey::primary(Provider::DeepSeek);

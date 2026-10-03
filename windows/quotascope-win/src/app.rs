@@ -368,7 +368,10 @@ impl App {
                 let accounts = quotascope_core::settings::with(|s| {
                     s.ordered_enabled()
                         .into_iter()
-                        .map(|a| a.id())
+                        .map(|a| {
+                            forget_official_history(&a);
+                            a.id()
+                        })
                         .collect::<Vec<_>>()
                 });
                 self.refreshing.extend(accounts);
@@ -385,6 +388,7 @@ impl App {
         match event {
             PanelEvent::RefreshAccount(account) => {
                 self.invalidate_histories();
+                forget_official_history(&account);
                 self.refreshing.insert(account.id());
                 self.store.send(Command::RefreshAccount(account));
                 self.mark_refreshing();
@@ -413,6 +417,7 @@ impl App {
             SettingsAction::RefreshProvider(raw) => {
                 self.invalidate_histories();
                 if let Some(provider) = Provider::from_raw(&raw) {
+                    forget_official_history(&quotascope_core::model::AccountKey::primary(provider));
                     self.refreshing
                         .insert(quotascope_core::model::AccountKey::primary(provider).id());
                     self.store.send(Command::RefreshAccount(
@@ -427,6 +432,7 @@ impl App {
             }
             SettingsAction::RefreshAccount(account) => {
                 self.invalidate_histories();
+                forget_official_history(&account);
                 self.refreshing.insert(account.id());
                 self.store.send(Command::RefreshAccount(account));
                 self.mark_refreshing();
@@ -900,6 +906,12 @@ impl App {
             };
             self.settings.set_status(&provider_raw, text);
         }
+    }
+}
+
+fn forget_official_history(account: &quotascope_core::model::AccountKey) {
+    if account.provider == Provider::DeepSeek {
+        quotascope_core::deepseek_history::forget(account);
     }
 }
 

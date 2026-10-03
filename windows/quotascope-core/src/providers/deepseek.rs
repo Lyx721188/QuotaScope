@@ -61,10 +61,13 @@ impl DeepSeekService {
         account: &AccountKey,
     ) -> ProviderUsage {
         let key = pasted_or_none(keys.api_key(Provider::DeepSeek));
-        let console = keys.deepseek_console.get(&account.id()).map(String::as_str);
+        // Renewal persists a new token without rebuilding the store's whole
+        // KeyRing. Each fetch sees that account's current encrypted slot;
+        // a cleared session must not survive in an older KeyRing snapshot.
+        let console = crate::deepseek_session::token(account);
         let (reply, origin) = balance_reply(
             key.as_deref(),
-            console,
+            console.as_deref(),
             |key| {
                 let auth = format!("Bearer {key}");
                 self.http.fetch_json(
