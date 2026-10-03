@@ -1,6 +1,6 @@
 //! Small Win32 conveniences shared by every window in the app.
 
-use windows::core::{w, PCWSTR};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR, MONITORINFO, MONITORINFOEXW,
@@ -15,6 +15,33 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 pub const WM_APP_TRAY: u32 = WM_APP + 1;
 /// The detail flyout -> panel: "pointer came in" / "pointer left".
 pub const WM_APP_CARD: u32 = WM_APP + 3;
+
+pub fn process_metrics() -> quotascope_core::diagnostics::ProcessMetrics {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+    let mut result = quotascope_core::diagnostics::ProcessMetrics::default();
+    unsafe {
+        let process = GetCurrentProcess();
+        let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+        let size = std::mem::size_of_val(&counters) as u32;
+        counters.cb = size;
+        if GetProcessMemoryInfo(
+            process,
+            (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
+            size,
+        )
+        .is_ok()
+        {
+            result.private_bytes = Some(counters.PrivateUsage as u64);
+            result.working_set_bytes = Some(counters.WorkingSetSize as u64);
+        }
+        let mut handles = 0;
+        if GetProcessHandleCount(process, &mut handles).is_ok() {
+            result.handles = Some(handles);
+        }
+    }
+    result
+}
 
 /// The instance handle, resolved once.
 pub fn hinstance() -> windows::Win32::Foundation::HINSTANCE {
@@ -75,16 +102,27 @@ pub fn monitor_from_hwnd(hwnd: HWND) -> HMONITOR {
 }
 
 /// One-shot single-instance check. A second launch reports and exits.
+fn instance_object_name(name: &str) -> Vec<u16> {
+    // Debug lifecycle tests use an empty profile and a separate namespace,
+    // so they cannot foreground or stop the user's installed application.
+    #[cfg(debug_assertions)]
+    if let Ok(id) = std::env::var("QUOTASCOPE_TEST_INSTANCE") {
+        if !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return wide(&format!("{name}.Test.{id}"));
+        }
+    }
+    wide(name)
+}
+
 pub fn acquire_single_instance() -> bool {
+    let name = instance_object_name("QuotaScope.Windows.SingleInstance");
     unsafe {
-        let handle = windows::Win32::System::Threading::CreateMutexW(
-            None,
-            false,
-            w!("QuotaScope.Windows.SingleInstance"),
-        );
+        let handle =
+            windows::Win32::System::Threading::CreateMutexW(None, false, PCWSTR(name.as_ptr()));
         match handle {
-            Ok(_) => {
+            Ok(handle) => {
                 if GetLastError() == ERROR_ALREADY_EXISTS {
+                    let _ = windows::Win32::Foundation::CloseHandle(handle);
                     return false;
                 }
                 // HANDLE is Copy, so "leaking" is automatic: never
@@ -104,12 +142,10 @@ pub fn acquire_single_instance() -> bool {
 pub fn signal_open_settings() {
     use windows::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
     unsafe {
-        if let Ok(event) = OpenEventW(
-            EVENT_MODIFY_STATE,
-            false,
-            w!("QuotaScope.Windows.OpenSettings"),
-        ) {
+        let name = instance_object_name("QuotaScope.Windows.OpenSettings");
+        if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(name.as_ptr())) {
             let _ = SetEvent(event);
+            let _ = windows::Win32::Foundation::CloseHandle(event);
         }
     }
 }
@@ -121,17 +157,19 @@ pub fn listen_for_open_settings(tx: std::sync::mpsc::Sender<()>) {
     use windows::Win32::Foundation::WAIT_OBJECT_0;
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
     std::thread::spawn(move || unsafe {
-        let event = CreateEventW(None, false, false, w!("QuotaScope.Windows.OpenSettings"));
+        let name = instance_object_name("QuotaScope.Windows.OpenSettings");
+        let event = CreateEventW(None, false, false, PCWSTR(name.as_ptr()));
         let Ok(event) = event else { return };
         loop {
             let wait = WaitForSingleObject(event, INFINITE);
             if wait != WAIT_OBJECT_0 {
-                return;
+                break;
             }
             if tx.send(()).is_err() {
-                return;
+                break;
             }
         }
+        let _ = windows::Win32::Foundation::CloseHandle(event);
     });
 }
 

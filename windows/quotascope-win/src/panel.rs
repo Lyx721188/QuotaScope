@@ -264,6 +264,7 @@ pub struct PanelWindow {
     dpi: f64,
     events: Sender<PanelEvent>,
     tracking_mouse: bool,
+    frame_interval: u32,
 }
 
 impl PanelWindow {
@@ -319,6 +320,7 @@ impl PanelWindow {
             dpi: 1.0,
             events,
             tracking_mouse: false,
+            frame_interval: 0,
         });
 
         // WS_CAPTION | WS_THICKFRAME stay even though the client area will
@@ -542,6 +544,24 @@ impl PanelWindow {
         self.redraw();
     }
 
+    pub fn hide(&mut self) {
+        self.hide_card();
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        }
+        self.canvas = None;
+        self.set_frame_interval(250);
+    }
+
+    fn set_frame_interval(&mut self, milliseconds: u32) {
+        if self.frame_interval != milliseconds {
+            unsafe {
+                let _ = SetTimer(Some(self.hwnd), 1, milliseconds, None);
+            }
+            self.frame_interval = milliseconds;
+        }
+    }
+
     pub fn set_entries(&mut self, entries: Vec<RailEntry>) {
         let count_changed = entries.len() != self.entries.len();
         // Springs survive snapshot swaps for the accounts that stay; a
@@ -592,6 +612,10 @@ impl PanelWindow {
     }
 
     pub fn redraw(&mut self) {
+        if !self.is_visible() {
+            return;
+        }
+        self.set_frame_interval(30);
         let Some(canvas) = self.canvas.as_ref() else {
             return;
         };
@@ -853,6 +877,12 @@ impl PanelWindow {
     /// and settles the card's linger. Returns true while something still
     /// moves, so the app knows to keep the frame clock alive.
     pub fn tick(&mut self) -> bool {
+        if let Some(card) = self.card.as_mut() {
+            card.release_idle_canvas();
+        }
+        if !self.is_visible() {
+            return false;
+        }
         let now = quotascope_core::timeutil::now_ms();
         let dt = TICK_SECONDS;
 
@@ -1013,7 +1043,7 @@ impl PanelWindow {
         if moving || busy || card_changed {
             self.redraw();
         }
-        moving || busy
+        moving || busy || self.leave_at.is_some() || self.hide_at.is_some()
     }
 
     pub fn on_mouse_move(&mut self, x: i32, y: i32) {
@@ -1486,7 +1516,8 @@ unsafe extern "system" fn panel_wndproc(
             LRESULT(0)
         }
         WM_TIMER => {
-            panel.tick();
+            let moving = panel.tick();
+            panel.set_frame_interval(if moving { 30 } else { 250 });
             LRESULT(0)
         }
         // The flyout's pointer traffic, folded into the same linger logic.
@@ -1519,6 +1550,18 @@ unsafe extern "system" fn panel_wndproc(
         // its backdrop, border and corners.
         WM_NCCALCSIZE if wparam.0 != 0 => LRESULT(0),
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+impl Drop for PanelWindow {
+    fn drop(&mut self) {
+        self.card = None;
+        self.canvas = None;
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), 1);
+            SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
+            let _ = DestroyWindow(self.hwnd);
+        }
     }
 }
 

@@ -5,6 +5,16 @@ What each release changed, written for somebody deciding whether to install it.
 Windows releases use their own version sequence. Entries below 1.1.1 include
 inherited macOS history and do not establish Windows feature availability.
 
+## 1.2.4 (Windows, released 2026-10-03)
+
+- Settings keeps its WinUI host and navigation shell, while releasing page controls and the Token spend snapshot on close. Leaving Token spend also releases the snapshot; late scans cannot restore a closed page's data or overlap a new scan.
+- Token spend scans can be cancelled, including by closing Settings, leaving the page or disabling local reading. Progress shows the current source, completed sources and files read. Manual refresh checks changed files immediately; cancelling a refresh retains the preceding complete result and does not replace its file cache with partial data. The page's controls and status text now support Simplified Chinese.
+- Claude Code and Codex JSONL transcripts now stream one line at a time. Growing Codex logs verify their old prefix and resume saved cumulative counters, including after restarting the app. Rewrites, truncations and unfinished last lines fall back to a full scan; old file caches remain compatible.
+- Settings → Storage and diagnostics shows statistics cache size, supports clearing it and offers 16/64/256 MiB disk budgets or disabling persistence. The default is 64 MiB; startup and cache writes evict the oldest rebuildable entries. Account files, original logs and the price table are retained. A local diagnostic JSON export includes process resources and scan status through a field whitelist, excludes credentials and conversation contents, and replaces the previous report.
+- The panel uses a slower clock once animations settle, releases its composition canvas when hidden and recreates it when shown. A hidden hover card releases its canvas after one minute. Owned Win32 windows, tray icons and short-lived event handles now have explicit cleanup; the text-format cache is bounded.
+- Ledger cache expiry now resets its lifetime before rebuilding, preventing repeated scans after the first five minutes. Expired derived memory is reclaimed during idle maintenance, and the refresh worker waits longer while idle without delaying commands.
+- Settings → About adds manual update checks, an opt-in daily check and a per-version reminder skip. Only stable Windows releases with an uploaded Windows package qualify. Checks contact GitHub; downloading and installation remain the user's choice.
+
 ## 1.2.3 (Windows, released 2026-10-02)
 
 - **Settings can be reopened safely from the tray.** Closing Settings previously shut down the WinUI host while the tray stayed running. Reopening could then crash the process, including after a long idle. The host now lasts until the tray application exits; closing Settings hides its window and reopening restores it. This release retains the Settings window and controls in memory.

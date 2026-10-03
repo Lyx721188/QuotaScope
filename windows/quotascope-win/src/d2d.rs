@@ -195,10 +195,12 @@ impl D2DEngine {
                 let _ = format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 let _ = format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             }
-            self.text_formats
-                .lock()
-                .unwrap()
-                .insert(key, format.clone());
+            // DPI/size changes should not accumulate formats indefinitely.
+            let mut formats = self.text_formats.lock().unwrap();
+            if formats.len() >= 128 {
+                formats.clear();
+            }
+            formats.insert(key, format.clone());
             Ok(format)
         }
     }
@@ -346,6 +348,19 @@ impl SwapchainCanvas {
             // Vsync'd: this surface changes a few times a minute at most,
             // and one frame of wait is nothing against tearing.
             let _ = self.swap_chain.Present(1, DXGI_PRESENT(0));
+        }
+    }
+}
+
+impl Drop for SwapchainCanvas {
+    fn drop(&mut self) {
+        unsafe {
+            self.rt.SetTarget(None);
+            if let Some((device, target, visual)) = self._dcomp.take() {
+                let _ = target.SetRoot(None);
+                let _ = visual.SetContent(None);
+                let _ = device.Commit();
+            }
         }
     }
 }

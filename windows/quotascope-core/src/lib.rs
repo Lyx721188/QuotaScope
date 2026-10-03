@@ -10,6 +10,7 @@ pub mod browser_cookies;
 pub mod cache;
 pub mod codex_account;
 pub mod codex_rpc;
+pub mod diagnostics;
 pub mod estimate;
 pub mod extension;
 pub mod gateway;
@@ -22,11 +23,14 @@ pub mod model_prices;
 pub mod prompt_cache;
 pub mod providers;
 pub mod report;
+pub mod scan;
 pub mod secrets;
 pub mod settings;
 pub mod spend;
+pub mod statistics_cache;
 pub mod store;
 pub mod timeutil;
+pub mod updates;
 
 /// The application data directory: `%APPDATA%\QuotaScope`.
 pub fn data_dir() -> std::path::PathBuf {

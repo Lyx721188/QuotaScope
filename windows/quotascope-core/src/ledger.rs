@@ -473,6 +473,9 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
     let mut seen: HashSet<String> = HashSet::new();
 
     for line in lines {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         // What the session is called and where it ran. **A user-set title can
         // arrive long after the opening prompt** — Claude Code writes
         // `customTitle` when the conversation is renamed — so that one is
@@ -574,12 +577,26 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
 /// — and it sidesteps the duplicate readings that summing Codex's own
 /// per-turn field would double-count.
 pub fn parse_codex(lines: impl Iterator<Item = String>) -> Scanned {
-    let mut scanned = Scanned::default();
-    let mut days: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
-    let mut model: Option<String> = None;
-    let mut previous: Option<[i64; 4]> = None;
+    parse_codex_with_state(lines, Scanned::default(), &mut CodexState::default())
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CodexState {
+    model: Option<String>,
+    previous: Option<[i64; 4]>,
+}
+
+fn parse_codex_with_state(
+    lines: impl Iterator<Item = String>,
+    mut scanned: Scanned,
+    state: &mut CodexState,
+) -> Scanned {
+    let mut days = std::mem::take(&mut scanned.days);
 
     for line in lines {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         if scanned.title.is_none() || scanned.cwd.is_none() {
             // The directory is stated once in the session header; the opening
             // prompt is a `response_item` whose payload is a message with the
@@ -624,12 +641,12 @@ pub fn parse_codex(lines: impl Iterator<Item = String>) -> Scanned {
         // The model can change mid-session; usage is attributed to whichever
         // was in force when the reading was taken.
         if let Some(named) = payload.get("model").and_then(|m| m.as_str()) {
-            model = Some(named.to_string());
+            state.model = Some(named.to_string());
         }
 
         if !is_count
             || payload.get("type").and_then(|t| t.as_str()) != Some("token_count")
-            || model.is_none()
+            || state.model.is_none()
         {
             continue;
         }
@@ -652,9 +669,9 @@ pub fn parse_codex(lines: impl Iterator<Item = String>) -> Scanned {
             int(totals.get("cache_write_input_tokens")),
             int(totals.get("output_tokens")),
         ];
-        let previous_totals = previous.unwrap_or([0; 4]);
+        let previous_totals = state.previous.unwrap_or([0; 4]);
         let delta: [i64; 4] = std::array::from_fn(|i| (current[i] - previous_totals[i]).max(0));
-        previous = Some(current);
+        state.previous = Some(current);
 
         // Codex counts cached tokens inside its input figure; the price list
         // treats them as two separate rates.
@@ -672,7 +689,7 @@ pub fn parse_codex(lines: impl Iterator<Item = String>) -> Scanned {
         *days
             .entry(key)
             .or_default()
-            .entry(model.clone().expect("guarded above"))
+            .entry(state.model.clone().expect("guarded above"))
             .or_default() += tally;
     }
 
@@ -681,9 +698,9 @@ pub fn parse_codex(lines: impl Iterator<Item = String>) -> Scanned {
 }
 
 /// What has already been counted, so opening a card a second time doesn't
-/// re-read a few hundred megabytes of transcripts. A log file is rewritten
-/// only by being appended to, so size and modification date together are
-/// enough to know nothing changed.
+/// re-read a few hundred megabytes of transcripts. Unchanged stamps reuse
+/// the entry; a growing Codex file also verifies its entire previous prefix
+/// before resuming the cumulative counters at a newline boundary.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FileCache {
     files: BTreeMap<String, CachedEntry>,
@@ -697,6 +714,17 @@ struct CachedEntry {
     title: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex: Option<CodexCheckpoint>,
+}
+
+/// Parser state at a newline boundary, guarded by the entire old prefix.
+#[derive(Debug, Serialize, Deserialize)]
+struct CodexCheckpoint {
+    version: u8,
+    offset: u64,
+    digest: u64,
+    state: CodexState,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -723,20 +751,26 @@ impl Stamp {
 
 impl FileCache {
     fn load(provider: Provider) -> FileCache {
+        if crate::settings::with(|s| s.statistics_cache_limit_mb == 0) {
+            return FileCache::default();
+        }
         let path = data_dir().join(format!("ledger-4-{}.json", provider.raw()));
-        std::fs::read(path)
+        crate::scan::read(path)
             .ok()
             .and_then(|data| serde_json::from_slice(&data).ok())
             .unwrap_or_default()
     }
 
     fn save(&self, provider: Provider) {
+        if !crate::scan::checkpoint() {
+            return;
+        }
         if let Ok(data) = serde_json::to_vec(self) {
-            let _ = std::fs::create_dir_all(data_dir());
-            let _ = std::fs::write(
-                data_dir().join(format!("ledger-4-{}.json", provider.raw())),
-                data,
-            );
+            if !crate::scan::checkpoint() {
+                return;
+            }
+            let _ =
+                crate::statistics_cache::write(&format!("ledger-4-{}.json", provider.raw()), &data);
         }
     }
 }
@@ -789,10 +823,16 @@ fn collect_json(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn collect_files(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
+    if !crate::scan::checkpoint() {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let path = entry.path();
         if path.is_dir() {
             collect_files(&path, extension, out);
@@ -806,16 +846,88 @@ fn collect_files(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn parse_file(path: &Path, provider: Provider) -> Scanned {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Scanned::default();
-    };
-    let lines = text.lines().map(str::to_string);
-    match provider {
-        Provider::ClaudeCode => parse_claude_code(lines),
-        Provider::Codex => parse_codex(lines),
-        _ => Scanned::default(),
+fn read_entry(
+    path: &Path,
+    provider: Provider,
+    stamp: Stamp,
+    known: Option<CachedEntry>,
+) -> std::io::Result<CachedEntry> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::io::{Read, Seek, SeekFrom};
+
+    if known.as_ref().is_some_and(|k| k.stamp == stamp) {
+        return Ok(known.expect("matched above"));
     }
+    let mut file = std::fs::File::open(path)?;
+    let mut resume = None;
+    if provider == Provider::Codex {
+        if let Some(mut known) = known {
+            if let Some(cursor) = known.codex.take().filter(|c| {
+                c.version == 1
+                    && known.stamp.size >= 0
+                    && c.offset == known.stamp.size as u64
+                    && stamp.size > known.stamp.size
+            }) {
+                if let Some(digest) =
+                    crate::scan::verify_prefix(&mut file, cursor.offset, cursor.digest)?
+                {
+                    resume = Some((
+                        Scanned {
+                            days: known.days,
+                            title: known.title,
+                            cwd: known.cwd,
+                        },
+                        cursor.state,
+                        digest,
+                        cursor.offset,
+                    ));
+                }
+            }
+        }
+    }
+    let (scanned, mut state, digest, offset) = match resume {
+        Some(resume) => resume,
+        None => {
+            file.seek(SeekFrom::Start(0))?;
+            (
+                Scanned::default(),
+                CodexState::default(),
+                DefaultHasher::new(),
+                0,
+            )
+        }
+    };
+    let mut lines =
+        crate::scan::LineReader::new(file.take(stamp.size as u64 - offset), digest, offset);
+    let scanned = match provider {
+        Provider::ClaudeCode => parse_claude_code(lines.by_ref()),
+        Provider::Codex => parse_codex_with_state(lines.by_ref(), scanned, &mut state),
+        _ => return Err(std::io::Error::other("unsupported transcript")),
+    };
+    let (end, digest, newline) = lines.finish()?;
+    if end != stamp.size as u64 {
+        return Err(std::io::Error::other("transcript changed during scan"));
+    }
+    if Stamp::of(path).as_ref() != Some(&stamp) {
+        // A live session may append while we parse. Accept the bounded
+        // snapshot only if those exact bytes are still intact afterward.
+        let mut current = std::fs::File::open(path)?;
+        if crate::scan::verify_prefix(&mut current, end, digest)?.is_none() {
+            return Err(std::io::Error::other("transcript changed during scan"));
+        }
+    }
+    Ok(CachedEntry {
+        stamp,
+        days: scanned.days,
+        title: scanned.title,
+        cwd: scanned.cwd,
+        codex: (provider == Provider::Codex && newline).then_some(CodexCheckpoint {
+            version: 1,
+            offset: end,
+            digest,
+            state,
+        }),
+    })
 }
 
 const ANTIGRAVITY_MAX_BLOB_BYTES: i64 = 1_048_576;
@@ -996,6 +1108,9 @@ fn antigravity_steps(connection: &rusqlite::Connection) -> AntigravityStepTimes 
         return times;
     };
     for bytes in rows.flatten() {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let Some(step) = decode_antigravity_message(&bytes) else {
             continue;
         };
@@ -1098,6 +1213,9 @@ fn parse_antigravity_database(path: &Path, seen: &mut HashSet<String>) -> Scanne
     let mut labels: HashMap<String, HashSet<String>> = HashMap::new();
     let mut models = HashSet::new();
     for generation in &generations {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         if let Some(model) = generation
             .model
             .as_ref()
@@ -1122,6 +1240,9 @@ fn parse_antigravity_database(path: &Path, seen: &mut HashSet<String>) -> Scanne
     let mut days = BTreeMap::new();
 
     for generation in generations {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let Some(tally) = generation.tally.filter(|tally| tally.total() > 0) else {
             continue;
         };
@@ -1161,6 +1282,9 @@ fn parse_antigravity_database(path: &Path, seen: &mut HashSet<String>) -> Scanne
 fn scan_antigravity() -> BTreeMap<String, BTreeMap<String, TokenTally>> {
     let mut files = Vec::new();
     for root in antigravity_roots() {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         collect_files(&root, "db", &mut files);
     }
     files.sort();
@@ -1170,6 +1294,9 @@ fn scan_antigravity() -> BTreeMap<String, BTreeMap<String, TokenTally>> {
     let mut seen = HashSet::new();
     let mut buckets = BTreeMap::new();
     for file in files {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         for (slot, models) in parse_antigravity_database(&file, &mut seen).days {
             for (model, tally) in models {
                 *buckets
@@ -1198,25 +1325,22 @@ fn scan(provider: Provider) -> (BTreeMap<String, BTreeMap<String, TokenTally>>, 
     files.sort();
 
     for file in files {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let Some(stamp) = Stamp::of(&file) else {
             continue;
         };
         let key = file.to_string_lossy().to_string();
 
-        let entry = match cache.files.remove(&key) {
-            Some(known) if known.stamp == stamp => known,
-            _ => {
-                let scanned = parse_file(&file, provider);
-                CachedEntry {
-                    stamp,
-                    days: scanned.days,
-                    title: scanned.title,
-                    cwd: scanned.cwd,
-                }
-            }
+        let Ok(entry) = read_entry(&file, provider, stamp, cache.files.remove(&key)) else {
+            continue;
         };
 
         for (day, models) in &entry.days {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             for (model, tally) in models {
                 *buckets
                     .entry(day.clone())
@@ -1241,7 +1365,7 @@ pub fn priced(
     prices: &BTreeMap<String, ModelPrice>,
     vendor: Option<&str>,
 ) -> UsageLedger {
-    if buckets.is_empty() {
+    if !crate::scan::checkpoint() || buckets.is_empty() {
         return UsageLedger::empty();
     }
 
@@ -1260,6 +1384,9 @@ pub fn priced(
     let mut day_tally: HashMap<NaiveDate, TokenTally> = HashMap::new();
 
     for (key, models) in buckets {
+        if !crate::scan::checkpoint() {
+            return UsageLedger::empty();
+        }
         let Some(start_ms) = slot_key_to_ms(key) else {
             continue;
         };
@@ -1360,6 +1487,52 @@ const LIFETIME: Duration = Duration::from_secs(5 * 60);
 
 static MEMORY: Mutex<Option<(Instant, HashMap<String, UsageLedger>)>> = Mutex::new(None);
 
+type MemoryCache = Option<(Instant, HashMap<String, UsageLedger>)>;
+
+fn expire_memory(cache: &mut MemoryCache, now: Instant, enabled: bool) {
+    if !enabled
+        || cache
+            .as_ref()
+            .is_some_and(|(at, _)| now.duration_since(*at) >= LIFETIME)
+    {
+        *cache = None;
+    }
+}
+
+fn memory() -> std::sync::MutexGuard<'static, MemoryCache> {
+    let mut cache = MEMORY.lock().unwrap_or_else(|e| e.into_inner());
+    // Eviction also renews the timestamp when the next scan is inserted.
+    // Otherwise every read after the first five minutes rebuilds forever.
+    expire_memory(&mut cache, Instant::now(), true);
+    cache
+}
+
+/// Called during maintenance even when nobody is opening a transcript card.
+/// Only derived memory is released; files and persisted history stay intact.
+pub fn release_expired_memory(enabled: bool) {
+    // Maintenance runs on the UI path; a transcript scan may own the lock.
+    // Defer eviction instead of making the message loop wait for disk I/O.
+    if let Ok(mut cache) = MEMORY.try_lock() {
+        expire_memory(&mut cache, Instant::now(), enabled);
+    }
+}
+
+/// Manual refresh runs this on the scan worker, never on the UI thread.
+/// Persisted per-file stamps still avoid parsing unchanged transcripts.
+pub(crate) fn invalidate_memory() {
+    let mut cache = MEMORY.lock().unwrap_or_else(|e| e.into_inner());
+    if crate::scan::checkpoint() {
+        *cache = None;
+    }
+}
+
+/// Worker-only. Keep the same memory -> disk lock order as ledger scans.
+pub fn clear_statistics_cache() -> crate::statistics_cache::Cleanup {
+    let mut cache = MEMORY.lock().unwrap_or_else(|e| e.into_inner());
+    *cache = None;
+    crate::statistics_cache::clear_disk()
+}
+
 /// The provider's ledger, read through the in-memory cache. Providers without
 /// a transcript root come back empty — including every one whose history is
 /// not this machine's to know.
@@ -1369,9 +1542,7 @@ pub fn ledger(provider: Provider) -> UsageLedger {
     };
     let raw = provider.raw().to_string();
 
-    let mut guard = MEMORY
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = memory();
     if let Some((at, map)) = guard.as_ref() {
         if at.elapsed() < LIFETIME {
             if let Some(known) = map.get(&raw) {
@@ -1384,7 +1555,9 @@ pub fn ledger(provider: Provider) -> UsageLedger {
 
     let built = build(provider);
     let entry = guard.get_or_insert_with(|| (Instant::now(), HashMap::new()));
-    entry.1.insert(raw, built.clone());
+    if crate::scan::checkpoint() {
+        entry.1.insert(raw, built.clone());
+    }
     built
 }
 
@@ -1395,6 +1568,9 @@ fn build(provider: Provider) -> UsageLedger {
         scan(provider).0
     };
     if buckets.is_empty() {
+        return UsageLedger::empty();
+    }
+    if !crate::scan::checkpoint() {
         return UsageLedger::empty();
     }
     let prices = model_prices::prices();
@@ -1517,9 +1693,7 @@ fn qwen_project(path: &Path) -> Option<String> {
 pub fn qwen_ledger() -> UsageLedger {
     const KEY: &str = "qwen";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -1537,7 +1711,10 @@ pub fn qwen_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(text) = crate::scan::read_to_string(&file) else {
             continue;
         };
         let project = qwen_project(&file).unwrap_or_else(|| {
@@ -1550,6 +1727,9 @@ pub fn qwen_ledger() -> UsageLedger {
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
         for (index, line) in text.lines().enumerate() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
@@ -1611,16 +1791,19 @@ pub fn qwen_ledger() -> UsageLedger {
         }
     }
 
+    if !crate::scan::checkpoint() {
+        return UsageLedger::empty();
+    }
     let built = if buckets.is_empty() {
         UsageLedger::empty()
     } else {
         priced(&buckets, &model_prices::prices(), None)
     };
-    let mut guard = MEMORY
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = memory();
     let entry = guard.get_or_insert_with(|| (Instant::now(), HashMap::new()));
-    entry.1.insert(KEY.to_string(), built.clone());
+    if crate::scan::checkpoint() {
+        entry.1.insert(KEY.to_string(), built.clone());
+    }
     built
 }
 
@@ -1800,9 +1983,7 @@ fn pi_usage(object: &serde_json::Value) -> Option<(TokenTally, i64)> {
 pub fn pi_ledger(client: PiClient) -> UsageLedger {
     let key = client.id();
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(key) {
@@ -1814,6 +1995,9 @@ pub fn pi_ledger(client: PiClient) -> UsageLedger {
 
     let mut files = Vec::new();
     for root in client.root() {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         collect_jsonl(&root, &mut files);
     }
     files.sort();
@@ -1821,11 +2005,17 @@ pub fn pi_ledger(client: PiClient) -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(text) = crate::scan::read_to_string(&file) else {
             continue;
         };
         let mut session: Option<(String, Option<String>)> = None;
         for (index, line) in text.lines().enumerate() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
@@ -1906,16 +2096,19 @@ fn ledger_from_slot_buckets(
     buckets: &BTreeMap<String, BTreeMap<String, TokenTally>>,
     cache_key: &str,
 ) -> UsageLedger {
+    if !crate::scan::checkpoint() {
+        return UsageLedger::empty();
+    }
     let built = if buckets.is_empty() {
         UsageLedger::empty()
     } else {
         priced(buckets, &model_prices::prices(), None)
     };
-    let mut guard = MEMORY
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = memory();
     let entry = guard.get_or_insert_with(|| (Instant::now(), HashMap::new()));
-    entry.1.insert(cache_key.to_string(), built.clone());
+    if crate::scan::checkpoint() {
+        entry.1.insert(cache_key.to_string(), built.clone());
+    }
     built
 }
 
@@ -1948,11 +2141,14 @@ fn prime_parse_file(path: &Path) -> PrimeFile {
         path: path.to_string_lossy().into_owned(),
         ..Default::default()
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = crate::scan::read_to_string(path) else {
         return file;
     };
     let mut header_seen = false;
     for line in text.lines() {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
@@ -2037,9 +2233,7 @@ fn prime_parse_file(path: &Path) -> PrimeFile {
 pub fn prime_agent_ledger() -> UsageLedger {
     const KEY: &str = "prime-agent";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -2057,10 +2251,17 @@ pub fn prime_agent_ledger() -> UsageLedger {
         collect_jsonl(&root, &mut files);
     }
     files.sort();
-    let parsed: Vec<PrimeFile> = files.iter().map(|file| prime_parse_file(file)).collect();
+    let parsed: Vec<PrimeFile> = files
+        .iter()
+        .take_while(|_| crate::scan::checkpoint())
+        .map(|file| prime_parse_file(file))
+        .collect();
 
     let mut parent_of: std::collections::HashMap<String, String> = Default::default();
     for file in &parsed {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         if let Some(parent) = &file.parent_session {
             parent_of.insert(file.path.clone(), parent.clone());
         }
@@ -2111,7 +2312,13 @@ pub fn prime_agent_ledger() -> UsageLedger {
     let mut seen_attributions: std::collections::HashSet<String> = Default::default();
     let mut reductions: std::collections::HashMap<String, TokenTally> = Default::default();
     for file in &parsed {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         for (attribution_id, target, child_usage, aggregate_usage) in &file.attributions {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Some(target) = target else {
                 continue;
             };
@@ -2155,10 +2362,16 @@ pub fn prime_agent_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in &parsed {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let Some(_session_id) = file.id.clone() else {
             continue;
         };
         for (row_id, response_id, at, provider, model, tally) in &file.messages {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let provider = provider.as_deref().unwrap_or("");
             let identity = response_id
                 .as_ref()
@@ -2209,9 +2422,7 @@ pub fn prime_agent_ledger() -> UsageLedger {
 pub fn openclaw_ledger() -> UsageLedger {
     const KEY: &str = "openclaw";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -2230,6 +2441,9 @@ pub fn openclaw_ledger() -> UsageLedger {
     let mut sqlite_files = Vec::new();
     let mut jsonl_files = Vec::new();
     for root in &roots {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         collect_files(root, "sqlite", &mut sqlite_files);
         collect_files(root, "jsonl", &mut jsonl_files);
     }
@@ -2264,6 +2478,9 @@ pub fn openclaw_ledger() -> UsageLedger {
             .map(|name| name == std::ffi::OsStr::new("openclaw-agent.sqlite"))
             .unwrap_or(false)
     }) {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let Ok(connection) = rusqlite::Connection::open_with_flags(
             database,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -2281,6 +2498,9 @@ pub fn openclaw_ledger() -> UsageLedger {
                 ))
             }) {
                 for row in rows.flatten() {
+                    if !crate::scan::checkpoint() {
+                        break;
+                    }
                     metadata.insert(row.0, row.1);
                 }
             }
@@ -2295,6 +2515,9 @@ pub fn openclaw_ledger() -> UsageLedger {
                     ))
                 }) {
                     for row in rows.flatten() {
+                        if !crate::scan::checkpoint() {
+                            break;
+                        }
                         metadata.insert(row.0, row.1);
                     }
                 }
@@ -2318,6 +2541,9 @@ pub fn openclaw_ledger() -> UsageLedger {
             continue;
         };
         for row in rows.flatten() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let (session, seq, event_json) = row;
             let Ok(event) = serde_json::from_str::<serde_json::Value>(&event_json) else {
                 continue;
@@ -2356,7 +2582,10 @@ pub fn openclaw_ledger() -> UsageLedger {
     }
 
     for file in jsonl_files.iter().filter(|file| openclaw_jsonl(file)) {
-        let Ok(text) = std::fs::read_to_string(file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(text) = crate::scan::read_to_string(file) else {
             continue;
         };
         let stem = file
@@ -2365,6 +2594,9 @@ pub fn openclaw_ledger() -> UsageLedger {
             .unwrap_or_default();
         let mut model_carry: Option<String> = None;
         for (index, line) in text.lines().enumerate() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
@@ -2503,9 +2735,7 @@ fn provider_placeholder(provider: &str) -> Option<String> {
 pub fn mux_ledger() -> UsageLedger {
     const KEY: &str = "mux";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -2530,7 +2760,10 @@ pub fn mux_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(bytes) = std::fs::read(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(bytes) = crate::scan::read(&file) else {
             continue;
         };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -2555,6 +2788,9 @@ pub fn mux_ledger() -> UsageLedger {
             .get("lastRequest")
             .and_then(|request| json_text(request, &["model"]).map(str::to_string));
         for (key, entry) in by_model {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let bucket = |name: &str| {
                 entry
                     .get(name)
@@ -2599,9 +2835,7 @@ pub fn mux_ledger() -> UsageLedger {
 pub fn junie_ledger() -> UsageLedger {
     const KEY: &str = "junie";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -2626,7 +2860,10 @@ pub fn junie_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(text) = crate::scan::read_to_string(&file) else {
             continue;
         };
         let session = file
@@ -2636,6 +2873,9 @@ pub fn junie_ledger() -> UsageLedger {
             .unwrap_or_default();
         let session_start = junie_session_time(&session);
         for row in text.lines() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Ok(row) = serde_json::from_str::<serde_json::Value>(row) else {
                 continue;
             };
@@ -2654,6 +2894,9 @@ pub fn junie_ledger() -> UsageLedger {
             };
             let end = json_timestamp(row.get("timestampMs"), true).filter(|at| *at > 0);
             for (index, entry) in usages.iter().enumerate() {
+                if !crate::scan::checkpoint() {
+                    break;
+                }
                 let Some(model) = json_text(entry, &["model"]).map(str::to_string) else {
                     continue;
                 };
@@ -2723,9 +2966,7 @@ fn junie_session_time(id: &str) -> Option<i64> {
 pub fn augment_ledger() -> UsageLedger {
     const KEY: &str = "augment";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -2745,7 +2986,10 @@ pub fn augment_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(bytes) = std::fs::read(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(bytes) = crate::scan::read(&file) else {
             continue;
         };
         let Ok(session_value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -2768,6 +3012,9 @@ pub fn augment_ledger() -> UsageLedger {
             continue;
         };
         for (index, turn) in turns.iter().enumerate() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             if turn.get("completed").and_then(serde_json::Value::as_bool) != Some(true) {
                 continue;
             }
@@ -2835,9 +3082,7 @@ pub fn augment_ledger() -> UsageLedger {
 pub fn jcode_ledger() -> UsageLedger {
     const KEY: &str = "jcode";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -2865,7 +3110,10 @@ pub fn jcode_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(bytes) = std::fs::read(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(bytes) = crate::scan::read(&file) else {
             continue;
         };
         let Ok(session) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -2895,9 +3143,12 @@ pub fn jcode_ledger() -> UsageLedger {
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default()
         ));
-        if let Ok(text) = std::fs::read_to_string(&journal) {
+        if let Ok(text) = crate::scan::read_to_string(&journal) {
             let mut journal_model = session_model.clone();
             for line in text.lines() {
+                if !crate::scan::checkpoint() {
+                    break;
+                }
                 let Ok(line) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
                 };
@@ -2921,6 +3172,9 @@ pub fn jcode_ledger() -> UsageLedger {
         }
 
         for (message, carried_model) in messages {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Some(usage) = message.get("token_usage") else {
                 continue;
             };
@@ -3006,9 +3260,7 @@ pub fn jcode_ledger() -> UsageLedger {
 pub fn gjc_ledger() -> UsageLedger {
     const KEY: &str = "gjc";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -3041,6 +3293,9 @@ pub fn gjc_ledger() -> UsageLedger {
 
     let mut files = Vec::new();
     for root in &roots {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         collect_jsonl(root, &mut files);
     }
     files.sort();
@@ -3050,7 +3305,10 @@ pub fn gjc_ledger() -> UsageLedger {
     let mut seen_files: std::collections::HashMap<String, std::collections::HashSet<String>> =
         Default::default();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(text) = crate::scan::read_to_string(&file) else {
             continue;
         };
         let digest = {
@@ -3061,6 +3319,9 @@ pub fn gjc_ledger() -> UsageLedger {
         };
         let mut header_id: Option<String> = None;
         for line in text.lines() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
@@ -3087,6 +3348,9 @@ pub fn gjc_ledger() -> UsageLedger {
                 .unwrap_or_default()
         });
         for (index, line) in text.lines().enumerate() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
@@ -3147,9 +3411,7 @@ pub fn gjc_ledger() -> UsageLedger {
 pub fn codebuff_ledger() -> UsageLedger {
     const KEY: &str = "codebuff";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -3173,6 +3435,9 @@ pub fn codebuff_ledger() -> UsageLedger {
     };
     let mut files = Vec::new();
     for root in &roots {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         collect_json(root, &mut files);
     }
     files.retain(|file| {
@@ -3185,7 +3450,10 @@ pub fn codebuff_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(bytes) = std::fs::read(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(bytes) = crate::scan::read(&file) else {
             continue;
         };
         let Ok(messages) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -3197,6 +3465,9 @@ pub fn codebuff_ledger() -> UsageLedger {
         let (channel, project, chat_id) = codebuff_location(&file);
         let session = format!("{channel}/{project}/{chat_id}");
         for (index, message) in messages.iter().enumerate() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let variant = json_text(message, &["variant"]).map(str::to_ascii_lowercase);
             let role = json_text(message, &["role"]).map(str::to_ascii_lowercase);
             if !matches!(
@@ -3343,6 +3614,9 @@ fn codebuff_usage_sources(message: &serde_json::Value) -> Option<Vec<serde_json:
         .and_then(serde_json::Value::as_array)
     {
         for row in history.iter().rev() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             if let Some(usage) = row
                 .get("providerOptions")
                 .and_then(|options| options.get("usage"))
@@ -3416,9 +3690,7 @@ fn iso_from_chat_id(chat_id: &str) -> Option<i64> {
 pub fn fx_ledger() -> UsageLedger {
     const KEY: &str = "fx";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -3432,8 +3704,11 @@ pub fn fx_ledger() -> UsageLedger {
     let mut seen = std::collections::HashSet::new();
     let sidecars = collect_sidecars(crate::model::home_path(".fx/sessions").as_path());
     for (session_dir, sidecar) in sidecars {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let usage_file = session_dir.join("usage-v2.json");
-        let Ok(bytes) = std::fs::read(&usage_file) else {
+        let Ok(bytes) = crate::scan::read(&usage_file) else {
             continue;
         };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -3461,6 +3736,9 @@ pub fn fx_ledger() -> UsageLedger {
         let models = snapshot.get("models").and_then(serde_json::Value::as_array);
         if let Some(models) = models.filter(|models| !models.is_empty()) {
             for entry in models {
+                if !crate::scan::checkpoint() {
+                    break;
+                }
                 let tally = TokenTally {
                     input: count(entry, "input_tokens"),
                     cache_write: count(entry, "cache_write_tokens"),
@@ -3509,15 +3787,21 @@ pub fn fx_ledger() -> UsageLedger {
 /// exists and is an object.
 fn collect_sidecars(root: &Path) -> Vec<(PathBuf, serde_json::Value)> {
     let mut sidecars = Vec::new();
+    if !crate::scan::checkpoint() {
+        return sidecars;
+    }
     let Ok(entries) = std::fs::read_dir(root) else {
         return sidecars;
     };
     for entry in entries.flatten() {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(path.join("session.json")) else {
+        let Ok(text) = crate::scan::read_to_string(path.join("session.json")) else {
             continue;
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -3536,9 +3820,7 @@ fn collect_sidecars(root: &Path) -> Vec<(PathBuf, serde_json::Value)> {
 pub fn reasonix_ledger() -> UsageLedger {
     const KEY: &str = "reasonix";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -3568,10 +3850,16 @@ pub fn reasonix_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(text) = crate::scan::read_to_string(&file) else {
             continue;
         };
         for (index, line) in text.lines().enumerate() {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
@@ -3636,9 +3924,7 @@ pub fn reasonix_ledger() -> UsageLedger {
 pub fn lmstudio_ledger() -> UsageLedger {
     const KEY: &str = "lmstudio";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -3661,11 +3947,17 @@ pub fn lmstudio_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let Ok(text) = crate::scan::read_to_string(&file) else {
             continue;
         };
         let mut cursor = 0usize;
         while let Some(marker) = text[cursor..].find(r#""usage""#) {
+            if !crate::scan::checkpoint() {
+                break;
+            }
             let key_start = cursor + marker;
             let after_key = key_start + r#""usage""#.len();
             let Some((json_start, json_end)) = balanced_object(&text[after_key..]) else {
@@ -3890,9 +4182,7 @@ fn last_log_time(text: &str) -> Option<i64> {
 pub fn gemini_ledger() -> UsageLedger {
     const KEY: &str = "gemini";
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(KEY) {
@@ -3915,6 +4205,9 @@ pub fn gemini_ledger() -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let stem = file
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
@@ -3930,10 +4223,13 @@ pub fn gemini_ledger() -> UsageLedger {
         let is_session_json = extension == "json" && stem.starts_with("session-");
         if extension == "jsonl" {
             let mut current_model: Option<String> = None;
-            let Ok(text) = std::fs::read_to_string(&file) else {
+            let Ok(text) = crate::scan::read_to_string(&file) else {
                 continue;
             };
             for (line_index, line) in text.lines().enumerate() {
+                if !crate::scan::checkpoint() {
+                    break;
+                }
                 let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
                 };
@@ -4057,7 +4353,7 @@ pub fn gemini_ledger() -> UsageLedger {
                 }
             }
         } else if is_chat_json || is_session_json {
-            let Ok(bytes) = std::fs::read(&file) else {
+            let Ok(bytes) = crate::scan::read(&file) else {
                 continue;
             };
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -4070,6 +4366,9 @@ pub fn gemini_ledger() -> UsageLedger {
                 .map(str::to_string)
                 .unwrap_or_else(|| stem.clone());
             for message in messages {
+                if !crate::scan::checkpoint() {
+                    break;
+                }
                 if message.get("type").and_then(serde_json::Value::as_str) != Some("gemini") {
                     continue;
                 }
@@ -4214,9 +4513,7 @@ impl GenericAgent {
 pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
     let key = agent.id();
     {
-        let guard = MEMORY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
             if at.elapsed() < LIFETIME {
                 if let Some(known) = map.get(key) {
@@ -4234,6 +4531,9 @@ pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
     for file in files {
+        if !crate::scan::checkpoint() {
+            break;
+        }
         let name = file
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -4242,7 +4542,7 @@ pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let Ok(bytes) = std::fs::read(&file) else {
+        let Ok(bytes) = crate::scan::read(&file) else {
             continue;
         };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -4263,6 +4563,9 @@ pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
                 if let Some(messages) = value.get("messages").and_then(serde_json::Value::as_array)
                 {
                     for message in messages {
+                        if !crate::scan::checkpoint() {
+                            break;
+                        }
                         if message.get("role").and_then(serde_json::Value::as_str)
                             != Some("assistant")
                         {
@@ -4294,6 +4597,9 @@ pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
                     .and_then(serde_json::Value::as_array)
                 {
                     for (index, row) in events_value.iter().enumerate() {
+                        if !crate::scan::checkpoint() {
+                            break;
+                        }
                         let Some(tokens) = row.get("tokens") else {
                             continue;
                         };
@@ -4323,6 +4629,9 @@ pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
                 let mut consumed = vec![false; events.len()];
                 let mut unmatched = Vec::new();
                 for (model, tally, message_id) in message_calls {
+                    if !crate::scan::checkpoint() {
+                        break;
+                    }
                     let match_index = message_id.and_then(|id| {
                         events
                             .iter()
@@ -4345,6 +4654,9 @@ pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
                     .and_then(serde_json::Value::as_array)
                 {
                     for (index, model, tally, to_id, from_id) in events {
+                        if !crate::scan::checkpoint() {
+                            break;
+                        }
                         let row = &rows[index as usize];
                         let Some(at) = json_timestamp(row.get("timestamp"), false).or(created)
                         else {
@@ -4365,6 +4677,9 @@ pub fn generic_agent_ledger(agent: GenericAgent) -> UsageLedger {
                     }
                 }
                 for (model, tally, message_id) in unmatched {
+                    if !crate::scan::checkpoint() {
+                        break;
+                    }
                     let Some(at) = created else {
                         continue;
                     };
@@ -4557,6 +4872,238 @@ fn droid_provider_model(provider: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::model_prices::ModelPrice;
+
+    struct TranscriptFixture(PathBuf);
+    impl TranscriptFixture {
+        fn new(text: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "quotascope-stream-{}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ));
+            std::fs::create_dir(&root).unwrap();
+            let path = root.join("session.jsonl");
+            std::fs::write(&path, text).unwrap();
+            Self(path)
+        }
+        fn append(&self, text: &str) {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&self.0)
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
+        }
+        fn read(&self, known: Option<CachedEntry>) -> CachedEntry {
+            read_entry(&self.0, Provider::Codex, Stamp::of(&self.0).unwrap(), known).unwrap()
+        }
+    }
+    impl Drop for TranscriptFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_dir(self.0.parent().unwrap());
+        }
+    }
+    fn codex_header(model: &str) -> String {
+        format!("{{\"payload\":{{\"model\":\"{model}\",\"cwd\":\"C:/fixture\"}}}}\n{{\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":\"Fixture session\"}}}}\n")
+    }
+    fn stream_codex_count(n: i64) -> String {
+        serde_json::json!({
+            "timestamp": "2026-10-03T01:00:00Z",
+            "payload": {"type":"token_count", "info":{"total_token_usage":{
+                "input_tokens":n*100, "cached_input_tokens":n*20,
+                "cache_write_input_tokens":n*5, "output_tokens":n*50
+            }}}
+        })
+        .to_string()
+            + "\n"
+    }
+    fn entry_total(entry: &CachedEntry) -> i64 {
+        entry
+            .days
+            .values()
+            .flat_map(|models| models.values())
+            .map(TokenTally::total)
+            .sum()
+    }
+
+    #[test]
+    fn codex_appends_resume_after_serialization_without_recounting_or_losing_the_model() {
+        let file = TranscriptFixture::new(
+            &(codex_header("alpha") + &stream_codex_count(1) + &stream_codex_count(2)),
+        );
+        let old = file.read(None);
+        assert_eq!(entry_total(&old), 310);
+        let old = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
+        file.append(
+            &(stream_codex_count(2)
+                + "{\"payload\":{\"model\":\"beta\"}}\n"
+                + &stream_codex_count(3)),
+        );
+        let new = file.read(Some(old));
+        assert_eq!(entry_total(&new), 465);
+        let alpha: i64 = new
+            .days
+            .values()
+            .filter_map(|m| m.get("alpha"))
+            .map(TokenTally::total)
+            .sum();
+        let beta: i64 = new
+            .days
+            .values()
+            .filter_map(|m| m.get("beta"))
+            .map(TokenTally::total)
+            .sum();
+        assert_eq!((alpha, beta), (310, 155));
+        assert_eq!(new.title.as_deref(), Some("Fixture session"));
+        assert_eq!(new.cwd.as_deref(), Some("C:/fixture"));
+        assert!(new.codex.is_some());
+    }
+
+    #[test]
+    fn changed_prefix_and_truncation_rebuild_instead_of_reusing_old_totals() {
+        let file = TranscriptFixture::new(&(codex_header("alpha") + &stream_codex_count(1)));
+        let old = file.read(None);
+        std::fs::write(
+            &file.0,
+            codex_header("beta") + &stream_codex_count(3) + &stream_codex_count(4),
+        )
+        .unwrap();
+        let changed = file.read(Some(old));
+        assert_eq!(entry_total(&changed), 620);
+        assert!(changed.days.values().all(|m| !m.contains_key("alpha")));
+        std::fs::write(&file.0, codex_header("gamma") + &stream_codex_count(1)).unwrap();
+        assert_eq!(entry_total(&file.read(Some(changed))), 155);
+    }
+
+    #[test]
+    fn an_unfinished_last_line_is_rebuilt_when_the_next_append_completes_it() {
+        let second = stream_codex_count(2);
+        let split = second.len() / 2;
+        let file = TranscriptFixture::new(
+            &(codex_header("alpha") + &stream_codex_count(1) + &second[..split]),
+        );
+        let old = file.read(None);
+        assert_eq!(entry_total(&old), 155);
+        assert!(old.codex.is_none());
+        file.append(&second[split..]);
+        let complete = file.read(Some(old));
+        assert_eq!(entry_total(&complete), 310);
+        assert!(complete.codex.is_some());
+    }
+
+    #[test]
+    fn a_valid_last_line_without_newline_is_counted_once_after_it_is_terminated() {
+        let file =
+            TranscriptFixture::new(&(codex_header("alpha") + stream_codex_count(1).trim_end()));
+        let old = file.read(None);
+        assert_eq!(entry_total(&old), 155);
+        assert!(old.codex.is_none());
+        file.append(&("\n".to_owned() + &stream_codex_count(2)));
+        assert_eq!(entry_total(&file.read(Some(old))), 310);
+    }
+
+    #[test]
+    fn caches_without_a_resume_checkpoint_remain_compatible() {
+        let file = TranscriptFixture::new(&(codex_header("alpha") + &stream_codex_count(1)));
+        let old = file.read(None);
+        let mut value = serde_json::to_value(old).unwrap();
+        value.as_object_mut().unwrap().remove("codex");
+        let old = serde_json::from_value(value).unwrap();
+        file.append(&stream_codex_count(2));
+        assert_eq!(entry_total(&file.read(Some(old))), 310);
+    }
+
+    #[test]
+    fn a_live_append_keeps_the_bounded_old_snapshot_and_is_counted_on_the_next_scan() {
+        let file = TranscriptFixture::new(&(codex_header("alpha") + &stream_codex_count(1)));
+        let stamp = Stamp::of(&file.0).unwrap();
+        file.append(&stream_codex_count(2));
+        let old = read_entry(&file.0, Provider::Codex, stamp, None).unwrap();
+        assert_eq!(entry_total(&old), 155);
+        assert_eq!(entry_total(&file.read(Some(old))), 310);
+    }
+
+    #[test]
+    fn streaming_claude_preserves_duplicates_titles_and_rejects_partial_read_errors() {
+        let text = concat!(
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-10-03T01:00:00Z\",\"message\":{\"id\":\"one\",\"model\":\"alpha\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-10-03T01:00:00Z\",\"message\":{\"id\":\"one\",\"model\":\"alpha\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}}\n",
+            "{\"customTitle\":\"Renamed session\"}\n"
+        );
+        let file = TranscriptFixture::new(text);
+        let entry = read_entry(
+            &file.0,
+            Provider::ClaudeCode,
+            Stamp::of(&file.0).unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(entry_total(&entry), 150);
+        assert_eq!(entry.title.as_deref(), Some("Renamed session"));
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file.0)
+            .unwrap()
+            .write_all(b"\xff\n")
+            .unwrap();
+        assert!(read_entry(
+            &file.0,
+            Provider::ClaudeCode,
+            Stamp::of(&file.0).unwrap(),
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn codex_parser_stops_between_records_when_cancelled() {
+        let control = std::sync::Arc::new(crate::scan::Control::default());
+        let stop = control.clone();
+        let read = std::cell::Cell::new(0);
+        let result = crate::scan::run(
+            control,
+            1,
+            |_| {},
+            || {
+                parse_codex(std::iter::from_fn(|| {
+                    let count = read.get() + 1;
+                    read.set(count);
+                    if count == 2 {
+                        stop.cancel();
+                    }
+                    assert!(count <= 2, "continued pulling records after cancellation");
+                    Some("{}".to_owned())
+                }))
+            },
+        );
+        assert!(matches!(result, Err(crate::scan::Cancelled)));
+        assert_eq!(read.get(), 2);
+    }
+
+    #[test]
+    fn expired_ledgers_are_evicted_so_new_scans_get_a_fresh_lifetime() {
+        let now = Instant::now();
+        let mut cache = Some((
+            now - LIFETIME,
+            HashMap::from([("codex".into(), UsageLedger::empty())]),
+        ));
+        expire_memory(&mut cache, now, true);
+        assert!(cache.is_none());
+        let entry = cache.get_or_insert_with(|| (now, HashMap::new()));
+        entry.1.insert("codex".into(), UsageLedger::empty());
+        expire_memory(&mut cache, now + Duration::from_secs(1), true);
+        assert!(cache.as_ref().unwrap().1.contains_key("codex"));
+        expire_memory(&mut cache, now + Duration::from_secs(2), false);
+        assert!(cache.is_none());
+    }
 
     fn price(input: f64, output: f64, cache_read: Option<f64>) -> ModelPrice {
         ModelPrice {

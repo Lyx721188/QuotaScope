@@ -39,4 +39,5 @@
 `-SkipBuild` 仅适用于刚完成当前源码的 release 构建；版本号核对不能判断同版本二进制
 是否包含最近改动。安装器源码为 `windows/installer/QuotaScope.iss`。
 
-此命令生成本地产物。现有 GitHub Actions 发布流程仍上传 ZIP。
+此命令生成本地产物。`windows-v*` 标签的 GitHub Actions 同时生成安装包和免安装 ZIP，
+执行打包后的设置窗口生命周期回归，并发布两种包及各自的 SHA-256 文件。

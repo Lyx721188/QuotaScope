@@ -23,6 +23,10 @@ pub struct AppSettings {
     pub ring_tints: HashMap<String, String>,
     /// Seconds; 0 is the adaptive default.
     pub refresh_interval: i64,
+    /// Opt-in daily Windows release checks. Installation is always manual.
+    pub checks_for_updates: bool,
+    pub skipped_update_version: Option<String>,
+    pub last_update_check_at: Option<i64>,
     /// small | standard | large
     pub panel_size: String,
     /// compact | standard | roomy
@@ -48,6 +52,8 @@ pub struct AppSettings {
     /// Off by default, as upstream's `readsTokenSpend` is: reading the CLIs'
     /// transcripts is an act worth consenting to.
     pub reads_token_spend: bool,
+    /// Budget for rebuildable disk statistics; 0 disables persistence.
+    pub statistics_cache_limit_mb: u32,
     pub spend_span: crate::spend::Span,
     /// Collapse to the 6pt sliver while docked and unhovered.
     pub auto_collapse: bool,
@@ -100,6 +106,9 @@ impl Default for AppSettings {
             pinned_windows: HashMap::new(),
             ring_tints: HashMap::new(),
             refresh_interval: 0,
+            checks_for_updates: false,
+            skipped_update_version: None,
+            last_update_check_at: None,
             panel_size: "standard".into(),
             rail_spacing: "standard".into(),
             side_rail_shows_percentages: true,
@@ -115,6 +124,7 @@ impl Default for AppSettings {
             warning_threshold: 75,
             hides_tray_icon: false,
             reads_token_spend: false,
+            statistics_cache_limit_mb: 64,
             spend_span: crate::spend::Span::default(),
             auto_collapse: true,
             follows_active_display: false,

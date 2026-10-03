@@ -55,29 +55,42 @@ impl Snapshot {
         if !crate::settings::with(|s| s.reads_token_spend) {
             return Self::default();
         }
-        let mut sources: Vec<Source> = [Provider::ClaudeCode, Provider::Codex]
-            .into_iter()
-            .map(|p| {
-                let path = crate::ledger::transcript_root(p);
-                Source {
-                    id: p.raw().into(),
-                    title: p.display_name().into(),
-                    location: path
-                        .as_ref()
-                        .map(|v| v.display().to_string())
-                        .unwrap_or_default(),
-                    present: path.as_ref().is_some_and(|v| v.is_dir()),
-                    ledger: crate::ledger::ledger(p),
+        macro_rules! read_source {
+            ($name:expr, $read:expr) => {{
+                if !crate::scan::checkpoint() {
+                    return Self::default();
                 }
-            })
-            .collect();
+                crate::scan::source_started($name);
+                let ledger = $read;
+                if !crate::scan::checkpoint() {
+                    return Self::default();
+                }
+                crate::scan::source_finished();
+                ledger
+            }};
+        }
+        let mut sources = Vec::new();
+        for p in [Provider::ClaudeCode, Provider::Codex] {
+            let path = crate::ledger::transcript_root(p);
+            let ledger = read_source!(p.display_name(), crate::ledger::ledger(p));
+            sources.push(Source {
+                id: p.raw().into(),
+                title: p.display_name().into(),
+                location: path
+                    .as_ref()
+                    .map(|v| v.display().to_string())
+                    .unwrap_or_default(),
+                present: path.as_ref().is_some_and(|v| v.is_dir()),
+                ledger,
+            });
+        }
         let path = crate::ledger::qwen_root();
         sources.push(Source {
             id: "qwen".into(),
             title: "Qwen Code".into(),
             location: path.display().to_string(),
             present: path.is_dir(),
-            ledger: crate::ledger::qwen_ledger(),
+            ledger: read_source!("Qwen Code", crate::ledger::qwen_ledger()),
         });
         let path = crate::model::home_path(".gemini/tmp");
         sources.push(Source {
@@ -85,7 +98,7 @@ impl Snapshot {
             title: "Gemini CLI".into(),
             location: path.display().to_string(),
             present: path.is_dir(),
-            ledger: crate::ledger::gemini_ledger(),
+            ledger: read_source!("Gemini CLI", crate::ledger::gemini_ledger()),
         });
         for client in [crate::ledger::PiClient::Pi, crate::ledger::PiClient::Omp] {
             let path = client.root();
@@ -101,7 +114,14 @@ impl Snapshot {
                 .into(),
                 location: path.display().to_string(),
                 present: path.is_dir(),
-                ledger: crate::ledger::pi_ledger(client),
+                ledger: read_source!(
+                    if client == crate::ledger::PiClient::Pi {
+                        "Pi"
+                    } else {
+                        "Oh My Pi"
+                    },
+                    crate::ledger::pi_ledger(client)
+                ),
             });
         }
         sources.push(Source {
@@ -116,7 +136,10 @@ impl Snapshot {
                 .root()
                 .iter()
                 .any(|path| path.is_dir()),
-            ledger: crate::ledger::pi_ledger(crate::ledger::PiClient::Senpi),
+            ledger: read_source!(
+                "OmO Native",
+                crate::ledger::pi_ledger(crate::ledger::PiClient::Senpi)
+            ),
         });
         sources.push(Source {
             id: "kimchi".into(),
@@ -130,7 +153,10 @@ impl Snapshot {
                 .root()
                 .iter()
                 .any(|path| path.is_dir()),
-            ledger: crate::ledger::pi_ledger(crate::ledger::PiClient::Kimchi),
+            ledger: read_source!(
+                "Kimchi",
+                crate::ledger::pi_ledger(crate::ledger::PiClient::Kimchi)
+            ),
         });
         for agent in [
             crate::ledger::GenericAgent::Amp,
@@ -146,7 +172,14 @@ impl Snapshot {
                 .into(),
                 location: path.display().to_string(),
                 present: path.is_dir(),
-                ledger: crate::ledger::generic_agent_ledger(agent),
+                ledger: read_source!(
+                    if agent == crate::ledger::GenericAgent::Amp {
+                        "Amp"
+                    } else {
+                        "Droid"
+                    },
+                    crate::ledger::generic_agent_ledger(agent)
+                ),
             });
         }
         let path = crate::model::home_path(".prime/agent");
@@ -155,7 +188,7 @@ impl Snapshot {
             title: "Prime Agent".into(),
             location: path.display().to_string(),
             present: path.is_dir(),
-            ledger: crate::ledger::prime_agent_ledger(),
+            ledger: read_source!("Prime Agent", crate::ledger::prime_agent_ledger()),
         });
         let path = crate::model::home_path(".openclaw/agents");
         sources.push(Source {
@@ -163,52 +196,62 @@ impl Snapshot {
             title: "OpenClaw".into(),
             location: path.display().to_string(),
             present: path.is_dir(),
-            ledger: crate::ledger::openclaw_ledger(),
+            ledger: read_source!("OpenClaw", crate::ledger::openclaw_ledger()),
         });
-        for (id, title, root, ledger) in [
-            ("mux", "Mux", ".mux/sessions", crate::ledger::mux_ledger()),
+        for (id, title, root, read) in [
+            (
+                "mux",
+                "Mux",
+                ".mux/sessions",
+                crate::ledger::mux_ledger as fn() -> UsageLedger,
+            ),
             (
                 "junie",
                 "Junie",
                 ".junie/sessions",
-                crate::ledger::junie_ledger(),
+                crate::ledger::junie_ledger as fn() -> UsageLedger,
             ),
             (
                 "augment",
                 "Augment",
                 ".augment/sessions",
-                crate::ledger::augment_ledger(),
+                crate::ledger::augment_ledger as fn() -> UsageLedger,
             ),
             (
                 "jcode",
                 "JCode",
                 ".jcode/sessions",
-                crate::ledger::jcode_ledger(),
+                crate::ledger::jcode_ledger as fn() -> UsageLedger,
             ),
             (
                 "gjc",
                 "Gajae Code",
                 ".gjc/agent/sessions",
-                crate::ledger::gjc_ledger(),
+                crate::ledger::gjc_ledger as fn() -> UsageLedger,
             ),
             (
                 "codebuff",
                 "Codebuff",
                 ".config/manicode",
-                crate::ledger::codebuff_ledger(),
+                crate::ledger::codebuff_ledger as fn() -> UsageLedger,
             ),
-            ("fx", "FX", ".fx/sessions", crate::ledger::fx_ledger()),
+            (
+                "fx",
+                "FX",
+                ".fx/sessions",
+                crate::ledger::fx_ledger as fn() -> UsageLedger,
+            ),
             (
                 "reasonix",
                 "Reasonix",
                 ".reasonix/stats",
-                crate::ledger::reasonix_ledger(),
+                crate::ledger::reasonix_ledger as fn() -> UsageLedger,
             ),
             (
                 "lmstudio",
                 "LM Studio",
                 ".lmstudio/server-logs",
-                crate::ledger::lmstudio_ledger(),
+                crate::ledger::lmstudio_ledger as fn() -> UsageLedger,
             ),
         ] {
             let path = crate::model::home_path(root);
@@ -217,10 +260,23 @@ impl Snapshot {
                 title: title.into(),
                 location: path.display().to_string(),
                 present: path.is_dir(),
-                ledger,
+                ledger: read_source!(title, read()),
             });
         }
         Self { sources }
+    }
+
+    pub fn read_controlled(
+        control: std::sync::Arc<crate::scan::Control>,
+        refresh: bool,
+        progress: impl Fn(crate::scan::Progress) + 'static,
+    ) -> Result<Self, crate::scan::Cancelled> {
+        crate::scan::run(control, 21, progress, || {
+            if refresh {
+                crate::ledger::invalidate_memory();
+            }
+            Self::read_native()
+        })
     }
 
     pub fn analyze(
