@@ -21,7 +21,9 @@ N2c-2 的有界缓存、账户历史与余额 fallback 已完成定向验证，�
 N2d 本地已验证：异步官网导入/清除、主/附加账户隔离、真实 Windows DPAPI 和合成 HTTP/WinUI；
 679 passed / 6 ignored、fmt/普通 Clippy/Release 通过，完整 Debug 独立安装/托盘/卸载通过，Release 包构建成功。
 手动刷新绕过官网历史缓存，余额每次取得本账户当前加密 token，避免续期后继续使用旧 KeyRing 会话。
-当前唯一下一项为 N3a Codex 本地异常线索的纯解析与误报回归；真实账户与 Release 桌面未验证，没有发布或升级安装版。
+N3a 本地纯解析已通过 9 项合成测试和普通 core Clippy；只比较 task_started 时已生效的用户设置，
+旧版本、无可比较 applied 记录、helpers/reviewer、fork 回放和未知 effort 保守处理。
+当前唯一下一项为 N3b 有界文件缓存与后台读取，之后接 N3c 中文 UI；真实账户与 Release 桌面未验证，没有发布或升级安装版。
 
 基线：Windows 1.2.4 `d9a1644`；Pulse `b396306`（1.7.0 发布后的 main）。
 本轮要求：除第一项 Claude 跨文件回复去重外，其余尝试实现。

@@ -14,6 +14,12 @@ qunqin24, Copyright (c) 2026 qunqin24, under Apache License 2.0:
 and `Tests/PulseTests/DeepSeekConsoleTests.swift` at the same fixed commit above.
 The Windows implementation uses its own DPAPI storage, bounded cache and tests.
 
+The passive Codex rollout signal parser is adapted from Pulse's
+`Sources/Pulse/Usage/CodexSignals.swift` and `Tests/PulseTests/CodexSignalsTests.swift`
+at that fixed commit, Copyright (c) 2026 qunqin24, Apache License 2.0.
+Windows adds conservative comparison and missing-data rules and stores daily
+response counts instead of transcript text.
+
 QuotaScope uses **HarmonyOS Sans SC**, Copyright 2021 Huawei Device Co., Ltd.
 Unmodified Regular, Medium and Bold font files are bundled in `Fonts/` beside
 the Windows executable. They are loaded privately by the application; no system
