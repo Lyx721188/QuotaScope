@@ -25,8 +25,12 @@ N3a 本地纯解析已通过 9 项合成测试和普通 core Clippy；只比较 
 旧版本、无可比较 applied 记录、helpers/reviewer、fork 回放和未知 effort 保守处理。
 N3b 已通过 15 项 parser/reader 与 2 项 worker 状态测试；内存 facts 按路径/size/精确 mtime/算法版本复用，
 最多 1,024 文件、8 MiB 保守记账预算，聚合最多 1,024 模型，超出时标记部分记录。
-单个 worker 可取消，关闭/离页释放 reader 并拒绝旧结果；后台入口尚未连接 UI。
-当前唯一下一项为 N3c 中文 UI 与隔离窗口验收；真实账户与 Release 桌面未验证，没有发布或升级安装版。
+单个 worker 可取消，关闭/离页释放 reader 并拒绝旧结果。
+N3c 已接入 Codex 主账户展开页：中文自然日时段、刷新/取消、规则版本、样本分母、不可判断与记录缺口，
+把记录参数差异和格点启发式分开。696 passed / 6 ignored、fmt/普通 Clippy/Debug/Release 与隔离 UI 通过；
+完整 Debug 独立安装/托盘/卸载通过，Release 包仅构建。本机 30/90 天只读 facts smoke 完成，未判断服务端模型。
+配置见 [Windows Codex 本地线索](providers/windows-codex-signals.md)。
+当前唯一下一项为 N4a DSH 实际 Zstandard；真实账户与 Release 桌面未验证，没有发布或升级安装版。
 
 基线：Windows 1.2.4 `d9a1644`；Pulse `b396306`（1.7.0 发布后的 main）。
 本轮要求：除第一项 Claude 跨文件回复去重外，其余尝试实现。

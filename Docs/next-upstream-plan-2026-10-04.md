@@ -1,9 +1,9 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1/N2 与 N3a/N3b 定向验证通过，N3c 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1/N2/N3 本地已验证，N4a 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N3c：Codex 本地异常线索的中文 UI 与隔离窗口验收**。N3a/N3b 的 15 项 parser/reader 与 2 项 worker 状态测试通过；后台入口已实现，尚未挂到 UI。N2 的设置、DPAPI、合成 HTTP/WinUI 与完整工作区检查已通过。真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
+当前唯一下一项是 **N4a：DSH 实际 Zstandard 流式解压**。N3 的 696 项工作区测试、fmt/普通 Clippy、Debug/Release 与中文隔离 UI 已通过；完整 Debug 独立安装/托盘/卸载通过，Release 包仅构建。本机 Codex facts 有只读聚合 smoke，但没有据此判断服务端模型。真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
 
 执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
@@ -308,7 +308,8 @@ before / after 性能样本、构建 profile 与程序哈希：
 | N2d 设置与验收 | 本地已验证，真实账户未验证 | 独立 WinUI/浏览器 fixture/DPAPI 通过；679 passed / 6 ignored，fmt/Clippy/Release 通过；完整 Debug 安装生命周期/卸载通过，Release 包仅构建 |
 | N3a 纯解析 | 本地定向已验证 | 9 项合成误报/边界测试与普通 core Clippy 通过；没有文件扫描、后台或 UI 接线 |
 | N3b 缓存与后台 | 定向已验证，UI 未接入 | 15 项 parser/reader、2 项 worker 状态测试；单个 worker、关闭/离页失效、文件与模型容量上限 |
-| N3c / N4 | 待实现，N3c 当前下一项 | 中文 UI 与隔离取消/切时段/关闭重开，再进入有样本的原生来源；不以 fixture 成功替代实际客户端验收 |
+| N3c 中文 UI 与验收 | 本地已验证 | 696 passed / 6 ignored、fmt/Clippy/Debug/Release；中文隔离切时段/取消/关闭重开、Debug 独立安装生命周期与卸载通过；Release 包仅构建 |
+| N4a / N4b | 待实现，N4a 当前下一项 | 真正的 DSH 压缩及真实样本独立复算，再进入有样本的原生来源 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
 
@@ -381,3 +382,13 @@ N3b：新增 codex_signal_reader.rs 与 Windows codex_signal_state.rs。只流�
 时段采用本地自然日 30/90/全部，切换复用 facts；同一个串行 worker 更新最新 query，旧 generation 的完成结果拒收。手动刷新替换 reader、保留已有完整快照直到新结果；取消保留已有完整结果；关闭/离页释放 query/result/reader，重开等待旧 worker 退出。后台入口已实现但未挂 UI，不能宣称真实窗口验证。新增初始 null usage 回归：没有已完成用量的 context 消息既不是零样本，也不额外制造记录缺失。
 
 n3b-reader-tests-final.log：15 passed（10 parser + 5 reader），覆盖自然日/扩大范围复用、追加/改写/删除、同大小精确时间戳、损坏修复、容量和中途取消后重读；n3b-worker-tests.log：2 passed，验证时段复用/刷新替换/旧结果拒收和关闭/取消状态。当前 N2 程序与包不包含此批；唯一下一项 N3c 将挂入 Codex 展开卡片，提供中文时段、手动刷新与取消、样本分母和不可判断状态，然后完成整仓与隔离 Windows 验收。
+
+N3c：Codex 主账户展开页接入中文本地线索，包括 30/90/全部自然日、手动刷新与取消、算法标识、格点计数/分母/样本不足/部分记录、可比较与未知会话及最近八个参数差异。记录不完整时不提供格点集中分类。可比较轮次没差异也不证明未知轮次一致。收起、搜索隐藏、离页、关窗及关闭本地读取都会释放该页面的 reader/result；信号区域使用独立稳定 key，避免其他详情完成时重建控件。提供 Docs/providers/windows-codex-signals.md 与聚合数字专用 codex-signals-read example。
+
+N3 当前检查：n3c-workspace-tests.log 为 696 passed / 6 ignored；最后 UI/规则标识改动经 n3c-win-tests-current.log（20 passed）、fmt、普通 Clippy、Debug/Release 构建和最新隔离 UI 重跑，均 exit 0。Clippy 仍为既有 core 31/39、Windows 83/84 告警。UI 初轮通过，随后发现详情切换时的 UIA 空 selector/关闭后过期 root；稳定 key 与等待/重取 root 已修正，保留失败日志，不把失败轮当成功。最新版 n3c-ui-current.log / n3c-ui-result.json：30/90/all、20 回复 6/20、少样本 3/3、参数差异、手动更新 21、40 万行取消保留完整结果、离页/关闭重开均通过，取消提示 98 ms 为观察值。
+
+只读本机 n3c-local-read.log：30 天读取 122 文件、122 会话、52 个含可比较设置，4,700 正推理回复、750 分母、330 格点，partial=false；扩大 90 天复用 122 文件并新读 68，190 会话、82 个可比较、6,648 正推理回复、1,105 分母、378 格点，partial=true。日志仅聚合数字，没有对话、文件路径、凭据或模型名；这是实际格式读取 smoke，尚未独立逐条复算，不据此推断服务端实际模型。
+
+冻结 N3 Debug SHA-256 3E4806BB23DB4928D65C02EB139AC60EBECACEE04E982FF9137559B545D0D0EE；Release 656D78175E54A1467E11D2A8DC3A7BB992D50C249320BCED13B3095FD331ACCF。完整 n3-debug-payload 的独立安装/托盘/关闭重开/二次启动/隐藏退出/卸载全部通过，target/installer-validation-9faa78c28a2b499d9891218bb44acb23/，用户安装版保留。n3-release-installer/QuotaScope-1.3.1-windows-x64-Setup.exe SHA-256 E24EE140D47FD0C909A11646B9F3254E00318B1F90109EE91B046C12AF93AD02 仅构建，无 Release 桌面、真实账户、升级或发布验证。
+
+唯一下一项 N4a：已有本机 DSH session.jsonl.zstd 的真实 28B52FFD magic，并用 Python 3.14 compression.zstd 只读检查了三份实际文件的事件/usage 键形状。实现需同步 Cargo.lock，采用有界 streaming decoder 与 LineReader，覆盖伪扩展名、拼接帧、损坏/截断、解码量/行/窗口上限和取消。保存来源 partial，保留 assistant/message 的计数边界及 fork seed/replay 规则，再用同一份临时冻结字节做独立解码/计数核对。真实对话不能进入 Git 或日志。N3 的二进制和包不包含后续 N4。

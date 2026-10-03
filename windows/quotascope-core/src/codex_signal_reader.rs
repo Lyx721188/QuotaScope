@@ -89,8 +89,9 @@ impl Reader {
             .and_then(|days| today.checked_sub_days(Days::new(u64::from(days.saturating_sub(1)))));
         let mut report = Report::default();
         let mut files = BTreeSet::new();
+        let mut listed = 0;
         for root in roots {
-            collect(root, 0, &mut files, &mut report.partial);
+            collect(root, 0, &mut files, &mut listed, &mut report.partial);
         }
         self.kept.retain(|path, kept| {
             if files.contains(path) {
@@ -247,8 +248,14 @@ impl Reader {
     }
 }
 
-fn collect(path: &Path, depth: usize, out: &mut BTreeSet<PathBuf>, partial: &mut bool) {
-    if !crate::scan::checkpoint() || depth >= 64 || out.len() >= MAX_LISTED {
+fn collect(
+    path: &Path,
+    depth: usize,
+    out: &mut BTreeSet<PathBuf>,
+    listed: &mut usize,
+    partial: &mut bool,
+) {
+    if !crate::scan::checkpoint() || depth >= 64 || *listed >= MAX_LISTED {
         *partial = true;
         return;
     }
@@ -260,10 +267,11 @@ fn collect(path: &Path, depth: usize, out: &mut BTreeSet<PathBuf>, partial: &mut
         }
     };
     for entry in entries {
-        if !crate::scan::checkpoint() || out.len() >= MAX_LISTED {
+        if !crate::scan::checkpoint() || *listed >= MAX_LISTED {
             *partial = true;
             break;
         }
+        *listed += 1;
         let Ok(entry) = entry else {
             *partial = true;
             continue;
@@ -276,7 +284,7 @@ fn collect(path: &Path, depth: usize, out: &mut BTreeSet<PathBuf>, partial: &mut
             continue;
         }
         if kind.is_dir() {
-            collect(&entry.path(), depth + 1, out, partial);
+            collect(&entry.path(), depth + 1, out, listed, partial);
         } else if kind.is_file()
             && entry
                 .file_name()

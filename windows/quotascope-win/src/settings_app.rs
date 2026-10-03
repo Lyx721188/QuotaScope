@@ -1073,6 +1073,9 @@ enum Message {
     ToggleEnabled(usize, bool),
     ExpandAccount(usize),
     RefreshAccountDetails(usize),
+    SignalPeriod(Option<usize>),
+    SignalRefresh,
+    SignalCancel,
     ToggleExtension(usize, bool),
     RescanExtensions,
     Choice(ChoiceKey, Option<usize>),
@@ -1320,6 +1323,11 @@ impl Component for SettingsApp {
                 if !self.expanded_accounts.insert(index) {
                     self.expanded_accounts.remove(&index);
                     self.revealed_keys.remove(&index);
+                    if all_providers().get(index) == Some(&Provider::Codex) {
+                        let mut state = self.shared.snapshot.lock().unwrap();
+                        state.codex_signals.release();
+                        state.generation = state.generation.wrapping_add(1);
+                    }
                 } else if let Some(provider) = all_providers().get(index) {
                     self.shared.request_account_details(*provider);
                 }
@@ -1329,9 +1337,51 @@ impl Component for SettingsApp {
                     self.shared.request_account_details(*provider);
                 }
             }
+            Message::SignalPeriod(Some(index)) => {
+                self.shared.request_codex_signals(
+                    Self::signal_query(
+                        [Some(30), Some(90), None]
+                            .get(index)
+                            .copied()
+                            .unwrap_or(Some(30)),
+                    ),
+                    false,
+                );
+            }
+            Message::SignalPeriod(None) => {}
+            Message::SignalRefresh => {
+                let days = self
+                    .shared
+                    .snapshot
+                    .lock()
+                    .unwrap()
+                    .codex_signals
+                    .query
+                    .as_ref()
+                    .map(|query| query.days)
+                    .unwrap_or(Some(30));
+                self.shared
+                    .request_codex_signals(Self::signal_query(days), true);
+            }
+            Message::SignalCancel => {
+                let mut state = self.shared.snapshot.lock().unwrap();
+                state.codex_signals.cancel();
+                state.generation = state.generation.wrapping_add(1);
+            }
             Message::Search(text) => {
                 self.search = text;
                 self.revealed_keys.clear();
+                let query = self.search.trim().to_lowercase();
+                if !Provider::Codex
+                    .display_name()
+                    .to_lowercase()
+                    .contains(&query)
+                    && !Provider::Codex.raw().to_lowercase().contains(&query)
+                {
+                    let mut state = self.shared.snapshot.lock().unwrap();
+                    state.codex_signals.release();
+                    state.generation = state.generation.wrapping_add(1);
+                }
             }
             Message::RevealKey(index, on) => {
                 if on {
@@ -1452,6 +1502,9 @@ impl Component for SettingsApp {
             }
             Message::Toggle(key, value) => {
                 Self::apply_toggle(key, value);
+                if key == ToggleKey::TokenSpend && !value {
+                    self.shared.release_account_details();
+                }
                 if key != ToggleKey::CheckUpdates {
                     self.shared.send(SettingsAction::Changed);
                 }
@@ -3468,6 +3521,183 @@ impl SettingsApp {
                 }))
                 .into(),
             );
+        }
+        if provider == Provider::Codex {
+            rows.push(self.codex_signals_view(context));
+        }
+        let signal_index = (provider == Provider::Codex).then(|| rows.len() - 1);
+        StackPanel::new()
+            .spacing(8.0)
+            .keyed_children(rows.into_iter().enumerate().map(move |(index, view)| {
+                (
+                    if Some(index) == signal_index {
+                        "codex-signals".into()
+                    } else {
+                        index.to_string()
+                    },
+                    view,
+                )
+            }))
+    }
+
+    fn signal_query(days: Option<u32>) -> crate::codex_signal_state::Query {
+        crate::codex_signal_state::Query {
+            home: quotascope_core::home_dir(),
+            days,
+            today: chrono::Local::now().date_naive(),
+        }
+    }
+
+    fn codex_signals_view(&self, context: &ViewContext<Self>) -> View {
+        use quotascope_core::localization::{t, t_fmt};
+        let days = self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap()
+            .codex_signals
+            .query
+            .as_ref()
+            .map(|query| query.days)
+            .unwrap_or(Some(30));
+        self.shared
+            .request_codex_signals(Self::signal_query(days), false);
+        let (result, running, failed, cancelled) = {
+            let state = self.shared.snapshot.lock().unwrap();
+            let signals = &state.codex_signals;
+            (
+                signals.result.clone(),
+                signals.dirty,
+                signals.failed,
+                signals.cancelled,
+            )
+        };
+        let mut rows: Vec<View> = vec![
+            section("Local anomaly clues").into(),
+            self.muted(&t_fmt("Signal rule: {version}", &[quotascope_core::codex_signals::ALGORITHM])).into(),
+            self.muted(t("Local request records show selected parameters, not the model the server actually ran. The lattice rule is an empirical clue, not proof.")).into(),
+            self.aligned("Signal period", ComboBox::new().min_width(180.0)
+                .items_source(["Last 30 calendar days", "Last 90 calendar days", "All local records"]
+                    .into_iter().map(|key| t(key).to_string()).collect::<Vec<_>>())
+                .selected_index(match days { Some(90) => 1, None => 2, _ => 0 })
+                .on_selection_changed(context.callback(Message::SignalPeriod)).into()),
+            row((
+                Button::new().on_click(context.message(Message::SignalRefresh)).content(t("Refresh local clues")),
+                Button::new().is_enabled(running).on_click(context.message(Message::SignalCancel)).content(t("Cancel local reading")),
+            )),
+        ];
+        if running {
+            rows.push(self.muted(t("Reading local clues…")).into());
+        }
+        if failed {
+            rows.push(
+                self.muted(t("Couldn't read local clues. Refresh to try again."))
+                    .into(),
+            );
+        }
+        if cancelled {
+            rows.push(
+                self.muted(t(
+                    "Local reading cancelled; any previous complete snapshot is kept.",
+                ))
+                .into(),
+            );
+        }
+        if let Some(summary) = result {
+            let report = &summary.report;
+            rows.push(self.muted(&t_fmt("{sessions} sessions · {judged} comparable settings · {unknown} without comparable settings", &[
+                &report.sessions.to_string(), &report.judged_sessions.to_string(),
+                &report.sessions.saturating_sub(report.judged_sessions).to_string()])).into());
+            if report.partial {
+                rows.push(
+                    self.muted(t(
+                        "Records are incomplete; counts below cover the readable subset.",
+                    ))
+                    .into(),
+                );
+            }
+            rows.push(self.muted(t("Lattice denominator: positive reasoning replies with at least 516 tokens. Concentration requires 20 replies, 5 hits and a 5% share.")).into());
+            if summary.models.is_empty() {
+                rows.push(
+                    self.muted(t("No measured reasoning replies in this period."))
+                        .into(),
+                );
+            }
+            for (model, counts) in &summary.models {
+                let status = t(if report.partial {
+                    "Incomplete records"
+                } else if !counts.measurable() {
+                    "Insufficient sample"
+                } else if counts.concentrated() {
+                    "Lattice concentration"
+                } else {
+                    "No concentration in these records"
+                });
+                let share = counts
+                    .share()
+                    .map(|value| format!("{:.1}", value * 100.0))
+                    .unwrap_or_else(|| "—".into());
+                rows.push(TextBlock::new().text(t_fmt(
+                    "{model} · positive reasoning replies {responses} · lattice {hits}/{eligible} ({share}%) · {state}",
+                    &[model, &counts.responses.to_string(), &counts.hits.to_string(), &counts.reached.to_string(), &share, status]))
+                    .text_wrapping(TextWrapping::Wrap).into());
+            }
+            if summary.hidden_models > 0 {
+                rows.push(
+                    self.muted(&t_fmt(
+                        "{count} more models are outside this view.",
+                        &[&summary.hidden_models.to_string()],
+                    ))
+                    .into(),
+                );
+            }
+            rows.push(section("Recorded parameter differences").into());
+            rows.push(self.muted(t("Compared only with settings recorded before the turn started. Missing settings, old logs and unknown effort levels remain unjudged.")).into());
+            if report.changes_count == 0 {
+                rows.push(self.muted(t("No recorded differences in comparable turns; unjudged turns are not evidence of consistency.")).into());
+            }
+            for located in &report.changes {
+                use quotascope_core::codex_signals::Kind;
+                let detail = match &located.change.kind {
+                    Kind::Model { asked, recorded } => t_fmt(
+                        "Selected model {asked} → recorded model {recorded}",
+                        &[asked, recorded],
+                    ),
+                    Kind::Effort { asked, recorded } => t_fmt(
+                        "Selected effort {asked} → recorded effort {recorded}",
+                        &[asked, recorded],
+                    ),
+                    Kind::Context { previous, recorded } => t_fmt(
+                        "Recorded context window {previous} → {recorded}",
+                        &[&previous.to_string(), &recorded.to_string()],
+                    ),
+                };
+                let at = chrono::DateTime::from_timestamp_millis(located.change.at)
+                    .map(|at| {
+                        at.with_timezone(&chrono::Local)
+                            .format("%m-%d %H:%M")
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+                rows.push(
+                    TextBlock::new()
+                        .text(format!("{at} · {detail} · {}", located.session))
+                        .text_wrapping(TextWrapping::Wrap)
+                        .into(),
+                );
+            }
+            if report.changes_count > report.changes.len() {
+                rows.push(
+                    self.muted(&t_fmt(
+                        "Showing the latest {shown} of {total} recorded differences.",
+                        &[
+                            &report.changes.len().to_string(),
+                            &report.changes_count.to_string(),
+                        ],
+                    ))
+                    .into(),
+                );
+            }
         }
         StackPanel::new().spacing(8.0).keyed_children(
             rows.into_iter()
