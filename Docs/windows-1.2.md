@@ -1,8 +1,8 @@
-# QuotaScope Windows 1.2 操作与边界
+# QuotaScope Windows 操作与边界
 
-当前开发分支新增能力与未完成部分见 [上游移植状态](upstream-implementation-status.md)；尚未发布。
+Windows 1.3.0 的新增能力与未完成部分见 [上游移植状态](upstream-implementation-status.md)。
 
-本页按当前 Rust 实现编写。版本尚未发布；实现、解析测试、真实账号和交互界面验收是不同证据。
+本页按当前 Rust 实现编写；实现、解析测试、真实账号和交互界面验收是不同证据。
 完整路由清单见 [Windows provider 表](providers/windows-ports.md)。
 
 ## 托盘与设置
