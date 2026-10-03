@@ -37,6 +37,7 @@ pub mod scan;
 pub mod secrets;
 pub mod settings;
 pub mod spend;
+pub mod spend_analysis;
 pub mod spend_warmer;
 pub mod statistics_cache;
 pub mod statusline;

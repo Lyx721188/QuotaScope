@@ -3,7 +3,8 @@ param(
   [Parameter(Mandatory=$true)][string]$Executable,
   [Parameter(Mandatory=$true)][ValidateSet('before','after')][string]$Label,
   [ValidateRange(1,2000000)][int]$Records=400000,
-  [switch]$VerifyUnchangedCache
+  [switch]$VerifyUnchangedCache,
+  [switch]$VerifyFilters
 )
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -68,7 +69,10 @@ function Wait-Complete([string]$phase,[int]$expected,[Diagnostics.Stopwatch]$wat
     Start-Sleep -Milliseconds 20
   }
   $watch.Stop()
-  if(-not $complete){ throw "Expected $expected tokens after $phase" }
+  if(-not $complete){
+    $nodes|ForEach-Object{[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName;Enabled=$_.Current.IsEnabled}}|ConvertTo-Json -Depth 3|Set-Content -LiteralPath ('target/stream-'+$Label+'-failure.json') -Encoding utf8
+    throw "Expected $expected tokens after $phase"
+  }
   $cache=Get-Content -LiteralPath (Join-Path $data 'ledger-4-codex.json') -Raw | ConvertFrom-Json
   [long]$cachedTokens=0
   foreach($entry in $cache.files.PSObject.Properties){
@@ -97,6 +101,43 @@ function Wait-Window {
     $script:window=$root.FindAll([Windows.Automation.TreeScope]::Children,$condition)|Where-Object{$_.Current.Name -like 'QuotaScope *'}|Select-Object -First 1
   } until($window -or [DateTime]::UtcNow -gt $until)
   if(-not $window){throw 'Settings unavailable'}
+}
+function Select-Filter([int]$index,[string]$value) {
+  # A preceding selection can replace the keyed fragment between two UIA
+  # reads. Wait for the new controls rather than using detached nodes.
+  $until=[DateTime]::UtcNow.AddSeconds(5)
+  do {
+    $combos=@(Nodes|Where-Object{$_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox})
+    if($combos.Count -ne 6){Start-Sleep -Milliseconds 100}
+  } until($combos.Count -eq 6 -or [DateTime]::UtcNow -gt $until)
+  if($combos.Count -ne 6){throw "Expected six statistics filters, found $($combos.Count)"}
+  $combo=$combos[$index]
+  $expand=$combo.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern)
+  $expand.Expand()
+  $until=[DateTime]::UtcNow.AddSeconds(5)
+  do {
+    $items=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$testApp.Id))
+    $item=$items|Where-Object{$_.Current.Name -eq $value -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::ListItem}|Select-Object -First 1
+    if(-not $item){Start-Sleep -Milliseconds 50}
+  } until($item -or [DateTime]::UtcNow -gt $until)
+  if(-not $item){throw "Filter option unavailable: $value"}
+  $item.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+}
+function Wait-FilteredTotal([int]$expected) {
+  $until=[DateTime]::UtcNow.AddSeconds(15)
+  do {
+    Start-Sleep -Milliseconds 100
+    $nodes=@(Nodes)
+    $names=@($nodes|ForEach-Object{$_.Current.Name})
+    $label=$nodes|Where-Object{$_.Current.Name -eq 'Token 总量' -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::Text}|Select-Object -First 1
+    $totalMatches=$false
+    if($label){
+      $parent=([Windows.Automation.TreeWalker]::ControlViewWalker).GetParent($label)
+      $siblings=$parent.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.Condition]::TrueCondition)
+      $totalMatches=@($siblings|Where-Object{$_.Current.Name -eq $expected.ToString()}).Count -gt 0
+    }
+  } until(($totalMatches -and '正在计算 Token 统计…' -notin $names) -or [DateTime]::UtcNow -gt $until)
+  if(-not $totalMatches){throw "Filtered total did not become $expected"}
 }
 try {
   Wait-Window
@@ -136,6 +177,40 @@ try {
   $watch=[Diagnostics.Stopwatch]::StartNew()
   (Refresh-Button).GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
   $append=Wait-Complete 'append' 450 $watch $appendBaseline
+  $filtersVerified=$false
+  if($VerifyFilters){
+    $cachePath=Join-Path $data 'ledger-4-codex.json'
+    $cacheStamp=(Get-Item -LiteralPath $cachePath).LastWriteTimeUtc.Ticks
+    $cacheHash=(Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash
+    # Change the underlying file without refreshing. Every filter must keep
+    # the held 450-token snapshot; the next explicit process read sees 600.
+    [IO.File]::AppendAllText($session,(Counter 4)+"`n",[Text.UTF8Encoding]::new($false))
+    Select-Filter 2 'fixture-model'
+    Wait-FilteredTotal 300
+    Select-Filter 2 'fixture-beta'
+    Wait-FilteredTotal 150
+    Select-Filter 2 'fixture-model'
+    Select-Filter 2 'fixture-beta'
+    Wait-FilteredTotal 150
+    Select-Filter 2 '全部模型'
+    Wait-FilteredTotal 450
+    Select-Filter 1 'Claude Code'
+    Wait-FilteredTotal 0
+    Select-Filter 1 'Codex'
+    Wait-FilteredTotal 450
+    Select-Filter 1 '全部工具'
+    Wait-FilteredTotal 450
+    Select-Filter 3 '模型'
+    Wait-FilteredTotal 450
+    Select-Filter 4 '名称 / 日期'
+    Wait-FilteredTotal 450
+    Select-Filter 5 '升序'
+    Wait-FilteredTotal 450
+    Select-Filter 0 '今日'
+    Wait-FilteredTotal 450
+    if((Get-Item -LiteralPath $cachePath).LastWriteTimeUtc.Ticks -ne $cacheStamp -or (Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash -ne $cacheHash){throw 'Filter changes rewrote the transcript cache'}
+    $filtersVerified=$true
+  }
   # Recreate the process and append again: parser state must survive on disk.
   $firstProcessId=$testApp.Id
   $testApp.Kill()
@@ -156,7 +231,7 @@ try {
   $watch=[Diagnostics.Stopwatch]::StartNew()
   (Refresh-Button).GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
   $rewrite=Wait-Complete 'rewrite' 750 $watch $rewriteBaseline
-  $result=[pscustomobject]@{Passed=$true;Label=$Label;ExecutableSHA256=(Get-FileHash -LiteralPath $info.FileName -Algorithm SHA256).Hash;FixtureBytes=$fixtureBytes;Records=$Records;Full=$full;Append=$append;Restart=$restart;RestartFromDisk=$true;UnchangedCacheVerified=$unchangedCacheVerified;ProcessIds=@($firstProcessId,$testApp.Id);Rewrite=$rewrite}
+  $result=[pscustomobject]@{Passed=$true;Label=$Label;ExecutableSHA256=(Get-FileHash -LiteralPath $info.FileName -Algorithm SHA256).Hash;FixtureBytes=$fixtureBytes;Records=$Records;Full=$full;Append=$append;Restart=$restart;RestartFromDisk=$true;UnchangedCacheVerified=$unchangedCacheVerified;FiltersVerified=$filtersVerified;ProcessIds=@($firstProcessId,$testApp.Id);Rewrite=$rewrite}
   $samples|ConvertTo-Json|Set-Content -LiteralPath ('target/stream-'+$Label+'-samples.json') -Encoding utf8
   $result|ConvertTo-Json -Depth 5|Tee-Object -FilePath ('target/stream-'+$Label+'-result.json')
 } finally {

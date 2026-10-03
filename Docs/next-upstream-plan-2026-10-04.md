@@ -1,9 +1,9 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**N0、N1a 已验证，N1b 为当前下一项**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0、N1a、N1b 已验证，N1c 为当前下一项**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N1b：聚合缓存与后台计算接线**。N0 同步、源码检查和流式 UI 基线、N1a 查价与缓存写盘优化已完成；每阶段满足退出条件后才开始下一阶段。版本号为建议，实施时再确认。
+当前唯一下一项是 **N1c：整仓回归、最终性能样本和 Windows 生命周期**。N0 同步、N1a 查价与缓存写盘、N1b 聚合后台接线已完成；每阶段满足退出条件后才开始下一阶段。版本号为建议，实施时再确认。
 
 执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
@@ -78,7 +78,7 @@ pwsh -NoProfile -File ./quotascope-win/tests/streaming_ui_benchmark.ps1 -Executa
 | `quotascope-core/src/scan.rs` 的 tests | 逐块取消、UTF-8、读取错误、线程作用域 | 新 reader/worker 应复用这套机制 |
 | `quotascope-win/src/settings_app.rs` 的 tests | 隐藏设置释放快照、取消保留完整快照 | 同时回归新聚合任务的迟到结果拒绝 |
 | `quotascope-win/tests/settings_lifecycle.rs` | 真实托盘开关、设置重开、二次启动、退出 | 需解锁桌面，默认 ignored；Debug 支持隔离单实例 |
-| `quotascope-win/tests/spend_ui_smoke.ps1` | 扫描取消、离页、关闭、重开与中文 UI | 有“来源 1/21”硬编码，须按现有来源目录修正断言或明确脚本失败原因 |
+| `quotascope-win/tests/spend_ui_smoke.ps1` | 扫描取消、离页、关闭、重开与中文 UI | 已按现有目录修正为 Codex 前完成 3 个来源、总计 54；增加来源时更新断言 |
 | `quotascope-win/tests/maintenance_ui_smoke.ps1` | 存储预算、清理和脱敏诊断 | 阅读参数和合成 profile 设置后再运行 |
 | `installer/test-installer.ps1` | 独立身份安装、生命周期、卸载 | 输入是真实完整 payload 与 Inno 编译器；隔离安装不能替代用户安装版升级验收 |
 
@@ -299,7 +299,8 @@ before / after 性能样本、构建 profile 与程序哈希：
 | N0b 流式 UI 基线 | 已验证 | 3 轮 40 万行合成记录：150/450/600/750 Token 与磁盘缓存一致；已固定 Debug before payload |
 | N1a-1 查价优化 | 本地已验证 | 单表惰性大小写索引、model/vendor 命中及未命中缓存；ledger 批量复用；10 项价格、45 项 ledger 定向测试通过，普通 Clippy exit 0 |
 | N1a-2 解析缓存写盘 | 本地及隔离 UI 已验证 | 47 项 ledger、8 项 disk-cache 定向测试与 Debug build/fmt/普通 Clippy 通过；两次原进程结束后的热读取保持缓存 mtime/哈希，追加/重启/改写仍正确 |
-| N1b / N1c | 待实现 | 按上面的任务卡依次退出 |
+| N1b 聚合后台与缓存 | 本地及隔离 UI 已验证 | 4 项聚合缓存测试、14 项 scan、16 项 Windows 单元检查、普通 Clippy；筛选使用同一快照、关闭/重开和取消 UI 通过 |
+| N1c 最终回归 | 当前下一项 | 完整 workspace 检查、三轮 after 性能、托盘生命周期、隔离 payload/安装；发布与用户安装版升级不由本地检查自动完成 |
 | N2 / N3 / N4 | 待实现 | 不使用 fixture 成功替代实际账号/客户端验收 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
@@ -309,6 +310,14 @@ N0 明细：fmt 3.87 s、Clippy 104.70 s、workspace tests 120.77 s、release 21
 N1a-1 合成 probe：`cargo run -p quotascope-core --example price-lookup-benchmark --release --locked`，1001 条价格、每类 10000 次查找，断言命中数和价率。三轮同一 Release 树的 single/indexed 中位数：别名 765050/1304 µs、未计价 780399/2519 µs、精确 ID 1426/1609 µs；索引包含构建和首次解析。该测量是查价路径对比，不是整应用 CPU、内存或实际日志扫描提速。原始旧树三轮保存为 `price-before-*.jsonl`，改后两种路径为 `price-after-*.jsonl`；定向检查日志为 `n1a1-{prices-tests,ledger-tests,clippy}.log`。
 
 N1a-2：`scan_cached` 跟踪 entry 的 stamp/新增/删除及失败移除，原始缓存未变时不调用 save；重新计价继续作用于新价格表。隔离 UI 命令为 streaming probe 的 `-Records 2000 -VerifyUnchangedCache`，结果 `n1a2-cache-ui-result.json` 的 `UnchangedCacheVerified=true`；该开关通过重新启动进程排除旧屏幕结果造成的假通过，不属于前后性能测量。完整/追加/重启/改写为 150/450/600/750 Token，SHA-256 `1A0F291B1EE4308B5839729150DA4C1FB4AB8309913618745156A3DBD9EF38D3`。单独修改了测试脚本可选参数，普通 before/after 的测量流程保持原有四阶段。
+
+N1b：新增 `spend_analysis.rs`。缓存仅持有同一 `Arc<Snapshot>` 的最多四个结果，以指针身份和完整筛选 key 判断复用，不全量 hash。仅排序变化克隆并排序 Analysis，分页继续切片；日期、范围、来源、模型、分组和新快照均按依赖隔离。模型列表、小时、日图 bins 和来源覆盖在后台计算。Settings 内只有一个串行聚合 worker，换筛选取消旧 Control 并更新 generation，完成时检查 key、原始快照、开关和窗口状态；计算在 mutex 外，隐藏清空前台结果。新快照加载时保留已选模型，防止临时下拉框重置筛选。
+
+N1b 定向结果：`n1b-core-tests-rerun.log` 17 passed（含 4 项新增缓存测试）、`n1b-scan-tests.log` 14 passed、`n1b-win-tests-final.log` 16 passed、`n1b-clippy.log` exit 0（保留原有告警）。`streaming_ui_benchmark.ps1 -Records 2000 -VerifyUnchangedCache -VerifyFilters`：150/450/600/750 与磁盘一致；模型 300/150、空来源 0、Codex 450、全部 450，分组/排序/范围均正确。测试先将文件追加至 600，筛选仍用持有的 450 快照，缓存 mtime/哈希不变，重启后才读取新增记录。结果 `n1b-filter-ui-result.json`；Debug SHA-256 `B84A46BCE348852CFAD64A8A40230D468A4B5BF487E99C2932CC064ADE239174`。
+
+同一 Debug 的 `spend_ui_smoke.ps1` 通过：40 万行中取消延迟 175 ms，不发布半成品或保存部分缓存；离页/关闭取消、同宿主重开、完整重读 150、手动刷新取消后保留旧完整结果均通过，见 `n1b-cancel-ui-result.json`。开发期间保留了失败日志：首次 Rust 构建是 summary 名称覆盖，UI 脚本曾使用错误 TreeWalker 方法、追加步骤放错阶段、旧来源进度断言和读取正在替换的控件；已修复后按最终脚本重跑，失败不算通过记录。
+
+合成聚合 probe：`cargo run --release -p quotascope-core --example spend-analysis-benchmark --locked`，16 来源 × 180 天 × 24 模型，总计 11681280 Token，30 次重复。三轮 reaggregate/exact-cache/sort-reuse 中位数 704703/4/413 µs；首次完整 Summary 中位数 37238 µs。断言总计、完整 Analysis、小时分布及复用标记。它只量化内存快照上的重复聚合路径，精确缓存路径的微秒值接近计时分辨率，不据此计算整应用提速倍数，也不是文件扫描或 UI 响应时间。原始 `n1b-analysis-{1,2,3}.log`。
 
 ## 参考证据
 

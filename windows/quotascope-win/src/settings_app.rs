@@ -21,6 +21,10 @@ use windows_reactor::SlotsControl;
 use windows_reactor::*;
 
 use quotascope_core::model::Provider;
+use quotascope_core::spend_analysis::{
+    Cache as AnalysisCache, Query as AnalysisQuery, Request as AnalysisRequest,
+    Summary as SpendSummary,
+};
 
 /// Messages the settings window sends the app. The app owns the panel, the
 /// store and the tray; the window only describes what the user asked for.
@@ -54,6 +58,7 @@ struct SettingsSnapshot {
     spend_cancelled: bool,
     spend_control: Option<Arc<quotascope_core::scan::Control>>,
     spend_progress: Option<quotascope_core::scan::Progress>,
+    spend_analysis: SpendAnalysisState,
     update: UpdateStatus,
     maintenance_running: bool,
     cache: Option<quotascope_core::statistics_cache::Inventory>,
@@ -68,6 +73,88 @@ struct AccountDetails {
     models: Vec<quotascope_core::model_details::Model>,
     cache: quotascope_core::prompt_cache::CacheReading,
     partial: bool,
+}
+
+#[derive(Default)]
+struct SpendAnalysisState {
+    request: Option<AnalysisRequest>,
+    result: Option<Arc<SpendSummary>>,
+    cache: AnalysisCache,
+    generation: u64,
+    worker_running: bool,
+    control: Option<Arc<quotascope_core::scan::Control>>,
+    failed: bool,
+    cancelled: bool,
+}
+
+impl SpendAnalysisState {
+    fn select(&mut self, request: AnalysisRequest) {
+        if self
+            .request
+            .as_ref()
+            .is_some_and(|old| old.matches(&request))
+        {
+            return;
+        }
+        if let Some(control) = &self.control {
+            control.cancel();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.result = self.cache.exact(&request);
+        self.request = Some(request);
+        self.failed = false;
+        self.cancelled = false;
+    }
+
+    fn release(&mut self) {
+        if let Some(control) = &self.control {
+            control.cancel();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.request = None;
+        self.result = None;
+        self.cache.clear();
+        self.failed = false;
+        self.cancelled = false;
+        // A reopened page waits for the cancelled worker to leave its loop.
+    }
+
+    fn cancel(&mut self) {
+        if let Some(control) = &self.control {
+            control.cancel();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.cancelled = true;
+    }
+
+    fn accepts(&self, request: &AnalysisRequest, generation: u64) -> bool {
+        self.generation == generation
+            && !self.cancelled
+            && self
+                .request
+                .as_ref()
+                .is_some_and(|current| current.matches(request))
+    }
+}
+
+enum SpendAnalysisStatus {
+    Ready(Arc<SpendSummary>),
+    Loading,
+    Failed,
+    Cancelled,
+}
+
+impl SettingsSnapshot {
+    fn set_spend(&mut self, snapshot: Arc<quotascope_core::spend::Snapshot>) {
+        if self
+            .spend
+            .as_ref()
+            .is_none_or(|old| !Arc::ptr_eq(old, &snapshot))
+        {
+            self.spend_analysis.release();
+        }
+        self.spend = Some(snapshot);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -283,6 +370,7 @@ impl Shared {
             control.cancel();
         }
         state.spend = None;
+        state.spend_analysis.release();
         state.spend_generation = state.spend_generation.wrapping_add(1);
         state.spend_loading = false;
         state.spend_failed = false;
@@ -293,7 +381,9 @@ impl Shared {
 
     fn cancel_spend(&self) {
         let mut state = self.snapshot.lock().unwrap();
-        if !state.spend_worker_running || state.spend_cancelled {
+        if (!state.spend_worker_running && !state.spend_analysis.worker_running)
+            || (state.spend_cancelled && state.spend_analysis.cancelled)
+        {
             return;
         }
         if let Some(control) = &state.spend_control {
@@ -302,6 +392,7 @@ impl Shared {
         state.spend_generation = state.spend_generation.wrapping_add(1);
         state.spend_loading = false;
         state.spend_cancelled = true;
+        state.spend_analysis.cancel();
         state.spend_failed = false;
         state.generation = state.generation.wrapping_add(1);
     }
@@ -316,7 +407,7 @@ impl Shared {
         if !refresh {
             if let Some(snapshot) = quotascope_core::spend_warmer::snapshot() {
                 let mut state = self.snapshot.lock().unwrap();
-                state.spend = Some(snapshot);
+                state.set_spend(snapshot);
                 state.spend_loading = false;
                 state.generation += 1;
                 return;
@@ -381,14 +472,107 @@ impl Shared {
             state.spend_loading = false;
             state.spend_failed = result.is_err();
             match result {
-                Ok(Ok(snapshot)) if allowed => state.spend = Some(Arc::new(snapshot)),
+                Ok(Ok(snapshot)) if allowed => state.set_spend(Arc::new(snapshot)),
                 Ok(Err(_)) => state.spend_cancelled = true,
                 _ => {}
             }
             if !allowed {
                 state.spend = None;
+                state.spend_analysis.release();
             }
         });
+    }
+
+    fn request_spend_analysis(self: &Arc<Self>, request: AnalysisRequest) -> SpendAnalysisStatus {
+        let allowed = quotascope_core::settings::with(|settings| settings.reads_token_spend);
+        let mut state = self.snapshot.lock().unwrap();
+        if !allowed
+            || !self.alive.load(Ordering::SeqCst)
+            || state
+                .spend
+                .as_ref()
+                .is_none_or(|snapshot| !Arc::ptr_eq(snapshot, &request.snapshot))
+        {
+            return SpendAnalysisStatus::Cancelled;
+        }
+        let analysis = &mut state.spend_analysis;
+        analysis.select(request);
+        if let Some(result) = &analysis.result {
+            return SpendAnalysisStatus::Ready(result.clone());
+        }
+        if analysis.failed {
+            return SpendAnalysisStatus::Failed;
+        }
+        if analysis.cancelled {
+            return SpendAnalysisStatus::Cancelled;
+        }
+        if !analysis.worker_running {
+            analysis.worker_running = true;
+            state.generation = state.generation.wrapping_add(1);
+            let shared = self.clone();
+            drop(state);
+            std::thread::spawn(move || shared.run_spend_analysis());
+        }
+        SpendAnalysisStatus::Loading
+    }
+
+    fn run_spend_analysis(self: Arc<Self>) {
+        loop {
+            let (request, generation, control, previous) = {
+                let mut state = self.snapshot.lock().unwrap();
+                let analysis = &mut state.spend_analysis;
+                if !self.alive.load(Ordering::SeqCst)
+                    || analysis.request.is_none()
+                    || analysis.result.is_some()
+                    || analysis.failed
+                    || analysis.cancelled
+                {
+                    analysis.worker_running = false;
+                    analysis.control = None;
+                    state.generation = state.generation.wrapping_add(1);
+                    return;
+                }
+                let request = analysis.request.clone().expect("checked above");
+                let previous = analysis.cache.aggregation(&request);
+                let control = Arc::new(quotascope_core::scan::Control::default());
+                analysis.control = Some(control.clone());
+                (request, analysis.generation, control, previous)
+            };
+            let result = std::panic::catch_unwind(|| {
+                SpendSummary::compute(request.clone(), control, previous)
+            });
+            let allowed = quotascope_core::settings::with(|settings| settings.reads_token_spend);
+            let mut state = self.snapshot.lock().unwrap();
+            let live = state
+                .spend
+                .as_ref()
+                .is_some_and(|snapshot| Arc::ptr_eq(snapshot, &request.snapshot));
+            let analysis = &mut state.spend_analysis;
+            analysis.control = None;
+            if analysis.accepts(&request, generation)
+                && live
+                && allowed
+                && self.alive.load(Ordering::SeqCst)
+            {
+                match result {
+                    Ok(Ok(summary)) => {
+                        let summary = Arc::new(summary);
+                        analysis.cache.insert(summary.clone());
+                        analysis.result = Some(summary);
+                    }
+                    Ok(Err(_)) => analysis.cancelled = true,
+                    Err(_) => analysis.failed = true,
+                }
+            } else if !allowed
+                || !self.alive.load(Ordering::SeqCst)
+                || (analysis.accepts(&request, generation) && !live)
+            {
+                analysis.release();
+            }
+            state.generation = state.generation.wrapping_add(1);
+            // A superseded task advances straight to the newest pending key;
+            // no second aggregation thread can overlap it.
+        }
     }
     fn generation(&self) -> u64 {
         self.snapshot.lock().unwrap().generation
@@ -1540,14 +1724,22 @@ impl SettingsApp {
         let Some(snapshot) = state.spend.as_ref() else {
             return Vec::new();
         };
-        snapshot
-            .sources
-            .iter()
-            .filter(|s| self.spend_source.as_ref().is_none_or(|id| *id == s.id))
-            .flat_map(|s| s.ledger.days.iter().flat_map(|d| d.models.keys().cloned()))
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect()
+        let mut models = state
+            .spend_analysis
+            .cache
+            .models(snapshot, self.spend_source.as_deref())
+            .unwrap_or_default()
+            .to_vec();
+        // Keep the chosen filter while a replacement snapshot is being
+        // analyzed, including a model that now has no records. Otherwise an
+        // interim one-item ComboBox can reset it to "all models".
+        if let Some(model) = &self.spend_model {
+            if !models.contains(model) {
+                models.push(model.clone());
+                models.sort();
+            }
+        }
+        models
     }
 
     fn spend_choice(
@@ -1724,7 +1916,7 @@ impl SettingsApp {
             (
                 state.spend.clone(),
                 state.spend_loading,
-                state.spend_worker_running,
+                state.spend_worker_running || state.spend_analysis.worker_running,
                 state.spend_failed,
                 state.spend_cancelled,
                 state.spend_progress.clone(),
@@ -1772,6 +1964,18 @@ impl SettingsApp {
                 .spacing(18.0)
                 .children((View::keyed_fragment(content.into_iter().enumerate()),));
         };
+        let summary = self.shared.request_spend_analysis(AnalysisRequest {
+            snapshot: snapshot.clone(),
+            query: AnalysisQuery {
+                span: settings.spend_span,
+                today: chrono::Local::now().date_naive(),
+                source: self.spend_source.clone(),
+                model: self.spend_model.clone(),
+                group: self.spend_group,
+                sort: self.spend_sort,
+                descending: self.spend_descending,
+            },
+        });
         let models = self.spend_models();
         let mut sources = vec![t("All agents").into()];
         sources.extend(snapshot.sources.iter().map(|s| s.title.clone()));
@@ -1851,17 +2055,25 @@ impl SettingsApp {
                 ]),
             ),
         );
-        let analysis = snapshot.analyze(
-            settings.spend_span,
-            chrono::Local::now().date_naive(),
-            self.spend_source.as_deref(),
-            self.spend_model.as_deref(),
-            self.spend_group,
-            self.spend_sort,
-            self.spend_descending,
-        );
+        let summary = match summary {
+            SpendAnalysisStatus::Ready(summary) => summary,
+            status => {
+                content.push(
+                    self.muted(t(match status {
+                        SpendAnalysisStatus::Loading => "Calculating token statistics…",
+                        SpendAnalysisStatus::Failed => "Unable to calculate token statistics.",
+                        _ => "Token statistics calculation cancelled.",
+                    }))
+                    .into(),
+                );
+                return StackPanel::new()
+                    .spacing(18.0)
+                    .children((View::keyed_fragment(content.into_iter().enumerate()),));
+            }
+        };
+        let analysis = &summary.analysis;
         let total = analysis.total;
-        let summary = Grid::new()
+        let summary_grid = Grid::new()
             .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
             .column_spacing(24.0)
             .children((
@@ -1904,7 +2116,7 @@ impl SettingsApp {
                     )),
                 )),
             ));
-        content.push(self.surface(summary.into()));
+        content.push(self.surface(summary_grid.into()));
         if let Some(rate) = total.cache_hit_rate() {
             content.push(
                 self.muted(&format!("{} {:.0}%", t("Cache hit rate"), rate * 100.0))
@@ -1920,12 +2132,7 @@ impl SettingsApp {
         // Up to 40 calendar bins, each retaining its actual total. No samples
         // are discarded when a long span is selected.
         if !analysis.days.is_empty() {
-            let size = analysis.days.len().div_ceil(40).max(1);
-            let bins: Vec<_> = analysis
-                .days
-                .chunks(size)
-                .map(|days| days.iter().map(|d| d.measures.tokens).sum::<i64>())
-                .collect();
+            let bins = &summary.bins;
             let max = bins.iter().copied().max().unwrap_or(1).max(1) as f64;
             content.push(
                 StackPanel::new()
@@ -1956,12 +2163,7 @@ impl SettingsApp {
                 .into(),
             );
         }
-        let hours = snapshot.hourly(
-            settings.spend_span,
-            self.spend_source.as_deref(),
-            self.spend_model.as_deref(),
-            chrono::Local::now().date_naive(),
-        );
+        let hours = &summary.hours;
         let peak = hours.iter().copied().max().unwrap_or(1).max(1) as f64;
         content.push(
             TextBlock::new()
@@ -2110,7 +2312,7 @@ impl SettingsApp {
                             s.title,
                             t(if !s.present {
                                 "Store not found"
-                            } else if s.ledger.days.iter().any(|d| d.tokens > 0) {
+                            } else if summary.coverage.get(&s.id).copied().unwrap_or(false) {
                                 if s.location.contains("UsageImports") {
                                     "Recorded tokens; native and imported coverage varies"
                                 } else {
@@ -3412,6 +3614,88 @@ impl SettingsApp {
 #[cfg(test)]
 mod tests {
     use super::positive_or_empty;
+
+    fn analysis_request() -> quotascope_core::spend_analysis::Request {
+        use quotascope_core::spend::{Group, Sort, Span};
+        quotascope_core::spend_analysis::Request {
+            snapshot: std::sync::Arc::new(Default::default()),
+            query: quotascope_core::spend_analysis::Query {
+                span: Span::Week,
+                today: chrono::NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
+                source: None,
+                model: None,
+                group: Group::Agents,
+                sort: Sort::Tokens,
+                descending: true,
+            },
+        }
+    }
+
+    #[test]
+    fn changing_filters_rejects_old_analysis_and_reuses_only_the_matching_cache() {
+        let request = analysis_request();
+        let mut state = super::SpendAnalysisState::default();
+        state.select(request.clone());
+        let old_generation = state.generation;
+        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
+        state.control = Some(control.clone());
+        let result = std::sync::Arc::new(
+            super::SpendSummary::compute(
+                request.clone(),
+                std::sync::Arc::new(Default::default()),
+                None,
+            )
+            .unwrap(),
+        );
+        state.result = Some(result.clone());
+        state.cache.insert(result.clone());
+        let mut other = request.clone();
+        other.query.source = Some("other".into());
+        state.select(other.clone());
+        assert!(control.is_cancelled());
+        assert!(state.result.is_none());
+        assert!(!state.accepts(&request, old_generation));
+        assert!(state.accepts(&other, state.generation));
+        state.select(request);
+        assert!(std::sync::Arc::ptr_eq(
+            state.result.as_ref().unwrap(),
+            &result
+        ));
+    }
+
+    #[test]
+    fn closing_and_reopening_cannot_accept_a_cancelled_analysis_completion() {
+        let request = analysis_request();
+        let mut state = super::SpendAnalysisState::default();
+        state.select(request.clone());
+        state.worker_running = true;
+        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
+        state.control = Some(control.clone());
+        let old_generation = state.generation;
+        state.release();
+        assert!(control.is_cancelled() && state.worker_running);
+        assert!(state.request.is_none() && state.result.is_none());
+        state.select(request.clone());
+        assert!(!state.accepts(&request, old_generation));
+        assert!(state.accepts(&request, state.generation));
+        let generation = state.generation;
+        state.cancel();
+        assert!(!state.accepts(&request, generation));
+    }
+
+    #[test]
+    fn replacing_the_raw_snapshot_invalidates_its_derived_result() {
+        let request = analysis_request();
+        let mut state = super::SettingsSnapshot::default();
+        state.set_spend(request.snapshot.clone());
+        state.spend_analysis.select(request.clone());
+        let generation = state.spend_analysis.generation;
+        state.set_spend(request.snapshot.clone());
+        assert!(state.spend_analysis.accepts(&request, generation));
+        state.set_spend(std::sync::Arc::new(Default::default()));
+        assert!(!state.spend_analysis.accepts(&request, generation));
+        assert!(state.spend_analysis.result.is_none());
+    }
 
     #[test]
     fn cleanup_and_budget_changes_wait_for_a_running_scan() {

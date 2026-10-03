@@ -62,7 +62,8 @@ function Wait-Progress {
     $cancel = $nodes | Where-Object { $_.Current.Name -eq '取消扫描' -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | Select-Object -First 1
   } until (($progress -and $cancel -and $cancel.Current.IsEnabled) -or [DateTime]::UtcNow -gt $until)
   if (-not $progress -or -not $cancel.Current.IsEnabled) { throw 'Scan progress or cancel button unavailable' }
-  if ($progress.Current.Name -notmatch '来源 1/21 · 已读取 \d+ 个文件') { throw ('Progress counters incorrect: ' + $progress.Current.Name) }
+  # OpenCode, Kilo CLI and Claude precede Codex in the current catalogue.
+  if ($progress.Current.Name -notmatch '来源 3/54 · 已读取 \d+ 个文件') { throw ('Progress counters incorrect: ' + $progress.Current.Name) }
   [pscustomobject]@{Progress=$progress.Current.Name; Cancel=$cancel}
 }
 try {

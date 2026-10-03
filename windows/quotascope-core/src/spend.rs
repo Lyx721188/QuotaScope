@@ -335,7 +335,13 @@ impl Snapshot {
             .iter()
             .filter(|s| agent.is_none_or(|a| a == s.id))
         {
+            if !crate::scan::checkpoint() {
+                return hours;
+            }
             for slot in &source.ledger.slots {
+                if !crate::scan::checkpoint() {
+                    return hours;
+                }
                 let Some(at) = chrono::DateTime::from_timestamp_millis(slot.start_ms)
                     .map(|t| t.with_timezone(&chrono::Local))
                 else {
@@ -371,12 +377,18 @@ impl Snapshot {
             .iter()
             .filter(|s| source.is_none_or(|id| s.id == id))
         {
+            if !crate::scan::checkpoint() {
+                return Analysis::default();
+            }
             for day in agent
                 .ledger
                 .days
                 .iter()
                 .filter(|d| span.contains(d.date, today))
             {
+                if !crate::scan::checkpoint() {
+                    return Analysis::default();
+                }
                 let mut measured = Measures::default();
                 // The source total stays authoritative, including unclassified
                 // work that cannot honestly be attributed to a model.
@@ -399,6 +411,9 @@ impl Snapshot {
                     .iter()
                     .filter(|(id, _)| model.is_none_or(|m| m == id.as_str()))
                 {
+                    if !crate::scan::checkpoint() {
+                        return Analysis::default();
+                    }
                     let tally = day.model_tallies.get(id).copied().unwrap_or_default();
                     let costs = day.model_costs.get(id).copied();
                     let values = Measures {
@@ -463,31 +478,7 @@ impl Snapshot {
                 .collect();
         }
         out.rows = rows.into_values().collect();
-        out.rows.sort_by(|a, b| {
-            let ordering = match sort {
-                Sort::Name => a.title.cmp(&b.title),
-                Sort::Tokens => a.measures.tokens.cmp(&b.measures.tokens),
-                Sort::Cost => a.measures.cost.total_cmp(&b.measures.cost),
-                Sort::Input => a.measures.tally.input.cmp(&b.measures.tally.input),
-                Sort::Output => a.measures.tally.output.cmp(&b.measures.tally.output),
-                Sort::CacheRead => a
-                    .measures
-                    .tally
-                    .cache_read
-                    .cmp(&b.measures.tally.cache_read),
-                Sort::CacheWrite => a
-                    .measures
-                    .tally
-                    .cache_write
-                    .cmp(&b.measures.tally.cache_write),
-            };
-            (if descending {
-                ordering.reverse()
-            } else {
-                ordering
-            })
-            .then(a.id.cmp(&b.id))
-        });
+        out.sort(sort, descending);
         out
     }
 }
@@ -564,6 +555,35 @@ impl Analysis {
     pub fn page(&self, index: usize, size: usize) -> &[Row] {
         let from = index.saturating_mul(size).min(self.rows.len());
         &self.rows[from..from.saturating_add(size).min(self.rows.len())]
+    }
+
+    /// Reorders a complete aggregation without revisiting its sources.
+    pub fn sort(&mut self, sort: Sort, descending: bool) {
+        self.rows.sort_by(|a, b| {
+            let ordering = match sort {
+                Sort::Name => a.title.cmp(&b.title),
+                Sort::Tokens => a.measures.tokens.cmp(&b.measures.tokens),
+                Sort::Cost => a.measures.cost.total_cmp(&b.measures.cost),
+                Sort::Input => a.measures.tally.input.cmp(&b.measures.tally.input),
+                Sort::Output => a.measures.tally.output.cmp(&b.measures.tally.output),
+                Sort::CacheRead => a
+                    .measures
+                    .tally
+                    .cache_read
+                    .cmp(&b.measures.tally.cache_read),
+                Sort::CacheWrite => a
+                    .measures
+                    .tally
+                    .cache_write
+                    .cmp(&b.measures.tally.cache_write),
+            };
+            (if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            })
+            .then(a.id.cmp(&b.id))
+        });
     }
 }
 
