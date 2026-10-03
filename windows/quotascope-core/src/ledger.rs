@@ -762,7 +762,10 @@ struct CodexCheckpoint {
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct Stamp {
     size: i64,
-    modified: f64,
+    // Integer nanoseconds survive JSON roundtrips exactly. Older caches
+    // contain only floating seconds: read them, then refresh their stamps.
+    #[serde(default)]
+    modified_ns: Option<u64>,
 }
 
 impl Stamp {
@@ -773,10 +776,10 @@ impl Stamp {
             .ok()?
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
-            .as_secs_f64();
+            .as_nanos();
         Some(Stamp {
             size: meta.len() as i64,
-            modified,
+            modified_ns: Some(modified.try_into().ok()?),
         })
     }
 }
@@ -5011,6 +5014,21 @@ mod tests {
             .flat_map(|models| models.values())
             .map(TokenTally::total)
             .sum()
+    }
+
+    #[test]
+    fn nanosecond_stamps_survive_json_and_legacy_float_stamps_require_refresh() {
+        let stamp = Stamp {
+            size: 50,
+            modified_ns: Some(1_791_051_801_000_002_100),
+        };
+        let restored: Stamp = serde_json::from_slice(&serde_json::to_vec(&stamp).unwrap()).unwrap();
+        assert_eq!(restored, stamp);
+        let legacy: Stamp =
+            serde_json::from_str(r#"{"size":50,"modified":1791051801.0000021}"#).unwrap();
+        assert_ne!(legacy, stamp);
+        assert_eq!(legacy.size, stamp.size);
+        assert_eq!(legacy.modified_ns, None);
     }
 
     #[test]
