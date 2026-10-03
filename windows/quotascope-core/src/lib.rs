@@ -21,6 +21,7 @@ pub mod gateway;
 pub mod history;
 pub mod http;
 pub mod integration;
+pub mod kiro_acp;
 pub mod ledger;
 pub mod localization;
 pub mod model;

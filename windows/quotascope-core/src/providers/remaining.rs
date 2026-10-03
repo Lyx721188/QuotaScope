@@ -6,7 +6,7 @@ use crate::model::{
     AccountKey, CreditAmount, Kind, Provider, ProviderUsage, Unavailability, UsageWindow,
 };
 use serde_json::{json, Value};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -24,7 +24,6 @@ pub const OLLAMA_SESSION: SessionSpec = SessionSpec {
     ],
 };
 pub const PROVIDERS: &[Provider] = &[
-    Provider::Kiro,
     Provider::OllamaCloud,
     Provider::GrokBot,
     Provider::Volcengine,
@@ -213,7 +212,6 @@ impl Service {
                             "--output",
                             "json",
                         ],
-                        false,
                     ) {
                         Ok(root) => {
                             let usage = parse(self.provider, &root, Some("cli"));
@@ -232,19 +230,10 @@ impl Service {
                 }
                 Ok(parse(
                     self.provider,
-                    &run_cli("arkcli", &["usage", "plan", "--format", "json"], false)?,
+                    &run_cli("arkcli", &["usage", "plan", "--format", "json"])?,
                     Some("cli"),
                 ))
             }
-            Provider::Kiro => Ok(parse(
-                self.provider,
-                &run_cli(
-                    "kiro-cli",
-                    &["acp", "--agent-engine", "v3", "--auth-method", "cli"],
-                    true,
-                )?,
-                Some("acp"),
-            )),
             Provider::OllamaCloud => self.ollama(keys),
             Provider::Windsurf => self.windsurf(keys),
             _ => Err(Unavailability::NoLimitsReported),
@@ -503,12 +492,9 @@ fn locate(name: &str) -> Option<PathBuf> {
         })
         .find(|p| p.is_file())
 }
-fn run_cli(name: &str, args: &[&str], acp: bool) -> Result<Value, Unavailability> {
+fn run_cli(name: &str, args: &[&str]) -> Result<Value, Unavailability> {
     use std::process::{Command, Stdio};
     let path = locate(name).ok_or(Unavailability::LocalLoginMissing)?;
-    if acp {
-        return run_acp(path, args);
-    }
     let mut cmd = if path.extension().is_some_and(|e| e == "cmd") {
         let mut cmd = Command::new("cmd.exe");
         cmd.args(["/d", "/c"]).arg(&path);
@@ -623,104 +609,6 @@ fn run_cli(name: &str, args: &[&str], acp: bool) -> Result<Value, Unavailability
     }
     serde_json::from_slice(&bytes).map_err(|_| Unavailability::UnreadableReply)
 }
-fn run_acp(path: PathBuf, args: &[&str]) -> Result<Value, Unavailability> {
-    use std::io::BufRead;
-    use std::process::{Command, Stdio};
-    let mut command = Command::new(path);
-    command.env_clear();
-    for key in [
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "SystemRoot",
-        "PATH",
-        "TEMP",
-        "TMP",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
-    crate::proxy::environment(&mut command);
-    command
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|_| Unavailability::LocalLoginMissing)?;
-    let mut stdin = child.stdin.take().unwrap();
-    let output = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    std::thread::spawn(move || {
-        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-    });
-    let (tx, rx) = std::sync::mpsc::sync_channel(32);
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(output.take(512 * 1024))
-            .lines()
-            .map_while(Result::ok)
-        {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let result = (|| {
-        for (id, method, params) in [
-            (
-                1,
-                "initialize",
-                json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"QuotaScope","version":"1.2"}}),
-            ),
-            (2, "_kiro/account/getUsage", json!({})),
-        ] {
-            writeln!(
-                stdin,
-                "{}",
-                json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
-            )
-            .map_err(|_| Unavailability::Unreachable)?;
-            let start = std::time::Instant::now();
-            loop {
-                let timeout = std::time::Duration::from_secs(20).saturating_sub(start.elapsed());
-                let line = rx
-                    .recv_timeout(timeout)
-                    .map_err(|_| Unavailability::Unreachable)?;
-                let Ok(reply) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                if reply["id"].as_i64() != Some(id) {
-                    continue;
-                }
-                if !reply["error"].is_null() {
-                    return Err(Unavailability::LocalLoginExpired);
-                }
-                if id == 2 {
-                    return Ok(reply["result"].clone());
-                }
-                break;
-            }
-        }
-        Err(Unavailability::UnreadableReply)
-    })();
-    let _ = child.kill();
-    let _ = child.wait();
-    result
-}
-
 pub fn parse(provider: Provider, root: &Value, origin: Option<&str>) -> ProviderUsage {
     let mut windows = Vec::new();
     let mut plan = None;
@@ -912,42 +800,7 @@ pub fn parse(provider: Provider, root: &Value, origin: Option<&str>) -> Provider
                 }
             }
         }
-        Provider::Kiro => {
-            plan = root["data"]["planName"].as_str().map(str::to_owned);
-            if root["success"].as_bool() == Some(true) {
-                for item in root["data"]["usageBreakdowns"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    if item["hasLimit"].as_bool() == Some(false) {
-                        continue;
-                    }
-                    if let (Some(limit), Some(used)) = (
-                        num(&item["limit"]).filter(|n| *n > 0.0),
-                        num(&item["used"]).or_else(|| {
-                            num(&item["percentage"])
-                                .map(|p| p / 100.0 * num(&item["limit"]).unwrap_or(0.0))
-                        }),
-                    ) {
-                        let id = item["resourceType"]
-                            .as_str()
-                            .or_else(|| item["displayName"].as_str())
-                            .unwrap_or("usage");
-                        let mut window = UsageWindow::new(
-                            &id.to_lowercase(),
-                            Kind::Monthly,
-                            item["displayName"].as_str().map(str::to_owned),
-                            (used / limit).clamp(0.0, 1.0),
-                            2592000,
-                            stamp(&root["data"]["billingCycleReset"]),
-                        );
-                        window.reports_length = false;
-                        windows.push(window);
-                    }
-                }
-            }
-        }
+        Provider::Kiro => return super::kiro::reading(root),
         Provider::Volcengine => {
             for item in root["items"].as_array().into_iter().flatten() {
                 if item["subscribed"].as_bool() == Some(false) {

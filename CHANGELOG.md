@@ -5,6 +5,12 @@ What each release changed, written for somebody deciding whether to install it.
 Windows releases use their own version sequence. Entries below 1.1.1 include
 inherited macOS history and do not establish Windows feature availability.
 
+## 1.3.1 (Windows, 2026-10-03)
+
+- Kiro uses a dedicated native CLI ACP reader with strict, upstream-grounded decoding of credit pools, provider-specific login/version errors, stable pool IDs and deterministic parsing fixtures. Missing limits remain unknown; date-only monthly resets do not imply a fixed duration or a value estimate.
+- Each refresh waits for initialization before reading usage, bounds pipe reads and writes, and tears down the hidden CLI and its Windows helper processes on success, failure or timeout. Settings uses Kiro's own saved CLI login and offers enable/refresh controls without storing a Kiro credential.
+- Fixture and isolated ACP process tests cover parsing and cleanup. Real Kiro account verification is still pending; see [Kiro Windows](Docs/providers/windows-kiro.md).
+
 ## 1.3.0 (Windows, released 2026-10-03)
 
 - **Ten more quota routes.** Windows now reads Kiro, Ollama Cloud, Grok Bot, Volcengine, Devin, Alibaba Token Plan, Gemini, JetBrains AI, Windsurf and Nous Portal. Some routes depend on local CLI state or browser sessions; provider fixtures do not replace verification with a real account.

@@ -33,6 +33,7 @@ pub mod hyper;
 pub mod ibm_bob;
 pub mod kilo_code;
 pub mod kimi;
+pub mod kiro;
 pub mod litellm;
 pub mod llm_proxy;
 pub mod longcat;
@@ -236,6 +237,7 @@ impl Services {
         let mut list: Vec<Arc<dyn ProviderService>> = vec![
             Arc::new(claude_code::ClaudeCodeService::new(http.clone())),
             Arc::new(codex::CodexService::new(http.clone())),
+            Arc::new(kiro::KiroService),
             Arc::new(antigravity::AntigravityService::new()),
             Arc::new(cursor::CursorService::new()),
             Arc::new(copilot::CopilotService::new(http.clone())),

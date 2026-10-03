@@ -12,7 +12,7 @@ API key/Cookie header 由设置保存到 DPAPI 加密文件。浏览器导入仅
 |---|---|---|---|---|
 | Claude Code | `claudeCode` | 已实现；需配置/登录 | CLI OAuth；Status Line 缓存、显式导入 Desktop/浏览器回退 | [claude_code.rs](../../windows/quotascope-core/src/providers/claude_code.rs) |
 | Codex | `codex` | 已实现；需配置/登录 | CLI OAuth + app-server 回退；账户统计与重置次数读取 | [codex.rs](../../windows/quotascope-core/src/providers/codex.rs) |
-| Kiro | `kiro` | 已实现；真实账号未验证 | kiro-cli ACP 已保存登录 | [remaining.rs](../../windows/quotascope-core/src/providers/remaining.rs) |
+| Kiro | `kiro` | 已实现；fixture/隔离 ACP 验证，真实账号未验证 | Kiro CLI 原有登录；设置启用/刷新，无需粘贴凭据 | [kiro.rs](../../windows/quotascope-core/src/providers/kiro.rs) · [配置与边界](windows-kiro.md) |
 | Antigravity | `antigravity` | 已实现；需配置/登录 | 正在运行的本机语言服务器 | [antigravity.rs](../../windows/quotascope-core/src/providers/antigravity.rs) |
 | Cursor | `cursor` | 已实现；需配置/登录 | Cursor 本机登录数据库 | [cursor.rs](../../windows/quotascope-core/src/providers/cursor.rs) |
 | OpenCode Go | `openCodeGo` | 已实现；需配置/登录 | API key / 独立官网会话及实际账单 | [opencode.rs](../../windows/quotascope-core/src/providers/opencode.rs) |

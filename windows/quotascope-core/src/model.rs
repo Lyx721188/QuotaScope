@@ -388,6 +388,7 @@ impl Provider {
             self,
             Provider::ClaudeCode
                 | Provider::Codex
+                | Provider::Kiro
                 | Provider::Antigravity
                 | Provider::Cursor
                 | Provider::Copilot
@@ -472,7 +473,6 @@ impl Provider {
             Provider::Volcengine => {
                 Some("Signs Volcengine's usage API with access keys — the signer has not been ported yet.")
             }
-            Provider::Kiro => Some("Runs Kiro's local ACP client — the Windows route has not been ported yet."),
             Provider::Devin => Some("Reads Devin's local or API quota — the Windows route has not been ported yet."),
             Provider::Sub2api | Provider::NewApi => Some("Enter the gateway address and API key to enable this account."),
             Provider::Windsurf => Some("Reads browser local storage — that Windows route has not been ported yet."),
@@ -1166,6 +1166,9 @@ pub enum Unavailability {
     ClaudeLoginExpired,
     CodexNotInstalled,
     CodexServerFailed,
+    KiroNotInstalled,
+    KiroSignInRequired,
+    KiroVersionUnsupported,
     GrokSignInRequired,
     GrokLoginExpired,
     SignedOut,
@@ -1229,6 +1232,9 @@ impl Unavailability {
             Unavailability::ClaudeLoginExpired => "claudeLoginExpired",
             Unavailability::CodexNotInstalled => "Codex isn't installed.",
             Unavailability::CodexServerFailed => "codexServerFailed",
+            Unavailability::KiroNotInstalled => "Kiro CLI isn't installed.",
+            Unavailability::KiroSignInRequired => "Sign in to Kiro CLI to see usage.",
+            Unavailability::KiroVersionUnsupported => "Update Kiro CLI to read subscription usage.",
             Unavailability::GrokSignInRequired => "grokSignInRequired",
             Unavailability::GrokLoginExpired => "grokLoginExpired",
             Unavailability::SignedOut => "signedOut",

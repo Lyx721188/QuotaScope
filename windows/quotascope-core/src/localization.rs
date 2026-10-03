@@ -432,9 +432,9 @@ const TABLE: &[Entry] = &[
     },
     Entry { key: "Warn me when a limit passes", en: "Warn me when a limit passes", zh: "当限额超过以下值时提醒我" },
     Entry {
-        key: "Runs Kiro's local ACP client — the Windows route has not been ported yet.",
-        en: "Runs Kiro's local ACP client — the Windows route has not been ported yet.",
-        zh: "通过 Kiro 本机 ACP 客户端读取——Windows 路线尚未移植。",
+        key: "Uses kiro-cli's existing login. Sign in with kiro-cli login first, then enable Kiro and refresh. No credential needs to be pasted.",
+        en: "Uses kiro-cli's existing login. Sign in with kiro-cli login first, then enable Kiro and refresh. No credential needs to be pasted.",
+        zh: "使用 kiro-cli 已保存的登录。先运行 kiro-cli login，然后启用 Kiro 并刷新，无需粘贴凭据。",
     },
     Entry {
         key: "Reads Devin's local or API quota — the Windows route has not been ported yet.",
@@ -519,6 +519,21 @@ const TABLE: &[Entry] = &[
         key: "codexServerFailed",
         en: "Couldn't start the Codex helper.",
         zh: "无法启动 Codex 助手。",
+    },
+    Entry {
+        key: "Kiro CLI isn't installed.",
+        en: "Kiro CLI isn't installed.",
+        zh: "尚未安装 Kiro CLI，或 kiro-cli.exe 不在 PATH 中。",
+    },
+    Entry {
+        key: "Sign in to Kiro CLI to see usage.",
+        en: "Sign in to Kiro CLI to see usage.",
+        zh: "请先运行 kiro-cli login 登录，以查看用量。",
+    },
+    Entry {
+        key: "Update Kiro CLI to read subscription usage.",
+        en: "Update Kiro CLI to read subscription usage.",
+        zh: "请更新 Kiro CLI，以读取订阅用量。",
     },
     Entry {
         key: "grokSignInRequired",

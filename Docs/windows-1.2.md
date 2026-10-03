@@ -4,6 +4,7 @@ Windows 1.3.0 的新增能力与未完成部分见 [上游移植状态](upstream
 
 本页按当前 Rust 实现编写；实现、解析测试、真实账号和交互界面验收是不同证据。
 完整路由清单见 [Windows provider 表](providers/windows-ports.md)。
+Kiro CLI ACP 路由、配置与验证边界见 [Kiro Windows](providers/windows-kiro.md)。
 
 ## 托盘与设置
 

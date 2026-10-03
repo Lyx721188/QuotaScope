@@ -2731,8 +2731,10 @@ impl SettingsApp {
                     "Reads the login this tool already saved on this PC.",
                 ))
                 .into(),
-            Provider::Kiro | Provider::Devin | Provider::GrokBot | Provider::AlibabaTokenPlan | Provider::Gemini | Provider::JetBrainsAi | Provider::NousPortal => self.muted(quotascope_core::localization::t(match provider {
-                Provider::Kiro => "Uses kiro-cli's existing login. Sign in with kiro-cli first.",
+            Provider::Kiro => self.muted(quotascope_core::localization::t(
+                "Uses kiro-cli's existing login. Sign in with kiro-cli login first, then enable Kiro and refresh. No credential needs to be pasted.",
+            )).into(),
+            Provider::Devin | Provider::GrokBot | Provider::AlibabaTokenPlan | Provider::Gemini | Provider::JetBrainsAi | Provider::NousPortal => self.muted(quotascope_core::localization::t(match provider {
                 Provider::Devin => "Reads the plan Devin saved on this PC. Open Devin and sign in first.",
                 Provider::GrokBot => "Uses Cursor's existing login to read the Grok Bot allowance.",
                 Provider::AlibabaTokenPlan => "Uses Bailian CLI (bl)'s existing login, for international and mainland plans.",

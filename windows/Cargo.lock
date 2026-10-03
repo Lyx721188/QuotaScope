@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "quotascope-core"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "quotascope-win"
-version = "1.3.0"
+version = "1.3.1"
 dependencies = [
  "chrono",
  "quotascope-core",
