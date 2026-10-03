@@ -1420,6 +1420,7 @@ pub fn priced(
     let mut unpriced: BTreeSet<String> = BTreeSet::new();
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     let mut slots: Vec<Slot> = Vec::new();
+    let mut lookup = model_prices::ModelPriceLookup::new(prices);
 
     // Rolled up as we go: the card wants days, the window estimate wants the
     // raw quarter-hours, and both come out of the same pass.
@@ -1459,7 +1460,7 @@ pub fn priced(
                 .or_default() += *tally;
             *day_tally.entry(day).or_default() += *tally;
 
-            if let Some(price) = model_prices::price_for(model, prices, vendor) {
+            if let Some(price) = lookup.price(model, vendor) {
                 let money = tally.cost_breakdown(&price);
                 let total = money.total();
                 cost += total;

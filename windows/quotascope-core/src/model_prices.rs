@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 /// What one model charges, per million tokens.
@@ -187,50 +187,94 @@ pub fn price_for(
     table: &BTreeMap<String, ModelPrice>,
     vendor: Option<&str>,
 ) -> Option<ModelPrice> {
-    if let Some(price) = first_party(model, table) {
-        return Some(price);
-    }
-
-    // Only now, and only for the vendor asked about: the plan the tokens were
-    // bought on is the last word, never the first.
-    let vendor = vendor?;
-    if let Some(exact) = table.get(&vendor_key(vendor, model)) {
-        return Some(exact.clone());
-    }
-    let lowered = vendor_key(vendor, model).to_lowercase();
-    if let Some((_, match_)) = table.iter().find(|(k, _)| k.to_lowercase() == lowered) {
-        return Some(match_.clone());
-    }
-    for candidate in aliases(model) {
-        if let Some(match_) = table.get(&vendor_key(vendor, &candidate)) {
-            return Some(match_.clone());
-        }
-    }
-    None
+    resolve(
+        model,
+        vendor,
+        |key| table.get(key),
+        |key| {
+            table
+                .iter()
+                .find(|(id, _)| id.to_lowercase() == key)
+                .map(|(_, price)| price)
+        },
+    )
+    .cloned()
 }
 
-fn first_party(model: &str, table: &BTreeMap<String, ModelPrice>) -> Option<ModelPrice> {
-    if let Some(exact) = table.get(model) {
-        return Some(exact.clone());
+/// One immutable table's bulk lookup. Aliases and misses are resolved once per
+/// model/vendor pair, and cannot survive replacement of the borrowed table.
+pub struct ModelPriceLookup<'a> {
+    table: &'a BTreeMap<String, ModelPrice>,
+    folded: Option<HashMap<String, &'a ModelPrice>>,
+    resolved: HashMap<(String, Option<String>), Option<ModelPrice>>,
+}
+
+impl<'a> ModelPriceLookup<'a> {
+    pub fn new(table: &'a BTreeMap<String, ModelPrice>) -> Self {
+        Self {
+            table,
+            folded: None,
+            resolved: HashMap::new(),
+        }
     }
 
-    // MiniMax writes `MiniMax-M3` and the agents that call it write
-    // `minimax-m3`. Case is the only difference.
-    let lowered = model.to_lowercase();
-    if let Some((_, match_)) = table.iter().find(|(k, _)| k.to_lowercase() == lowered) {
-        return Some(match_.clone());
+    pub fn price(&mut self, model: &str, vendor: Option<&str>) -> Option<ModelPrice> {
+        // Exact first-party ids need neither a folded index nor memo entries.
+        if let Some(price) = self.table.get(model) {
+            return Some(price.clone());
+        }
+        let key = (model.to_owned(), vendor.map(str::to_owned));
+        if let Some(answer) = self.resolved.get(&key) {
+            return answer.clone();
+        }
+        let folded = self.folded.get_or_insert_with(|| {
+            let mut index = HashMap::new();
+            // Keep the same first BTreeMap entry as the single-lookup path
+            // when two published ids differ only in case.
+            for (id, price) in self.table {
+                index.entry(id.to_lowercase()).or_insert(price);
+            }
+            index
+        });
+        let answer = resolve(
+            model,
+            vendor,
+            |id| self.table.get(id),
+            |id| folded.get(id).copied(),
+        )
+        .cloned();
+        self.resolved.insert(key, answer.clone());
+        answer
     }
+}
 
+fn resolve<'a>(
+    model: &str,
+    vendor: Option<&str>,
+    exact: impl Fn(&str) -> Option<&'a ModelPrice>,
+    folded: impl Fn(&str) -> Option<&'a ModelPrice>,
+) -> Option<&'a ModelPrice> {
+    if let Some(price) = exact(model).or_else(|| folded(&model.to_lowercase())) {
+        return Some(price);
+    }
     for candidate in aliases(model) {
-        if let Some(match_) = table.get(&candidate) {
-            return Some(match_.clone());
-        }
-        let folded = candidate.to_lowercase();
-        if let Some((_, match_)) = table.iter().find(|(k, _)| k.to_lowercase() == folded) {
-            return Some(match_.clone());
+        if let Some(price) = exact(&candidate).or_else(|| folded(&candidate.to_lowercase())) {
+            return Some(price);
         }
     }
 
+    // Only after every first-party spelling has failed, and only for the
+    // vendor this source asked about. Vendor alias fallback stays exact-only.
+    let vendor = vendor?;
+    let key = vendor_key(vendor, model);
+    if let Some(price) = exact(&key).or_else(|| folded(&key.to_lowercase())) {
+        return Some(price);
+    }
+    for candidate in aliases(model) {
+        if let Some(price) = exact(&vendor_key(vendor, &candidate)) {
+            return Some(price);
+        }
+    }
     None
 }
 
@@ -633,6 +677,71 @@ mod tests {
             price_for("flash-x", &with_vendor, Some("opencode-go")),
             Some(vendor_rate)
         );
+    }
+
+    #[test]
+    fn bulk_lookup_preserves_rates_case_precedence_and_vendor_isolation() {
+        let prices = table(&[
+            ("MiniMax-M3", 1.0, 2.0),
+            ("minimax-m3", 3.0, 6.0),
+            ("gemini-3.8-flash", 0.75, 3.75),
+            ("kilo|gemini-3.8-flash", 9.0, 9.0),
+            ("kilo|flash-x", 5.0, 5.0),
+            ("opencode-go|flash-x", 6.0, 6.0),
+            ("free-model", 0.0, 0.0),
+        ]);
+        let mut lookup = ModelPriceLookup::new(&prices);
+        for _ in 0..3 {
+            for (model, vendor, expected) in [
+                ("MINIMAX-M3", None, Some(1.0)),
+                ("minimax-m3", None, Some(3.0)),
+                ("Gemini 3.8 Flash (High)", Some("kilo"), Some(0.75)),
+                ("gemini-3.8-flash-control", None, Some(0.75)),
+                ("flash-x", None, None),
+                ("flash-x", Some("kilo"), Some(5.0)),
+                ("FLASH-X", Some("kilo"), Some(5.0)),
+                ("flash-x", Some("opencode-go"), Some(6.0)),
+                ("flash-x", Some("unrelated"), None),
+                ("free-model", None, Some(0.0)),
+                ("gemini-3.8-flash-exp-b", None, None),
+            ] {
+                let answer = lookup.price(model, vendor);
+                assert_eq!(answer.as_ref().map(|p| p.input), expected, "{model}");
+                assert_eq!(answer, price_for(model, &prices, vendor));
+            }
+        }
+    }
+
+    #[test]
+    fn misses_are_reused_only_within_their_immutable_price_table() {
+        let old = table(&[("gemini-3.8-flash", 0.75, 3.75)]);
+        let mut lookup = ModelPriceLookup::new(&old);
+        assert_eq!(
+            lookup.price("gemini-3.8-flash", None),
+            Some(old["gemini-3.8-flash"].clone())
+        );
+        assert!(lookup.folded.is_none());
+        assert!(lookup.resolved.is_empty());
+        for _ in 0..100 {
+            assert_eq!(lookup.price("unpublished-model", None), None);
+        }
+        assert_eq!(lookup.resolved.len(), 1);
+        assert!(lookup.resolved.values().all(Option::is_none));
+
+        let updated = table(&[
+            ("unpublished-model", 2.0, 4.0),
+            ("gemini-3.8-flash", 1.25, 5.0),
+        ]);
+        let mut next = ModelPriceLookup::new(&updated);
+        assert_eq!(
+            next.price("unpublished-model", None),
+            Some(updated["unpublished-model"].clone())
+        );
+        assert_eq!(
+            next.price("Gemini 3.8 Flash (High)", None),
+            Some(updated["gemini-3.8-flash"].clone())
+        );
+        assert_eq!(lookup.price("unpublished-model", None), None);
     }
 
     #[test]

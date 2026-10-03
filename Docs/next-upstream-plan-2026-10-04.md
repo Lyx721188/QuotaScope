@@ -1,9 +1,9 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**主目录同步已完成；N0 本地基线验证进行中，后续功能尚未实施**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0、N1a-1 已验证，N1a-2 为当前下一项**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N0b：完成本地验证与性能基线**。N0a 主目录同步已完成；每阶段满足退出条件后才开始下一阶段。版本号为建议，实施时再确认。
+当前唯一下一项是 **N1a-2：未变化的解析缓存不重写**。N0 同步、源码检查和流式 UI 基线、N1a-1 查价索引已完成；每阶段满足退出条件后才开始下一阶段。版本号为建议，实施时再确认。
 
 执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
@@ -35,7 +35,7 @@
 
 ## 3. N0：建立可执行基线
 
-N0a 已完成：主目录快进到 `db92d3e`，执行分支已创建。N0b 当前进行中：源码检查与性能测量。接续时先核对正在运行的 Cargo 进程与日志，不同时启动多份 Cargo 抢占同一 target。
+N0a 已完成：主目录快进到 `db92d3e`，执行分支已创建。N0b 已完成：源码检查与三轮隔离流式 UI 基线。接续时先核对正在运行的 Cargo 进程与日志，不同时启动多份 Cargo 抢占同一 target。
 
 - 在干净工作区将主目录快进到已核实的远端，或复用合适工作树；用 `codex/` 分支承载后续实现。保留本地被忽略的交接文件，不以 reset/clean 清理。
 - 若仍以本次固定提交为基线，明确记录；若远端又有更新，先补做差异核对。
@@ -293,14 +293,19 @@ before / after 性能样本、构建 profile 与程序哈希：
 
 | 任务卡 | 状态 | 当前证据 / 下一动作 |
 |---|---|---|
-| 交接计划细化 | 已完成文档扩展，仍需最终校对 | 本页增加任务卡、协议契约、测试入口与执行约束 |
+| 交接计划细化 | 已完成，commit `e970842` | 本页增加任务卡、协议契约、测试入口与执行约束 |
 | N0a 主目录同步 | 已验证 | `main == origin/main == db92d3e`，快进 13 提交；执行分支由此创建 |
-| N0b 源码基线 | 进行中 | 结果写 `baseline-results.json`，接续时按实际结果补齐 |
-| N0b 性能基线 | 待执行 | 合成 fixture、固定 before payload 与价格/聚合基准 |
-| N1a-1 / N1a-2 / N1b / N1c | 待实现 | 按上面的任务卡依次退出 |
+| N0b 源码基线 | 已验证 | fmt、普通 Clippy、workspace tests（644 passed / 6 ignored）、release 均 exit 0；见 `baseline-results.json` |
+| N0b 流式 UI 基线 | 已验证 | 3 轮 40 万行合成记录：150/450/600/750 Token 与磁盘缓存一致；已固定 Debug before payload |
+| N1a-1 查价优化 | 本地已验证 | 单表惰性大小写索引、model/vendor 命中及未命中缓存；ledger 批量复用；10 项价格、45 项 ledger 定向测试通过，普通 Clippy exit 0 |
+| N1a-2 / N1b / N1c | 待实现 | 按上面的任务卡依次退出 |
 | N2 / N3 / N4 | 待实现 | 不使用 fixture 成功替代实际账号/客户端验收 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
+
+N0 明细：fmt 3.87 s、Clippy 104.70 s、workspace tests 120.77 s、release 215.78 s。测试累计 644 passed、0 failed、6 ignored；Clippy 仍有已有告警。三轮流式 UI 完整读取分别 5209/5642/7418 ms，中位数 5642 ms；追加中位数 939 ms、重启中位数 520 ms、改写中位数 752 ms。存在系统调度波动，保留 `baseline-stream-summary.json` 及逐轮原始 JSON，不把单次最小值当整体性能。
+
+N1a-1 合成 probe：`cargo run -p quotascope-core --example price-lookup-benchmark --release --locked`，1001 条价格、每类 10000 次查找，断言命中数和价率。三轮同一 Release 树的 single/indexed 中位数：别名 765050/1304 µs、未计价 780399/2519 µs、精确 ID 1426/1609 µs；索引包含构建和首次解析。该测量是查价路径对比，不是整应用 CPU、内存或实际日志扫描提速。原始旧树三轮保存为 `price-before-*.jsonl`，改后两种路径为 `price-after-*.jsonl`；定向检查日志为 `n1a1-{prices-tests,ledger-tests,clippy}.log`。
 
 ## 参考证据
 
