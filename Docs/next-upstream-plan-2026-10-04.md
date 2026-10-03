@@ -1,9 +1,9 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1、N2a 本地实施与回归已完成，N2b 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1、N2a/N2b 本地已验证，N2c 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N2b：DeepSeek 控制台的纯解析器与合成样本**。N0/N1、N2a 的本地源码和定向回归已满足；真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
+当前唯一下一项是 **N2c：DeepSeek 控制台的读取、缓存与隔离凭据**。N0/N1、N2a/N2b 的本地回归已满足；真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
 
 执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
@@ -207,7 +207,7 @@ pwsh -NoProfile -File ./quotascope-win/tests/streaming_ui_benchmark.ps1 -Executa
 - `GET /api/v0/usage/by_api_key/amount?start=&end=&tz=`：每个 API key/model 的 `PROMPT_CACHE_HIT_TOKEN`、`PROMPT_CACHE_MISS_TOKEN`、`RESPONSE_TOKEN`；仅聚合已报告计数。
 - `GET /api/v0/usage/by_api_key/cost?start=&end=&tz=`：按 currency 的实际费用；缺少钱包/费用与实际 0 费用分别表达。
 - `GET /api/v0/users/get_user_summary`：同币种 normal + bonus wallet；不展示 token_estimation 推算 Token，也不据此标记耗尽。
-- `start/end` 为秒、范围是当地今天及之前 29 天，到明天零点结束；`tz` 按上游处理整小时偏移及余数。固定 +08、半小时区和 DST 转换样本，day bucket 不能直接假定 UTC 日期。
+- `start/end` 为秒、范围是当地今天及之前 29 天，到明天零点结束；`tz` 是整小时偏移**以秒表示**（+08 = 28800），向下取整，偏移余数加入 start/end。固定 +08、正负半小时区和 DST 转换样本，day bucket 不能直接假定 UTC 日期。
 - HTTP 200 envelope 中外层 `code` 与内层 `biz_code` 分别校验；40000–40099 和 HTTP 401 是认证类别，403 单独保持网络/服务拒绝，不触发认证替换。
 - 认证过期后只尝试读取一次不同的浏览器 token；拿到同一个 token/没有新 token 时结束，避免循环。缓存错误结果以限制重复请求，缓存 key 包含账户、凭据 revision、币种、范围；请求退出/取消不发布半成品。
 - API Key 路由成功优先；没有 Key 或上游允许的拒绝/不可达/服务错误/不可读回复才尝试控制台余额。限流等其他原因不能随意降级。
@@ -302,7 +302,8 @@ before / after 性能样本、构建 profile 与程序哈希：
 | N1b 聚合后台与缓存 | 本地及隔离 UI 已验证 | 4 项聚合缓存测试、14 项 scan、16 项 Windows 单元检查、普通 Clippy；筛选使用同一快照、关闭/重开和取消 UI 通过 |
 | N1c 最终本地回归 | 本地已验证，外部验收保留 | commit `4400e55`：fmt、普通 Clippy、655 passed / 6 ignored、Release build、CLI、三轮 after；完整 Debug payload 的隔离安装/托盘生命周期/卸载通过，Release 安装包构建成功 |
 | N2a 历史表达 | 本地已验证 | HistoryRead::Answered 增加 currency；本机估值仍为美元估算，OpenCode 实际费用显式 USD，实际费用无币种时隐藏金额；新增 CNY/USD/EUR、实际零额/缺失及估值回归 |
-| N2b 控制台解析 | 当前下一项 | 独立 token/envelope/range/amount/cost/summary parser，再接凭据/网络/UI，不在本批读取真实账号 |
+| N2b 控制台解析 | 本地已验证 | 独立 token/envelope/range/amount/cost/summary；9 项固定合成样本通过，普通 core Clippy exit 0；此批无网络或凭据读取 |
+| N2c 读取与凭据 | 当前下一项 | 分清 HTTP 401/403、账户与 API Key/console 槽、一次不同 token 重读，缓存结果和错误并拒绝取消半成品 |
 | N2 / N3 / N4 | 待实现 | 不使用 fixture 成功替代实际账号/客户端验收 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
@@ -328,6 +329,10 @@ Release 安装包已由 Inno Setup 构建，见本次目录 `release-installer/`
 三轮同条件 40 万行 after 全部 150/450/600/750 正确；完整/追加/重启/改写 UI 时间中位数为 4987/755/716/710 ms（before 5642/939/520/752）。对应采样的 PrivateBytes 峰值增量中位数为 10.17/3.56/8.15/4.90 MiB（before 7.66/5.09/6.98/3.44）。数值有好有坏，样本少且受 UI Automation/调度影响，不宣称整应用 CPU 或内存改善；确定性收益是重复查价、无变化写盘和复用聚合。原始 `n1c-stream-{1,2,3}-{result,samples}.json` 与 `n1c-stream-summary.json`。未追加长空闲/所有真实账户/多 DPI 人工测试；本轮没有变更 dock 几何或快捷键，保留这些原有验收缺口，允许开始 N2 的本地数据表达。
 
 N2a：`n2a-win-tests.log` 17 passed，`n2a-history-tests.log` 6 passed，随后 `n2a-card-tests-final.log` 定向复核显式零额与本机估值。金额币种放在 HistoryRead envelope，不修改 UsageLedger 和磁盘解析 schema；卡片实际收费去掉估算符号，以明确币种呈现，缺少币种不显示金额。控制台尚未接入，当前成功不构成 DeepSeek 账号验证。
+
+N2b：`deepseek_console.rs` 纯解析和 `lib.rs` 注册；token wrapper 只接受有界非空可用于 header 的字符串。两个 envelope code 都要求显式成功；40000–40099 映射会话过期，缺层/错误类型保持 unreadable。Range 用各端点本地零点、当前 offset floor 与余数，日桶取中点以避免 DST 错一天。9 项测试覆盖 +08、+5:30、-3:30、测试用 DST zone、两 Key 同模型计数、30 天补零、无小时猜测、人民币/美元不相加、显式零额与缺费用、非有限/超界/负数/小数 Token、未知模型、同币种多行和钱包。
+
+N2b 比上游更严格的边界：没有关键数组/code 不当作空历史；不完整 Token 标记 partial；只有至少一条显式收费（可为零）的可读币种才显示实际金额，选定币种有坏费用桶时隐藏金额，避免缺失变零；同币种重复 purse 合并，跨币种始终分开。Summary 不包含 is_available 或 token_estimation，余额无可读钱包为空列表。当前无 HTTP、浏览器、DPAPI 或 UI 接入；定向 9 passed（`n2b-parser-tests-final.log`）和普通 Clippy（`n2b-clippy.log`）通过，不替代外部账户验证。
 
 ## 参考证据
 
