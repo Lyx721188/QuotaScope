@@ -210,7 +210,9 @@ fn activity(data: &CardData) -> Option<Activity> {
         })
     ) || matches!(
         data.usage.provider(),
-        quotascope_core::model::Provider::Zai | quotascope_core::model::Provider::GlmCoding
+        quotascope_core::model::Provider::Zai
+            | quotascope_core::model::Provider::GlmCoding
+            | quotascope_core::model::Provider::DeepSeek
     );
     let mut section = Activity {
         heading: t(if account_wide {

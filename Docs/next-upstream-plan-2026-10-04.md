@@ -1,9 +1,9 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1、N2a/N2b 本地已验证，N2c 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1、N2a/N2b/N2c 本地已验证，N2d 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N2c-2：DeepSeek 控制台历史的有界缓存与 provider 接线**。N2c-1 的 HTTP 分类、存储槽和账户隔离已通过定向检查；真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
+当前唯一下一项是 **N2d：DeepSeek 控制台设置入口与隔离 profile 验证**。N2c 的缓存、账户历史与余额回退已通过定向检查；真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
 
 执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
@@ -304,7 +304,8 @@ before / after 性能样本、构建 profile 与程序哈希：
 | N2a 历史表达 | 本地已验证 | HistoryRead::Answered 增加 currency；本机估值仍为美元估算，OpenCode 实际费用显式 USD，实际费用无币种时隐藏金额；新增 CNY/USD/EUR、实际零额/缺失及估值回归 |
 | N2b 控制台解析 | 本地已验证 | 独立 token/envelope/range/amount/cost/summary；9 项固定合成样本通过，普通 core Clippy exit 0；此批无网络或凭据读取 |
 | N2c-1 传输与凭据 | 本地定向已验证，未联网 | deepseek_session 的固定 route、有界 body、401/403 分类、一次不同 token 重读；KeyRing 仅传各账户自己的 console 槽 |
-| N2c-2 缓存与接线 | 当前下一项 | 60 秒有界缓存（含错误）、单个并发读取、account/token revision/currency/range key、取消和旧完成结果拒绝；再接历史与余额 fallback |
+| N2c-2 缓存与接线 | 本地定向已验证，未联网 | 60 秒/4 项缓存（含错误）、单个并发读取、账户/token hash/币种/range key、取消与清除拒绝迟到缓存；账户历史与 API Key 优先余额 fallback |
+| N2d 设置与验收 | 当前下一项 | 异步显式浏览器导入、各账户清除、中文空态；独立 profile 的浏览器 fixture/DPAPI/UI 回归与整仓检查；真实账户单列未验证 |
 | N2 / N3 / N4 | 待实现 | 不使用 fixture 成功替代实际账号/客户端验收 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
@@ -348,3 +349,9 @@ N2c-1 验证：session 3 passed、accounts 3 passed、browser_storage 3 passed�
 - [上游性能优化 3696a65](https://github.com/qunqin24/Pulse/commit/3696a65b428272aa25c3ba611de8df2536983515)
 - [DeepSeek 控制台说明（固定提交）](https://github.com/qunqin24/Pulse/blob/3696a65b428272aa25c3ba611de8df2536983515/Docs/providers/deepseek.md)
 - [Codex 线索说明（固定提交）](https://github.com/qunqin24/Pulse/blob/3696a65b428272aa25c3ba611de8df2536983515/Docs/providers/codex.md)
+
+N2c-2：新增 `deepseek_history.rs`。缓存键包括账户、token SHA-256（缓存不留明文）、币种与完整 range；60 秒 TTL 同样缓存错误，最多 4 个结果，网络与解析在锁外，单个生产者、Condvar 有界等待。等待者共享本次旧 token 续读结果，后续按新 token key 命中；取消、清除或 panic 释放 worker，清除前进入的等待者不能重新缓存旧凭据。附加账户删除同时 forget。3 项缓存测试覆盖 TTL/依赖/LRU、并发续期合并及取消/迟到/panic。
+
+Provider 接线保持 API Key 优先，仅 ApiKeyRefused/Unreachable/ServerError/UnreadableReply 允许控制台余额成功接替；控制台失败保留原 Key 错误，RateLimited/NoLimitsReported 不切换。无 Key 时传回真实 session 错误，不制造余额零。余额峰值保留主账户旧币种 key，附加账户加入 id 隔离；串行更新防并发账户丢失。非有限、负数和超界金额不当作余额。4 项策略测试通过。Store 调用实际 AccountKey/自己的 basis，官网历史不受本机 Token 开关控制，DeepSeek 附加账户也可显示历史。App 历史 worker 新增取消作用域，generation 继续拒绝旧完成结果；阻塞 HTTP 最多仍等待原有 20 秒 timeout。
+
+N2c-2 检查：`n2c2-core-tests-final.log` 共 20 passed（含 9 parser、3 session、3 cache、4 provider 策略与 1 既有集成），Windows 单元 17 passed；`n2c2-clippy-final.log` exit 0，仍有既有告警。首轮 Clippy 发现新 App 控制句柄的 import/可见性编译错误，已修正并保存失败日志，不把它算成成功。这一批没有执行网络、读取真实浏览器或安装程序；N1 包哈希不能覆盖此批新代码。

@@ -43,6 +43,7 @@ pub fn remove(account: &AccountKey) {
     crate::secrets::set_key(&account.id(), "");
     if account.provider == Provider::DeepSeek {
         crate::deepseek_session::set_token(account, "");
+        crate::deepseek_history::forget(account);
     }
     crate::settings::mutate(|s| {
         let id = account.id();

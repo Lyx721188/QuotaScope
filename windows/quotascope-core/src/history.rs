@@ -29,6 +29,7 @@ pub fn read(provider: Provider) -> HistoryRead {
             currency: None,
         },
         Provider::OpenCodeGo => crate::opencode_console::history(),
+        Provider::DeepSeek => read_account(&crate::model::AccountKey::primary(provider)),
         Provider::Zai | Provider::GlmCoding => {
             let key = crate::secrets::key_for(provider.raw())
                 .filter(|s| !s.trim().is_empty())
@@ -55,6 +56,18 @@ pub fn read(provider: Provider) -> HistoryRead {
             }
         }
         _ => HistoryRead::NotConfigured,
+    }
+}
+
+pub fn read_account(account: &crate::model::AccountKey) -> HistoryRead {
+    if account.provider == Provider::DeepSeek {
+        let currency = crate::settings::with(|s| s.deepseek_currency.clone());
+        return crate::deepseek_history::read(account, currency.as_deref());
+    }
+    if account.is_primary() {
+        read(account.provider)
+    } else {
+        HistoryRead::NotConfigured
     }
 }
 

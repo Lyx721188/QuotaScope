@@ -293,6 +293,8 @@ fn run_pass(
                 if !account.is_primary()
                     && account.provider != Provider::Extension
                     && added_key.is_none()
+                    && !(account.provider == Provider::DeepSeek
+                        && ring.deepseek_console.contains_key(&account.id()))
                 {
                     return ProviderUsage::unavailable(
                         account,
@@ -303,7 +305,17 @@ fn run_pass(
                     return crate::extension::fetch(&extension);
                 }
                 if account.provider == Provider::DeepSeek {
-                    return services.deepseek.fetch_with_basis(&ring, &basis);
+                    let basis = if account.is_primary() {
+                        basis
+                    } else {
+                        let (choice, budget) = crate::balance_ring::basis_for(&account);
+                        DeepSeekBasis {
+                            basis: choice.token().into(),
+                            budget,
+                            currency: basis.currency,
+                        }
+                    };
+                    return services.deepseek.fetch_for_account(&ring, &basis, &account);
                 }
                 match services.for_provider(account.provider) {
                     Some(service) => service.fetch(&ring),

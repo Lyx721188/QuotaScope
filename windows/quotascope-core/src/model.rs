@@ -548,6 +548,7 @@ impl Provider {
                 | Provider::Zai
                 | Provider::GlmCoding
                 | Provider::OpenCodeGo
+                | Provider::DeepSeek
         )
     }
 

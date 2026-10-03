@@ -748,7 +748,8 @@ impl PanelWindow {
         let settings = quotascope_core::settings::with(|s| s.clone());
         let detailed = settings.detailed_cards.contains(&entry.account.id());
         let history_enabled = detailed
-            && entry.account.is_primary()
+            && (entry.account.is_primary()
+                || usage.provider() == quotascope_core::model::Provider::DeepSeek)
             && usage.provider().provides_history()
             && (settings.reads_token_spend
                 || matches!(
@@ -756,6 +757,7 @@ impl PanelWindow {
                     quotascope_core::model::Provider::Zai
                         | quotascope_core::model::Provider::GlmCoding
                         | quotascope_core::model::Provider::OpenCodeGo
+                        | quotascope_core::model::Provider::DeepSeek
                 ));
         let data = CardData {
             usage: usage.clone(),

@@ -1,9 +1,9 @@
 //! DeepSeek's prepaid balance, from the documented
 //! `GET https://api.deepseek.com/user/balance`.
 //!
-//! **There is no allowance, no window, no reset and no spend history** — not
-//! in this reply and not anywhere else in the API. Every other provider
-//! reports at least one percentage; this one reports money and stops. So the
+//! This API reply has no allowance, reset or spend history. An explicitly
+//! imported console session can supply balance as a fallback, and the
+//! separate console history reader supplies account-wide daily billing. The
 //! denominator behind the ring comes from somewhere else, and that somewhere
 //! is the user's choice: something QuotaScope watched, a figure they typed, or
 //! nothing at all.
@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 const ENDPOINT: &str = "https://api.deepseek.com/user/balance";
+static BASELINE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub struct DeepSeekService {
     http: Arc<HttpClient>,
@@ -50,34 +51,59 @@ impl DeepSeekService {
     }
 
     pub fn fetch_with_basis(&self, keys: &KeyRing, basis: &DeepSeekBasis) -> ProviderUsage {
-        let account = AccountKey::primary(Provider::DeepSeek);
-        let Some(key) = pasted_or_none(keys.api_key(Provider::DeepSeek)) else {
-            return ProviderUsage::unavailable(
-                account,
-                crate::model::Unavailability::ApiKeyMissing,
-            );
+        self.fetch_for_account(keys, basis, &AccountKey::primary(Provider::DeepSeek))
+    }
+
+    pub fn fetch_for_account(
+        &self,
+        keys: &KeyRing,
+        basis: &DeepSeekBasis,
+        account: &AccountKey,
+    ) -> ProviderUsage {
+        let key = pasted_or_none(keys.api_key(Provider::DeepSeek));
+        let console = keys.deepseek_console.get(&account.id()).map(String::as_str);
+        let (reply, origin) = balance_reply(
+            key.as_deref(),
+            console,
+            |key| {
+                let auth = format!("Bearer {key}");
+                self.http.fetch_json(
+                    crate::http::Method::Get,
+                    ENDPOINT,
+                    &[("Authorization", &auth), ("Accept", "application/json")],
+                    None,
+                )
+            },
+            |token| {
+                let (result, _) = crate::deepseek_session::renewing(
+                    token,
+                    |current| {
+                        let reply = crate::deepseek_session::get(
+                            &self.http,
+                            crate::deepseek_session::Route::Summary,
+                            None,
+                            current,
+                        )?;
+                        let balance = crate::deepseek_console::parse_summary(&reply)?;
+                        if purse(&balance, basis.currency.as_deref()).is_none() {
+                            return Err(crate::model::Unavailability::NoLimitsReported);
+                        }
+                        Ok(balance)
+                    },
+                    || crate::deepseek_session::renew_from_browser(account, token),
+                );
+                result
+            },
+        );
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(reason) => return ProviderUsage::unavailable(account.clone(), reason),
         };
-
-        let headers = [
-            ("Authorization", format!("Bearer {key}")),
-            ("Accept", "application/json".to_string()),
-        ];
-        let header_refs: Vec<(&str, &str)> =
-            headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
-
-        let reply =
-            match self
-                .http
-                .fetch_json(crate::http::Method::Get, ENDPOINT, &header_refs, None)
-            {
-                Ok(v) => v,
-                Err(reason) => return ProviderUsage::unavailable(account, reason),
-            };
 
         let is_available = reply.get("is_available").and_then(|v| v.as_bool());
         let Some(purse) = purse(&reply, basis.currency.as_deref()) else {
             return ProviderUsage::unavailable(
-                account,
+                account.clone(),
                 crate::model::Unavailability::NoLimitsReported,
             );
         };
@@ -86,9 +112,14 @@ impl DeepSeekService {
         // force: switching to "since top-up" later should find a peak
         // already there rather than start over from whatever the balance
         // happens to be that afternoon.
-        let mut marks = Baseline::load();
-        let mark = marks.advance(&purse.currency, purse.total, crate::timeutil::now_ms());
-        marks.save();
+        let mark = {
+            let _write = BASELINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut marks = Baseline::load();
+            let mark_key = baseline_key(account, &purse.currency);
+            let mark = marks.advance(&mark_key, purse.total, crate::timeutil::now_ms());
+            marks.save();
+            mark
+        };
 
         let windows = windows_for(
             &purse,
@@ -99,8 +130,8 @@ impl DeepSeekService {
             is_available,
         );
 
-        let mut usage = ProviderUsage::live_now(account, windows);
-        usage.origin = Some(self.origin_token().to_string());
+        let mut usage = ProviderUsage::live_now(account.clone(), windows);
+        usage.origin = Some(origin.to_string());
         usage.credit_balance = Some(format!(
             "{:.2}{}",
             purse.total,
@@ -112,6 +143,38 @@ impl DeepSeekService {
         });
         usage
     }
+}
+
+fn balance_reply(
+    key: Option<&str>,
+    console: Option<&str>,
+    mut keyed: impl FnMut(&str) -> Result<serde_json::Value, crate::model::Unavailability>,
+    mut from_console: impl FnMut(&str) -> Result<serde_json::Value, crate::model::Unavailability>,
+) -> (
+    Result<serde_json::Value, crate::model::Unavailability>,
+    &'static str,
+) {
+    use crate::model::Unavailability as U;
+    let Some(key) = key else {
+        return (
+            console
+                .map(&mut from_console)
+                .unwrap_or(Err(U::ApiKeyMissing)),
+            "webSession",
+        );
+    };
+    let first = keyed(key);
+    if matches!(
+        first,
+        Err(U::ApiKeyRefused | U::Unreachable | U::ServerError | U::UnreadableReply)
+    ) {
+        if let Some(console) = console {
+            if let Ok(reply) = from_console(console) {
+                return (Ok(reply), "webSession");
+            }
+        }
+    }
+    (first, "endpoint")
 }
 
 /// One currency's money, with the strings turned into numbers. **Which
@@ -157,7 +220,9 @@ fn money(text: Option<&str>) -> Option<f64> {
     if text.is_empty() {
         return None;
     }
-    text.parse::<f64>().ok()
+    text.parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite() && *n >= 0.0 && *n < 1e15)
 }
 
 fn currency_suffix(code: &str) -> String {
@@ -206,6 +271,14 @@ fn baseline_path() -> PathBuf {
     crate::data_dir().join("deepseek-baseline.json")
 }
 
+fn baseline_key(account: &AccountKey, currency: &str) -> String {
+    if account.is_primary() {
+        currency.to_string()
+    } else {
+        format!("{}|{currency}", account.id())
+    }
+}
+
 /// The highest balance QuotaScope has watched, per currency. The one measurement
 /// the "since top-up" denominator is allowed to rest on.
 #[derive(Default, Clone)]
@@ -245,5 +318,111 @@ impl Baseline {
         if let Ok(text) = serde_json::to_string(&self.marks) {
             let _ = std::fs::write(baseline_path(), text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Unavailability as U;
+    use serde_json::json;
+
+    #[test]
+    fn api_success_and_rate_limit_do_not_consult_console() {
+        for result in [
+            Ok(json!({"balance_infos": []})),
+            Err(U::RateLimited),
+            Err(U::NoLimitsReported),
+        ] {
+            let expected = result.clone();
+            let (actual, origin) = balance_reply(
+                Some("api"),
+                Some("session"),
+                |_| result.clone(),
+                |_| panic!("console must not be read"),
+            );
+            assert_eq!(actual, expected);
+            assert_eq!(origin, "endpoint");
+        }
+    }
+
+    #[test]
+    fn permitted_api_failures_use_console_only_when_it_succeeds() {
+        for reason in [
+            U::ApiKeyRefused,
+            U::Unreachable,
+            U::ServerError,
+            U::UnreadableReply,
+        ] {
+            let (reply, origin) = balance_reply(
+                Some("api"),
+                Some("session"),
+                |_| Err(reason),
+                |token| {
+                    assert_eq!(token, "session");
+                    Ok(json!({"balance_infos": [{"currency": "CNY", "total_balance": "3"}]}))
+                },
+            );
+            assert_eq!(purse(&reply.unwrap(), None).unwrap().total, 3.0);
+            assert_eq!(origin, "webSession");
+            let (reply, origin) = balance_reply(
+                Some("api"),
+                Some("session"),
+                |_| Err(reason),
+                |_| Err(U::SessionExpired),
+            );
+            assert_eq!(reply, Err(reason));
+            assert_eq!(origin, "endpoint");
+        }
+    }
+
+    #[test]
+    fn console_only_preserves_session_errors_and_missing_session_is_not_zero() {
+        let (reply, origin) = balance_reply(
+            None,
+            Some("session"),
+            |_| panic!("no API key"),
+            |_| Err(U::SessionExpired),
+        );
+        assert_eq!(reply, Err(U::SessionExpired));
+        assert_eq!(origin, "webSession");
+        let (reply, _) = balance_reply(
+            None,
+            None,
+            |_| panic!("no API key"),
+            |_| panic!("no session"),
+        );
+        assert_eq!(reply, Err(U::ApiKeyMissing));
+        for text in ["", "NaN", "inf", "-1", "1000000000000000", "oops"] {
+            assert!(money(Some(text)).is_none());
+        }
+        assert_eq!(money(Some("0")), Some(0.0));
+        assert!(purse(
+            &json!({"balance_infos": [{"currency": "USD", "total_balance": "NaN"}]}),
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn baseline_preserves_primary_legacy_key_and_isolates_extra_accounts_and_currencies() {
+        let primary = AccountKey::primary(Provider::DeepSeek);
+        let extra = AccountKey::from_id("deepSeek#1").unwrap();
+        let mut baseline = Baseline::default();
+        assert_eq!(baseline_key(&primary, "USD"), "USD");
+        baseline.advance(&baseline_key(&primary, "USD"), 100.0, 1);
+        baseline.advance(&baseline_key(&extra, "USD"), 7.0, 2);
+        baseline.advance(&baseline_key(&extra, "CNY"), 12.0, 3);
+        assert_eq!(
+            baseline.advance(&baseline_key(&extra, "USD"), 6.0, 4).peak,
+            7.0
+        );
+        assert_eq!(
+            baseline
+                .advance(&baseline_key(&primary, "USD"), 99.0, 5)
+                .peak,
+            100.0
+        );
+        assert_eq!(baseline.marks.len(), 3);
     }
 }

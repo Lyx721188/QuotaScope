@@ -58,6 +58,7 @@ pub struct App {
     estimates_at: Option<std::time::Instant>,
     histories: HashMap<String, quotascope_core::history::HistoryRead>,
     histories_running: bool,
+    histories_control: Option<std::sync::Arc<quotascope_core::scan::Control>>,
     histories_dirty: bool,
     histories_generation: u64,
     histories_at: Option<std::time::Instant>,
@@ -206,6 +207,7 @@ impl App {
             estimates_at: None,
             histories: HashMap::new(),
             histories_running: false,
+            histories_control: None,
             histories_dirty: true,
             histories_generation: 0,
             histories_at: None,
@@ -277,6 +279,7 @@ impl App {
                 }
                 AppMsg::Histories(generation, map) => {
                     self.histories_running = false;
+                    self.histories_control = None;
                     if generation == self.histories_generation {
                         self.histories_at = Some(std::time::Instant::now());
                         self.histories = map;
@@ -548,6 +551,9 @@ impl App {
     }
 
     fn invalidate_histories(&mut self) {
+        if let Some(control) = &self.histories_control {
+            control.cancel();
+        }
         self.histories_dirty = true;
         self.histories_generation = self.histories_generation.wrapping_add(1);
         self.histories.clear();
@@ -633,14 +639,17 @@ impl App {
         let subjects: Vec<_> = settings
             .ordered_enabled()
             .into_iter()
-            .filter(|a| a.is_primary())
+            .filter(|a| a.is_primary() || a.provider == Provider::DeepSeek)
             .filter(|a| settings.detailed_cards.contains(&a.id()))
             .filter(|a| a.provider.provides_history())
             .filter(|a| {
                 settings.reads_token_spend
                     || matches!(
                         a.provider,
-                        Provider::Zai | Provider::GlmCoding | Provider::OpenCodeGo
+                        Provider::Zai
+                            | Provider::GlmCoding
+                            | Provider::OpenCodeGo
+                            | Provider::DeepSeek
                     )
             })
             .collect();
@@ -663,11 +672,23 @@ impl App {
         self.histories_dirty = false;
         let generation = self.histories_generation;
         let tx = self.tx.clone();
+        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
+        self.histories_control = Some(control.clone());
         std::thread::spawn(move || {
-            let map = subjects
-                .into_iter()
-                .map(|a| (a.id(), quotascope_core::history::read(a.provider)))
-                .collect();
+            let stop = control.clone();
+            let map = quotascope_core::scan::run(
+                control,
+                0,
+                |_| {},
+                || {
+                    subjects
+                        .into_iter()
+                        .take_while(|_| !stop.is_cancelled())
+                        .map(|a| (a.id(), quotascope_core::history::read_account(&a)))
+                        .collect()
+                },
+            )
+            .unwrap_or_default();
             let _ = tx.send(AppMsg::Histories(generation, map));
         });
     }
