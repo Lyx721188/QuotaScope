@@ -1,6 +1,6 @@
 # Windows provider 读取路由
 
-按当前 `Provider`、`Services` 注册表和设置入口核对：77 个内置 provider，67 个已实现读取路由，10 个未移植。
+按当前 `Provider`、`Services` 注册表和设置入口核对：77 个内置 provider，68 个已实现读取路由，9 个未移植。
 “已实现”表示代码路由和解析测试存在，不能等同于每个账号都经过真实请求验证。
 一个 provider 的主账号可启用；附加账号 OAuth/login 还未移植。
 
@@ -12,7 +12,7 @@ API key/Cookie header 由设置保存到 DPAPI 加密文件。浏览器导入仅
 |---|---|---|---|---|
 | Claude Code | `claudeCode` | 已实现；需配置/登录 | CLI OAuth；Status Line / 桌面会话回退未移植 | [claude_code.rs](../../windows/quotascope-core/src/providers/claude_code.rs) |
 | Codex | `codex` | 已实现；需配置/登录 | CLI OAuth + app-server 回退；账户统计与重置次数读取 | [codex.rs](../../windows/quotascope-core/src/providers/codex.rs) |
-| Kiro | `kiro` | 未移植 | 未实现 | — |
+| Kiro | `kiro` | 已实现；fixture/隔离 ACP 验证，真实账号未验证 | Kiro CLI 原有登录；设置启用/刷新，无需粘贴凭据 | [kiro.rs](../../windows/quotascope-core/src/providers/kiro.rs) · [配置与边界](windows-kiro.md) |
 | Antigravity | `antigravity` | 已实现；需配置/登录 | 正在运行的本机语言服务器 | [antigravity.rs](../../windows/quotascope-core/src/providers/antigravity.rs) |
 | Cursor | `cursor` | 已实现；需配置/登录 | Cursor 本机登录数据库 | [cursor.rs](../../windows/quotascope-core/src/providers/cursor.rs) |
 | OpenCode Go | `openCodeGo` | 已实现；需配置/登录 | API key | [opencode.rs](../../windows/quotascope-core/src/providers/opencode.rs) |
@@ -88,7 +88,7 @@ API key/Cookie header 由设置保存到 DPAPI 加密文件。浏览器导入仅
 | TypeSafe | `typeSafe` | 已实现；需配置/登录 | 浏览器导入 / Cookie header | [type_safe.rs](../../windows/quotascope-core/src/providers/type_safe.rs) |
 | Vercel AI Gateway | `vercelAIGateway` | 已实现；需配置/登录 | API key | [vercel_ai_gateway.rs](../../windows/quotascope-core/src/providers/vercel_ai_gateway.rs) |
 
-未移植的十项：Kiro、Ollama Cloud、Grok Bot、Volcengine、Devin、Alibaba Token Plan、Gemini、JetBrains AI、Windsurf、Nous Portal。
+未移植的九项：Ollama Cloud、Grok Bot、Volcengine、Devin、Alibaba Token Plan、Gemini、JetBrains AI、Windsurf、Nous Portal。
 扩展程序独立于这 77 个内置 provider，见 [Windows extensions](../extensions.md)。
 
 托盘用量页使用上游明确的 18 个 URL；未实现的 provider 不出现在已启用账户托盘中。

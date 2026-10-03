@@ -1,7 +1,9 @@
 # QuotaScope Windows 1.2 操作与边界
 
-本页按当前 Rust 实现编写。版本尚未发布；实现、解析测试、真实账号和交互界面验收是不同证据。
+本页按 Windows 1.2.4 基线及本次未发布的 Kiro 改动编写；实现、解析测试、真实账号和交互界面验收是不同证据。
 完整路由清单见 [Windows provider 表](providers/windows-ports.md)。
+Kiro 已接入 CLI ACP 用量读取与账户设置，fixture/隔离协议验证和真实账号验证分开记录；
+配置步骤及字段边界见 [Kiro Windows](providers/windows-kiro.md)。
 
 ## 托盘与设置
 

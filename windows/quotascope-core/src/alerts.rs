@@ -269,6 +269,9 @@ fn standing(reason: Unavailability) -> Standing {
         | Unavailability::SignInRequired
         | Unavailability::ClaudeSignInRequired
         | Unavailability::CodexNotInstalled
+        | Unavailability::KiroNotInstalled
+        | Unavailability::KiroSignInRequired
+        | Unavailability::KiroVersionUnsupported
         | Unavailability::AntigravityNotRunning
         | Unavailability::AntigravityNotAnswering
         | Unavailability::CursorSignInRequired

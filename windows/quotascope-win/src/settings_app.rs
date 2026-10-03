@@ -2164,6 +2164,9 @@ impl SettingsApp {
         }
 
         let body: View = match provider {
+            Provider::Kiro => self.muted(quotascope_core::localization::t(
+                "Uses kiro-cli's existing login. Sign in with kiro-cli login first, then enable Kiro and refresh. No credential needs to be pasted.",
+            )).into(),
             Provider::ClaudeCode | Provider::Codex | Provider::Grok => self
                 .muted(&quotascope_core::localization::t(
                     "Reads the login this tool already saved on this PC.",
@@ -2287,6 +2290,7 @@ impl SettingsApp {
                         provider,
                         Provider::ClaudeCode
                             | Provider::Codex
+                            | Provider::Kiro
                             | Provider::Grok
                             | Provider::Antigravity
                             | Provider::Cursor

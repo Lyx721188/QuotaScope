@@ -1,5 +1,13 @@
 # Third-Party Notices
 
+The Kiro Windows provider and ACP handshake are adapted from Pulse by
+qunqin24, Copyright (c) 2026 qunqin24, under Apache License 2.0:
+`Sources/Pulse/Providers/KiroUsageService.swift` and `KiroACPClient.swift` at
+commit `3696a65b428272aa25c3ba611de8df2536983515`.
+`windows/quotascope-core/tests/fixtures/kiro-pro-plus-usage.json` preserves
+the upstream fixture. Source: <https://github.com/qunqin24/Pulse>.
+The Apache-2.0 license is included in this repository's `LICENSE`.
+
 QuotaScope uses **HarmonyOS Sans SC**, Copyright 2021 Huawei Device Co., Ltd.
 Unmodified Regular, Medium and Bold font files are bundled in `Fonts/` beside
 the Windows executable. They are loaded privately by the application; no system

@@ -20,6 +20,56 @@ struct StoredMap {
     entries: HashMap<String, Stored>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Kind, Provider, UsageWindow};
+
+    #[test]
+    fn kiro_setup_failures_are_not_hidden_by_a_previous_reading() {
+        let account = AccountKey::primary(Provider::Kiro);
+        let now = crate::timeutil::now_ms();
+        let stored = Stored {
+            windows: vec![UsageWindow::new(
+                "credit",
+                Kind::Monthly,
+                None,
+                0.25,
+                30 * 86_400,
+                None,
+            )],
+            observed_at: now,
+            plan: None,
+            credit_balance: None,
+            credit_remaining: None,
+            origin: Some("kiroACP".into()),
+        };
+        // Entirely in memory: neither a real profile nor a cache file is used.
+        let mut cache = UsageCache {
+            file: PathBuf::new(),
+            readings: Some([(account.id(), stored)].into_iter().collect()),
+        };
+        for reason in [
+            Unavailability::KiroSignInRequired,
+            Unavailability::KiroNotInstalled,
+            Unavailability::KiroVersionUnsupported,
+        ] {
+            let reading = cache.reconciled(ProviderUsage::unavailable(account.clone(), reason));
+            assert_eq!(reading.state, State::Unavailable(reason));
+            assert!(reading.windows.is_empty());
+        }
+        assert_eq!(
+            cache
+                .reconciled(ProviderUsage::unavailable(
+                    account,
+                    Unavailability::Unreachable
+                ))
+                .state,
+            State::Stale
+        );
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Stored {
     windows: Vec<crate::model::UsageWindow>,
@@ -73,6 +123,9 @@ impl UsageCache {
             if matches!(
                 reason,
                 Unavailability::ApiKeyMissing
+                    | Unavailability::KiroSignInRequired
+                    | Unavailability::KiroNotInstalled
+                    | Unavailability::KiroVersionUnsupported
                     | Unavailability::SignedOut
                     | Unavailability::NotSignedIn
             ) {
