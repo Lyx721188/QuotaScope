@@ -1,9 +1,9 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**N0、N1a、N1b 已验证，N1c 为当前下一项**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1 本地实施与回归已完成，N2a 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N1c：整仓回归、最终性能样本和 Windows 生命周期**。N0 同步、N1a 查价与缓存写盘、N1b 聚合后台接线已完成；每阶段满足退出条件后才开始下一阶段。版本号为建议，实施时再确认。
+当前唯一下一项是 **N2a：DeepSeek 控制台历史的币种与费用表达**。N0/N1 的本地源码和隔离回归退出条件已满足；真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
 
 执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
@@ -300,7 +300,8 @@ before / after 性能样本、构建 profile 与程序哈希：
 | N1a-1 查价优化 | 本地已验证 | 单表惰性大小写索引、model/vendor 命中及未命中缓存；ledger 批量复用；10 项价格、45 项 ledger 定向测试通过，普通 Clippy exit 0 |
 | N1a-2 解析缓存写盘 | 本地及隔离 UI 已验证 | 47 项 ledger、8 项 disk-cache 定向测试与 Debug build/fmt/普通 Clippy 通过；两次原进程结束后的热读取保持缓存 mtime/哈希，追加/重启/改写仍正确 |
 | N1b 聚合后台与缓存 | 本地及隔离 UI 已验证 | 4 项聚合缓存测试、14 项 scan、16 项 Windows 单元检查、普通 Clippy；筛选使用同一快照、关闭/重开和取消 UI 通过 |
-| N1c 最终回归 | 当前下一项 | 完整 workspace 检查、三轮 after 性能、托盘生命周期、隔离 payload/安装；发布与用户安装版升级不由本地检查自动完成 |
+| N1c 最终本地回归 | 本地已验证，外部验收保留 | commit `4400e55`：fmt、普通 Clippy、655 passed / 6 ignored、Release build、CLI、三轮 after；完整 Debug payload 的隔离安装/托盘生命周期/卸载通过，Release 安装包构建成功 |
+| N2a 历史表达 | 当前下一项 | 金额和币种留在 provider-history envelope，检查 card 全部美元格式及缓存语义，不迁移本机原始账本 |
 | N2 / N3 / N4 | 待实现 | 不使用 fixture 成功替代实际账号/客户端验收 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
@@ -318,6 +319,12 @@ N1b 定向结果：`n1b-core-tests-rerun.log` 17 passed（含 4 项新增缓存�
 同一 Debug 的 `spend_ui_smoke.ps1` 通过：40 万行中取消延迟 175 ms，不发布半成品或保存部分缓存；离页/关闭取消、同宿主重开、完整重读 150、手动刷新取消后保留旧完整结果均通过，见 `n1b-cancel-ui-result.json`。开发期间保留了失败日志：首次 Rust 构建是 summary 名称覆盖，UI 脚本曾使用错误 TreeWalker 方法、追加步骤放错阶段、旧来源进度断言和读取正在替换的控件；已修复后按最终脚本重跑，失败不算通过记录。
 
 合成聚合 probe：`cargo run --release -p quotascope-core --example spend-analysis-benchmark --locked`，16 来源 × 180 天 × 24 模型，总计 11681280 Token，30 次重复。三轮 reaggregate/exact-cache/sort-reuse 中位数 704703/4/413 µs；首次完整 Summary 中位数 37238 µs。断言总计、完整 Analysis、小时分布及复用标记。它只量化内存快照上的重复聚合路径，精确缓存路径的微秒值接近计时分辨率，不据此计算整应用提速倍数，也不是文件扫描或 UI 响应时间。原始 `n1b-analysis-{1,2,3}.log`。
+
+N1c 对 `4400e55` 重跑 fmt、普通 Clippy、workspace tests、Release（exit 0；1.15/2.57/29.93/106.69 s），655 passed / 6 ignored。Release `--json` 在空隔离 profile 验证结构，未读真实账户。隔离安装输入为完整 **Debug payload**，版本 1.3.1、SHA-256 与 N1b 相同；安装哈希/必要 DLL、PRI、字体、真实托盘打开/关闭/同宿主重开/第二次启动/隐藏退出、卸载与独立注册表身份均通过。日志 `n1c-debug-installer.log`、`n1c-debug-installer-result.json` 和 `target/installer-validation-e524ba7d7e8f41599cfe8a62f2165077/`。独立安装完成后已卸载，当前用户安装版的文件和进程保持。
+
+Release 安装包已由 Inno Setup 构建，见本次目录 `release-installer/`；安装器 SHA-256 `C23B1703BA69566F786FEEEE59D7D08B51C215A5B59C2AC90FE67F9E869CE3D6`。**没有运行这个 Release 的桌面/安装回归**：其单实例命名不支持 Debug 隔离变量，会与用户安装版争用。Debug 隔离成功不能替代此项；下一次用户授权升级/发布时在不争锁的桌面验证真实 Release 包。尚未推送、创建 PR、tag、CI 或发布，也没有替换用户安装版。
+
+三轮同条件 40 万行 after 全部 150/450/600/750 正确；完整/追加/重启/改写 UI 时间中位数为 4987/755/716/710 ms（before 5642/939/520/752）。对应采样的 PrivateBytes 峰值增量中位数为 10.17/3.56/8.15/4.90 MiB（before 7.66/5.09/6.98/3.44）。数值有好有坏，样本少且受 UI Automation/调度影响，不宣称整应用 CPU 或内存改善；确定性收益是重复查价、无变化写盘和复用聚合。原始 `n1c-stream-{1,2,3}-{result,samples}.json` 与 `n1c-stream-summary.json`。未追加长空闲/所有真实账户/多 DPI 人工测试；本轮没有变更 dock 几何或快捷键，保留这些原有验收缺口，允许开始 N2 的本地数据表达。
 
 ## 参考证据
 
