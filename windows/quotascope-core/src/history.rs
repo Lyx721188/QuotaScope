@@ -1,5 +1,5 @@
-//! Account history. Provider statistics contain totals, never a token split
-//! that could justify pricing them at API rates.
+//! Account history. Provider statistics stay separate from local API-value
+//! estimates. Actual provider charges carry their own currency explicitly.
 
 use crate::ledger::{LedgerDay, TokenTally, UsageLedger};
 use crate::model::{Provider, Unavailability};
@@ -14,6 +14,9 @@ pub enum HistoryRead {
         ledger: UsageLedger,
         account_wide: bool,
         actual_costs: bool,
+        /// None for local USD API estimates or statistics without bills.
+        /// Actual costs may be displayed only with an explicit currency.
+        currency: Option<String>,
     },
 }
 
@@ -23,6 +26,7 @@ pub fn read(provider: Provider) -> HistoryRead {
             ledger: crate::ledger::ledger(provider),
             account_wide: false,
             actual_costs: false,
+            currency: None,
         },
         Provider::OpenCodeGo => crate::opencode_console::history(),
         Provider::Zai | Provider::GlmCoding => {
@@ -89,6 +93,7 @@ pub fn parse_reply(reply: &serde_json::Value) -> HistoryRead {
             ledger,
             account_wide: true,
             actual_costs: false,
+            currency: None,
         },
         None => HistoryRead::Failed(Unavailability::ServerError),
     }

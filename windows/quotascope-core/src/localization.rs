@@ -79,6 +79,7 @@ const TABLE: &[Entry] = &[
     Entry { key: "The local login expired. Sign in to the provider's CLI again.", en: "The local login expired. Sign in to the provider's CLI again.", zh: "本机登录已过期，请重新登录服务商的 CLI。" },
     Entry { key: "No saved quota found in the provider's local app.", en: "No saved quota found in the provider's local app.", zh: "服务商的本机应用尚未保存额度读数。" },
     Entry { key: "Provider request bills · all machines · actual recorded USD cost", en: "Provider request bills · all machines · actual recorded USD cost", zh: "服务商请求账单 · 所有设备 · 实际记录的美元费用" },
+    Entry { key: "Provider bills · all machines · actual recorded cost in the displayed currency", en: "Provider bills · all machines · actual recorded cost in the displayed currency", zh: "服务商账单 · 所有设备 · 按显示币种记录的实际费用" },
     Entry { key: "The minimum cache window has ended; entries may remain cached.", en: "The minimum cache window has ended; entries may remain cached.", zh: "已超过最短缓存复用期，条目仍可能留在缓存中。" },
     Entry { key: "Uses kiro-cli's existing login. Sign in with kiro-cli first.", en: "Uses kiro-cli's existing login. Sign in with kiro-cli first.", zh: "使用 kiro-cli 已保存的登录；请先在 kiro-cli 中登录。" },
     Entry { key: "Reads the plan Devin saved on this PC. Open Devin and sign in first.", en: "Reads the plan Devin saved on this PC. Open Devin and sign in first.", zh: "读取 Devin 在本机保存的套餐。请先打开 Devin 并登录。" },

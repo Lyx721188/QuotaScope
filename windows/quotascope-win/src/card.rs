@@ -149,9 +149,19 @@ struct Activity {
     notes: Vec<String>,
     footer: Option<&'static str>,
     priced: bool,
+    currency: Option<String>,
+    actual_costs: bool,
 }
 
 impl Activity {
+    fn money(&self, amount: f64) -> String {
+        let prefix = if self.actual_costs { "" } else { "≈" };
+        match self.currency.as_deref().unwrap_or("USD") {
+            "USD" => format!("{prefix}${amount:.2}"),
+            "CNY" | "RMB" => format!("{prefix}¥{amount:.2}"),
+            other => format!("{prefix}{amount:.2} {other}"),
+        }
+    }
     fn height(&self, m: &Metrics) -> f64 {
         m.s(card::CONTENT_SPACING + 1.0 + 10.0 + 13.0)
             + if self.figures.is_empty() {
@@ -212,6 +222,8 @@ fn activity(data: &CardData) -> Option<Activity> {
         notes: Vec::new(),
         footer: None,
         priced: false,
+        currency: None,
+        actual_costs: false,
     };
     let lines = &mut section.notes;
     match &data.history {
@@ -225,8 +237,14 @@ fn activity(data: &CardData) -> Option<Activity> {
             ledger,
             account_wide,
             actual_costs,
+            currency,
         }) => {
-            if !account_wide && !ledger.has_partial_records {
+            section.currency = currency.clone();
+            section.actual_costs = *actual_costs;
+            if (!account_wide
+                || data.usage.provider() == quotascope_core::model::Provider::DeepSeek)
+                && !ledger.has_partial_records
+            {
                 if let Some(rate) =
                     ledger.cache_hit_rate_calendar(30, chrono::Local::now().date_naive())
                 {
@@ -253,7 +271,8 @@ fn activity(data: &CardData) -> Option<Activity> {
                 );
             } else {
                 let cost: f64 = days.iter().map(|day| day.cost).sum();
-                section.priced = *actual_costs || (!account_wide && cost > 0.0);
+                section.priced =
+                    (*actual_costs && currency.is_some()) || (!account_wide && cost > 0.0);
                 let today = chrono::Local::now().date_naive();
                 for (label, span) in [("Today", 1), ("7 days", 7), ("30 days", 30)] {
                     let cutoff = today - chrono::Days::new(span - 1);
@@ -293,8 +312,8 @@ fn activity(data: &CardData) -> Option<Activity> {
                     ));
                 }
             }
-            section.footer = Some(t(if *actual_costs {
-                "Provider request bills · all machines · actual recorded USD cost"
+            section.footer = Some(t(if *actual_costs && currency.is_some() {
+                "Provider bills · all machines · actual recorded cost in the displayed currency"
             } else if *account_wide {
                 "Provider statistics · all machines · no price breakdown"
             } else {
@@ -471,7 +490,7 @@ fn draw_history(
             );
             if let Some(cost) = figure.cost {
                 painter.text(
-                    &format!("≈${cost:.2}"),
+                    &section.money(cost),
                     crate::d2d::rect(
                         left as f32,
                         (*cy + m.s(34.0)) as f32,
@@ -1305,9 +1324,11 @@ mod tests {
             ledger,
             account_wide: false,
             actual_costs: false,
+            currency: None,
         });
         let section = activity(&payload).unwrap();
         assert_eq!(section.figures.len(), 3);
+        assert_eq!(section.money(0.12), "≈$0.12");
         assert!(section
             .figures
             .iter()
@@ -1315,6 +1336,63 @@ mod tests {
         payload.history_enabled = false;
         assert!(activity(&payload).is_none());
         assert!(!has_history_chart(&payload));
+    }
+
+    #[test]
+    fn actual_history_keeps_its_currency_and_missing_money_stays_absent() {
+        let today = chrono::Local::now().date_naive().to_string();
+        let mut ledger = quotascope_core::history::parse_statistics(
+            &json!({"x_time":[today],"tokensUsage":[100]}),
+        )
+        .unwrap();
+        ledger.days[0].cost = 1.25;
+        let mut payload = data(HistoryRead::Answered {
+            ledger: ledger.clone(),
+            account_wide: true,
+            actual_costs: true,
+            currency: Some("CNY".into()),
+        });
+        let section = activity(&payload).unwrap();
+        assert!(section.priced && section.actual_costs);
+        assert_eq!(section.money(1.25), "¥1.25");
+        assert!(section
+            .figures
+            .iter()
+            .all(|figure| figure.cost == Some(1.25)));
+        let footer = section.footer.unwrap();
+        assert!(!footer.contains("USD") && !footer.contains("美元"));
+        for (currency, expected) in [("USD", "$1.25"), ("EUR", "1.25 EUR")] {
+            payload.history = Some(HistoryRead::Answered {
+                ledger: ledger.clone(),
+                account_wide: true,
+                actual_costs: true,
+                currency: Some(currency.into()),
+            });
+            assert_eq!(activity(&payload).unwrap().money(1.25), expected);
+        }
+        let mut zero = ledger.clone();
+        zero.days[0].cost = 0.0;
+        payload.history = Some(HistoryRead::Answered {
+            ledger: zero,
+            account_wide: true,
+            actual_costs: true,
+            currency: Some("USD".into()),
+        });
+        let section = activity(&payload).unwrap();
+        assert!(section
+            .figures
+            .iter()
+            .all(|figure| figure.cost == Some(0.0)));
+        assert_eq!(section.money(0.0), "$0.00");
+        payload.history = Some(HistoryRead::Answered {
+            ledger,
+            account_wide: true,
+            actual_costs: true,
+            currency: None,
+        });
+        let section = activity(&payload).unwrap();
+        assert!(!section.priced);
+        assert!(section.figures.iter().all(|figure| figure.cost.is_none()));
     }
 
     #[test]

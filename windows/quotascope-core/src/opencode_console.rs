@@ -173,6 +173,7 @@ pub fn history() -> crate::history::HistoryRead {
             ledger,
             account_wide: true,
             actual_costs: true,
+            currency: Some("USD".into()),
         },
         Err(reason) => crate::history::HistoryRead::Failed(reason),
     }
