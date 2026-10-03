@@ -38,8 +38,8 @@ impl HttpClient {
 
     /// Raw client access for the flows that drive requests by hand (the
     /// GitHub device login).
-    pub fn client_for_login(&self) -> &Client {
-        &self.client
+    pub fn client_for_login(&self) -> Client {
+        crate::proxy::client(&self.client)
     }
 
     /// One call, with the retry rule the Swift services share: two extra
@@ -93,9 +93,10 @@ impl HttpClient {
         headers: &[(&str, &str)],
         body: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, Outcome> {
+        let client = self.client_for_login();
         let mut request = match method {
-            Method::Get => self.client.get(url),
-            Method::Post => self.client.post(url),
+            Method::Get => client.get(url),
+            Method::Post => client.post(url),
         };
         for (name, value) in headers {
             request = request.header(*name, *value);

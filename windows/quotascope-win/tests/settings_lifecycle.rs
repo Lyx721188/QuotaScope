@@ -104,7 +104,7 @@ fn tray_settings_close_and_reopen_reuses_window_and_exits_cleanly() {
     std::fs::create_dir_all(&data).unwrap();
     std::fs::write(
         data.join("settings.json"),
-        r#"{"hasRun":true,"enabledAccounts":[],"language":"zh","readsTokenSpend":false}"#,
+        r#"{"hasRun":true,"enabledAccounts":[],"language":"zh","readsTokenSpend":false,"dockSide":"bottom","floating":true,"animatedBots":true}"#,
     )
     .unwrap();
     let executable = std::env::var("QUOTASCOPE_TEST_EXE")
@@ -156,7 +156,17 @@ fn tray_settings_close_and_reopen_reuses_window_and_exits_cleanly() {
     for cycle in 0..3 {
         // WM_COMMAND / 1002 is the command selected by the tray's Settings item.
         unsafe {
-            PostMessageW(Some(tray), WM_COMMAND, WPARAM(1002), LPARAM(0)).unwrap();
+            if cycle == 0 {
+                PostMessageW(
+                    Some(tray),
+                    WM_APP + 1,
+                    WPARAM(0),
+                    LPARAM(WM_LBUTTONUP as isize),
+                )
+                .unwrap();
+            } else {
+                PostMessageW(Some(tray), WM_COMMAND, WPARAM(1002), LPARAM(0)).unwrap();
+            }
         }
         wait_for(&mut app, |s| {
             s.settings

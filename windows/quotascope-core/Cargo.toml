@@ -12,6 +12,9 @@ chrono = { workspace = true }
 url = { workspace = true }
 aes-gcm = { workspace = true }
 base64 = "0.22"
+sha2 = "0.10"
+hmac = "0.12"
+snap = "1.1"
 # Only the one table is read, but it is Cursor's, while the editor holds it
 # open — the bundled engine keeps the read self-contained.
 rusqlite = { version = "0.37", features = ["bundled"] }

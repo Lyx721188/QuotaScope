@@ -158,6 +158,7 @@ pub fn request(method: &str) -> Result<Value, RpcError> {
         let path = locate_codex().ok_or(RpcError::Missing)?;
         let mut command = Command::new(path);
         command.arg("app-server");
+        crate::proxy::environment(&mut command);
         *guard = Some(Client::start(command, Duration::from_secs(20))?);
     }
     let result = guard.as_mut().ok_or(RpcError::Failed)?.call(method, None);

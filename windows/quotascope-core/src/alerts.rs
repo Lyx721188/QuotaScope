@@ -281,6 +281,8 @@ fn standing(reason: Unavailability) -> Standing {
         // A folder whose program has gone is a setup step, not news.
         | Unavailability::ExtensionMissing
         | Unavailability::NotOnWindows => Standing::Neutral,
+        Unavailability::LocalLoginMissing | Unavailability::LocalAppMissing => Standing::Neutral,
+        Unavailability::LocalLoginExpired => Standing::Failure,
     }
 }
 

@@ -114,6 +114,198 @@ pub fn read(home: &Path, now_ms: i64) -> CacheReading {
     CacheReading { live, last_lapsed }
 }
 
+pub fn read_for(provider: crate::model::Provider, home: &Path, now_ms: i64) -> CacheReading {
+    match provider {
+        crate::model::Provider::ClaudeCode => read(home, now_ms),
+        crate::model::Provider::Codex => read_codex(home, now_ms),
+        _ => CacheReading::default(),
+    }
+}
+
+/// OpenAI's documented minimum is 30 minutes on GPT-5.6 and later.
+/// https://developers.openai.com/api/docs/guides/prompt-caching
+/// An eligible prefix can still miss when routed to another machine.
+pub fn codex_states_lifetime(model: &str) -> bool {
+    let Some(version) = model.strip_prefix("gpt-") else {
+        return false;
+    };
+    let version: String = version
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = version.split('.');
+    let Some(major) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+        return false;
+    };
+    let minor = parts
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    major > 5 || (major == 5 && minor >= 6)
+}
+
+fn read_codex(home: &Path, now_ms: i64) -> CacheReading {
+    fn files(root: &Path, out: &mut Vec<(std::path::PathBuf, i64)>) {
+        let Ok(entries) = fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                files(&entry.path(), out);
+            } else if kind.is_file()
+                && entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl")
+            {
+                let Some(modified) = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .and_then(|t| i64::try_from(t.as_millis()).ok())
+                else {
+                    continue;
+                };
+                out.push((entry.path(), modified));
+            }
+        }
+    }
+    fn session(path: &Path) -> Option<CacheSession> {
+        let mut file = File::open(path).ok()?;
+        let size = file.seek(SeekFrom::End(0)).ok()?;
+        file.seek(SeekFrom::Start(size.saturating_sub(TAIL_BYTES)))
+            .ok()?;
+        let mut tail = Vec::new();
+        (&mut file).take(TAIL_BYTES).read_to_end(&mut tail).ok()?;
+        let tail = String::from_utf8_lossy(&tail);
+        let lapse = codex_lapse_from_tail(&tail)?;
+        let mut head = Vec::new();
+        file.seek(SeekFrom::Start(0)).ok()?;
+        (&mut file).take(HEAD_BYTES).read_to_end(&mut head).ok()?;
+        let entries = String::from_utf8_lossy(&head);
+        let mut title = None;
+        let mut project = None;
+        for entry in entries
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        {
+            if project.is_none() {
+                project = entry
+                    .pointer("/payload/cwd")
+                    .and_then(Value::as_str)
+                    .and_then(|p| p.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next())
+                    .map(str::to_string);
+            }
+            if title.is_none()
+                && entry.pointer("/payload/role").and_then(Value::as_str) == Some("user")
+            {
+                let content = entry.pointer("/payload/content");
+                let words = content.and_then(Value::as_str).or_else(|| {
+                    content?
+                        .as_array()?
+                        .iter()
+                        .find_map(|b| b.get("text")?.as_str())
+                });
+                title = words.and_then(crate::ledger::title_from);
+            }
+        }
+        Some(CacheSession {
+            id: path.to_string_lossy().into_owned(),
+            title,
+            project,
+            lapse,
+        })
+    }
+    let mut candidates = Vec::new();
+    files(&home.join(".codex/sessions"), &mut candidates);
+    let mut live: Vec<_> = candidates
+        .iter()
+        .filter(|(_, modified)| now_ms.saturating_sub(*modified) <= 1_860_000)
+        .filter_map(|(path, _)| session(path))
+        .filter(|s| s.lapse.expires_at() > now_ms)
+        .collect();
+    live.sort_by_key(|s| s.lapse.expires_at());
+    let last_lapsed = if live.is_empty() {
+        candidates
+            .iter()
+            .max_by_key(|(_, at)| *at)
+            .and_then(|(path, _)| session(path))
+            .map(|s| s.lapse)
+    } else {
+        None
+    };
+    CacheReading { live, last_lapsed }
+}
+
+pub fn codex_lapse_from_tail(text: &str) -> Option<CacheLapse> {
+    let mut model: Option<String> = None;
+    let mut input_at = None;
+    let mut lapse = None;
+    for entry in text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+    {
+        let kind = entry.get("type").and_then(Value::as_str);
+        let payload = entry.get("payload").unwrap_or(&Value::Null);
+        let event = payload.get("type").and_then(Value::as_str);
+        if kind == Some("turn_context") {
+            model = payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if kind == Some("session_meta") {
+            model = payload
+                .pointer("/base_instructions/provenance/model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(model);
+        }
+        let at = entry
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(crate::timeutil::parse_iso8601_ms);
+        if (kind == Some("response_item")
+            && (matches!(
+                event,
+                Some("function_call_output" | "custom_tool_call_output")
+            ) || (event == Some("message")
+                && payload.get("role").and_then(Value::as_str) == Some("user"))))
+            || (kind == Some("event_msg") && matches!(event, Some("user_message" | "task_started")))
+        {
+            input_at = at;
+        }
+        let usage = if kind == Some("token_usage_record") {
+            payload.get("usage")
+        } else if event == Some("token_count") {
+            payload.pointer("/info/last_token_usage")
+        } else {
+            None
+        };
+        if usage.is_some_and(|u| {
+            ["cached_input_tokens", "cache_write_input_tokens"]
+                .iter()
+                .any(|key| u.get(key).and_then(Value::as_i64).is_some_and(|n| n > 0))
+        }) {
+            lapse = (|| {
+                if !model.as_deref().is_some_and(codex_states_lifetime) {
+                    return None;
+                }
+                let answered_at = at?;
+                let request_at = input_at
+                    .filter(|input| (0..=1_200_000).contains(&answered_at.saturating_sub(*input)))
+                    .unwrap_or(answered_at);
+                Some(CacheLapse {
+                    last_request_ms: request_at,
+                    lifetime_ms: 1_800_000,
+                })
+            })();
+        }
+    }
+    lapse
+}
+
 fn session(path: &Path) -> Option<CacheSession> {
     let mut file = File::open(path).ok()?;
     let size = file.seek(SeekFrom::End(0)).ok()?;
@@ -273,6 +465,28 @@ fn request_time(reply: &Value, replied_at: i64, entries: &HashMap<&str, &Value>)
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn codex_lifetime_uses_request_time_and_only_documented_models() {
+        let lines = [
+            json!({"type":"turn_context","payload":{"model":"gpt-6-sol"}}),
+            json!({"type":"response_item","timestamp":"2026-10-03T01:00:00Z","payload":{"type":"message","role":"user"}}),
+            json!({"type":"event_msg","timestamp":"2026-10-03T01:01:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"cached_input_tokens":100}}}}),
+        ];
+        let text = stream(&lines);
+        let lapse = codex_lapse_from_tail(&text).unwrap();
+        assert_eq!(lapse.lifetime_ms, 1_800_000);
+        assert_eq!(
+            lapse.last_request_ms,
+            crate::timeutil::parse_iso8601_ms("2026-10-03T01:00:00Z").unwrap()
+        );
+        assert!(codex_lapse_from_tail(&text.replace("gpt-6-sol", "gpt-5.5")).is_none());
+        assert!(codex_lapse_from_tail(&text.replace("gpt-6-sol", "claude-opus-4-6")).is_none());
+        assert!(codex_lapse_from_tail(
+            &text.replace("cached_input_tokens\":100", "cached_input_tokens\":0")
+        )
+        .is_none());
+    }
 
     fn stream(entries: &[Value]) -> String {
         entries

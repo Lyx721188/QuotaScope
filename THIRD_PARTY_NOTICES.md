@@ -52,3 +52,9 @@ The Claude, OpenAI, Antigravity, Cursor, OpenCode, Kimi, Ollama, Z.ai, 智谱
 and 清言, MiniMax, GitHub, Grok and xAI, and Volcengine names and marks remain
 the property of their respective owners. Their inclusion identifies compatible
 services and does not imply endorsement.
+
+The Traditional Chinese, Japanese and Korean localization dictionaries and
+provider quota fixtures in this update are adapted from
+[Pulse](https://github.com/qunqin24/Pulse), commit `b396306`,
+Copyright (c) 2026 qunqin24, under the Apache License, Version 2.0.
+The full Apache license is included in `LICENSE`.

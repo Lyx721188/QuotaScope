@@ -70,6 +70,19 @@ impl Snapshot {
             }};
         }
         let mut sources = Vec::new();
+        for (id, title, client) in [
+            ("opencode", "OpenCode", "opencode"),
+            ("kilo", "Kilo CLI", "kilo"),
+        ] {
+            let path = crate::opencode_store::path(client);
+            sources.push(Source {
+                id: id.into(),
+                title: title.into(),
+                location: path.display().to_string(),
+                present: path.is_file(),
+                ledger: read_source!(title, crate::opencode_store::read(&path)),
+            });
+        }
         for p in [Provider::ClaudeCode, Provider::Codex] {
             let path = crate::ledger::transcript_root(p);
             let ledger = read_source!(p.display_name(), crate::ledger::ledger(p));
@@ -263,6 +276,34 @@ impl Snapshot {
                 ledger: read_source!(title, read()),
             });
         }
+        for (id, title, relative) in crate::additional_spend::CATALOG {
+            let paths = crate::additional_spend::roots(id, relative);
+            sources.push(Source {
+                id: (*id).into(),
+                title: (*title).into(),
+                location: paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                present: paths.iter().any(|p| p.exists()),
+                ledger: read_source!(*title, crate::additional_spend::read(id, &paths)),
+            });
+        }
+        let path = crate::ledger::transcript_root(Provider::Antigravity);
+        sources.push(Source {
+            id: "antigravity-ide".into(),
+            title: "Antigravity IDE".into(),
+            location: path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            present: path.as_ref().is_some_and(|p| p.exists()),
+            ledger: read_source!(
+                "Antigravity IDE",
+                crate::ledger::ledger(Provider::Antigravity)
+            ),
+        });
         Self { sources }
     }
 
@@ -271,12 +312,45 @@ impl Snapshot {
         refresh: bool,
         progress: impl Fn(crate::scan::Progress) + 'static,
     ) -> Result<Self, crate::scan::Cancelled> {
-        crate::scan::run(control, 21, progress, || {
+        crate::scan::run(control, 54, progress, || {
             if refresh {
                 crate::ledger::invalidate_memory();
             }
             Self::read_native()
         })
+    }
+
+    /// Empty hours remain visible; model filters use recorded splits only.
+    pub fn hourly(
+        &self,
+        span: Span,
+        agent: Option<&str>,
+        model: Option<&str>,
+        today: NaiveDate,
+    ) -> [i64; 24] {
+        use chrono::Timelike;
+        let mut hours = [0_i64; 24];
+        for source in self
+            .sources
+            .iter()
+            .filter(|s| agent.is_none_or(|a| a == s.id))
+        {
+            for slot in &source.ledger.slots {
+                let Some(at) = chrono::DateTime::from_timestamp_millis(slot.start_ms)
+                    .map(|t| t.with_timezone(&chrono::Local))
+                else {
+                    continue;
+                };
+                if span.contains(at.date_naive(), today) {
+                    let tokens = model
+                        .map(|m| slot.models.get(m).map(TokenTally::total).unwrap_or(0))
+                        .unwrap_or(slot.tokens);
+                    let hour = at.hour() as usize;
+                    hours[hour] = hours[hour].saturating_add(tokens);
+                }
+            }
+        }
+        hours
     }
 
     pub fn analyze(

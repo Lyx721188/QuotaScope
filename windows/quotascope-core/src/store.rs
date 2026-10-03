@@ -271,12 +271,13 @@ fn run_pass(
 
     let mut handles = Vec::new();
     for account in &accounts {
-        let ring = KeyRing {
-            api_keys: keys.api_keys.clone(),
-            addresses: keys.addresses.clone(),
-            copilot_token: keys.copilot_token.clone(),
-        };
+        let ring = keys.for_account(account);
         let account = account.clone();
+        let added_key = if account.is_primary() {
+            None
+        } else {
+            keys.api_keys.get(&account.id()).cloned()
+        };
         let basis = deepseek_basis.clone();
         let services = services.clone();
         // An extension runs its own program; the manifest is looked up in
@@ -289,6 +290,15 @@ fn run_pass(
         handles.push((
             account.clone(),
             std::thread::spawn(move || {
+                if !account.is_primary()
+                    && account.provider != Provider::Extension
+                    && added_key.is_none()
+                {
+                    return ProviderUsage::unavailable(
+                        account,
+                        crate::model::Unavailability::ApiKeyMissing,
+                    );
+                }
                 if let Some(extension) = extension {
                     return crate::extension::fetch(&extension);
                 }
@@ -316,6 +326,7 @@ fn run_pass(
         // before the cache banks it: the denominator is a setting, so the
         // reading carries it wherever it goes next.
         let mut fetched = fetched;
+        fetched.account = account.clone();
         crate::balance_ring::apply(&mut fetched, peaks);
 
         // Every fetched reading goes through the cache: a refusal shows the

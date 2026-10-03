@@ -305,14 +305,16 @@ fn run(extension: &Extension) -> RunOutcome {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    let child = Command::new(&extension.executable)
+    let mut command = Command::new(&extension.executable);
+    command
         .current_dir(&extension.directory)
         .env_clear()
         .envs(environment_for(extension))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .spawn();
+        .stdin(std::process::Stdio::null());
+    crate::proxy::environment(&mut command);
+    let child = command.spawn();
 
     let mut child = match child {
         Ok(child) => child,

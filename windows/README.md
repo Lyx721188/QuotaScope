@@ -1,5 +1,7 @@
 # QuotaScope for Windows
 
+当前开发分支新增能力与未完成部分见 [上游移植状态](../Docs/upstream-implementation-status.md)；尚未发布。
+
 Current Windows 1.2 implementation and limitations:
 [usage guide](../Docs/windows-1.2.md), [all 77 provider routes](../Docs/providers/windows-ports.md),
 and [extension contract](../Docs/extensions.md). The inherited provider table

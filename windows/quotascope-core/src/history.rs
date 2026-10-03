@@ -13,6 +13,7 @@ pub enum HistoryRead {
     Answered {
         ledger: UsageLedger,
         account_wide: bool,
+        actual_costs: bool,
     },
 }
 
@@ -21,7 +22,9 @@ pub fn read(provider: Provider) -> HistoryRead {
         Provider::ClaudeCode | Provider::Codex | Provider::Antigravity => HistoryRead::Answered {
             ledger: crate::ledger::ledger(provider),
             account_wide: false,
+            actual_costs: false,
         },
+        Provider::OpenCodeGo => crate::opencode_console::history(),
         Provider::Zai | Provider::GlmCoding => {
             let key = crate::secrets::key_for(provider.raw())
                 .filter(|s| !s.trim().is_empty())
@@ -85,6 +88,7 @@ pub fn parse_reply(reply: &serde_json::Value) -> HistoryRead {
         Some(ledger) => HistoryRead::Answered {
             ledger,
             account_wide: true,
+            actual_costs: false,
         },
         None => HistoryRead::Failed(Unavailability::ServerError),
     }

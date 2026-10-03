@@ -255,6 +255,22 @@ impl UsageLedger {
         (tokens, cost)
     }
 
+    /// Prorate the two boundary quarter-hours; never include work after the
+    /// quota was observed. Timing inside a bucket is an approximation.
+    pub fn cost_between(&self, start_ms: i64, end_ms: i64) -> f64 {
+        self.slots
+            .iter()
+            .map(|s| s.cost * slot_share(s.start_ms, start_ms, end_ms))
+            .sum()
+    }
+
+    pub fn tokens_between(&self, start_ms: i64, end_ms: i64) -> f64 {
+        self.slots
+            .iter()
+            .map(|s| s.tokens as f64 * slot_share(s.start_ms, start_ms, end_ms))
+            .sum()
+    }
+
     pub fn today(&self) -> Option<&LedgerDay> {
         let today = Local::now().date_naive();
         self.days.last().filter(|day| day.date == today)
@@ -358,7 +374,7 @@ pub struct Scanned {
 
 /// The quarter-hour a moment falls in, floored on the absolute epoch and then
 /// written in **local** time — "today" means the user's today.
-fn slot_key_from_ms(ms: i64) -> String {
+pub(crate) fn slot_key_from_ms(ms: i64) -> String {
     const QUARTER_MS: i64 = 15 * 60 * 1000;
     let floored = (ms / QUARTER_MS) * QUARTER_MS;
     let at = Local
@@ -467,10 +483,10 @@ fn contains(line: &str, needle: &str) -> bool {
 pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
     let mut scanned = Scanned::default();
     let mut days: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
-    // Retries and resumed sessions can write the same reply twice; the
-    // message id identifies it. This only catches repeats within a file,
-    // which is where they actually happen.
-    let mut seen: HashSet<String> = HashSet::new();
+    // One streamed reply can be written repeatedly with growing counters.
+    // Keep field-wise maxima within this file. Cross-file deduplication is
+    // deliberately not part of this parser.
+    let mut replies: HashMap<String, (String, String, TokenTally)> = HashMap::new();
 
     for line in lines {
         if !crate::scan::checkpoint() {
@@ -543,28 +559,44 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
             continue;
         };
 
-        if let Some(id) = message.get("id").and_then(|i| i.as_str()) {
-            if !seen.insert(id.to_string()) {
-                continue;
-            }
-        }
-
-        let tally = TokenTally {
-            input: int(usage.get("input_tokens")),
-            cache_write: int(usage.get("cache_creation_input_tokens")),
-            cache_read: int(usage.get("cache_read_input_tokens")),
-            output: int(usage.get("output_tokens")),
+        let mut tally = TokenTally {
+            input: int(usage.get("input_tokens")).max(0),
+            cache_write: int(usage.get("cache_creation_input_tokens")).max(0),
+            cache_read: int(usage.get("cache_read_input_tokens")).max(0),
+            output: int(usage.get("output_tokens")).max(0),
         };
         if tally.total() <= 0 {
             continue;
         }
 
-        let key = slot_key_from_ms(at_ms);
-        *days
-            .entry(key)
-            .or_default()
-            .entry(model.to_string())
-            .or_default() += tally;
+        let mut key = slot_key_from_ms(at_ms);
+        let mut model = model.to_string();
+        if let Some(id) = message
+            .get("id")
+            .and_then(|i| i.as_str())
+            .filter(|id| !id.is_empty())
+        {
+            let reply = replies
+                .entry(id.to_string())
+                .or_insert_with(|| (key.clone(), model.clone(), TokenTally::default()));
+            key = reply.0.clone();
+            model = reply.1.clone();
+            let previous = reply.2;
+            let merged = TokenTally {
+                input: previous.input.max(tally.input),
+                cache_write: previous.cache_write.max(tally.cache_write),
+                cache_read: previous.cache_read.max(tally.cache_read),
+                output: previous.output.max(tally.output),
+            };
+            tally = TokenTally {
+                input: merged.input - previous.input,
+                cache_write: merged.cache_write - previous.cache_write,
+                cache_read: merged.cache_read - previous.cache_read,
+                output: merged.output - previous.output,
+            };
+            reply.2 = merged;
+        }
+        *days.entry(key).or_default().entry(model).or_default() += tally;
     }
 
     scanned.days = days;
@@ -754,7 +786,7 @@ impl FileCache {
         if crate::settings::with(|s| s.statistics_cache_limit_mb == 0) {
             return FileCache::default();
         }
-        let path = data_dir().join(format!("ledger-4-{}.json", provider.raw()));
+        let path = data_dir().join(ledger_cache_name(provider));
         crate::scan::read(path)
             .ok()
             .and_then(|data| serde_json::from_slice(&data).ok())
@@ -769,10 +801,26 @@ impl FileCache {
             if !crate::scan::checkpoint() {
                 return;
             }
-            let _ =
-                crate::statistics_cache::write(&format!("ledger-4-{}.json", provider.raw()), &data);
+            let _ = crate::statistics_cache::write(&ledger_cache_name(provider), &data);
         }
     }
+}
+
+fn ledger_cache_name(provider: Provider) -> String {
+    let version = if provider == Provider::ClaudeCode {
+        5
+    } else {
+        4
+    };
+    format!("ledger-{version}-{}.json", provider.raw())
+}
+
+pub fn slot_share(slot_ms: i64, start_ms: i64, end_ms: i64) -> f64 {
+    let overlap = slot_ms
+        .saturating_add(900_000)
+        .min(end_ms)
+        .saturating_sub(slot_ms.max(start_ms));
+    (overlap as f64 / 900_000.0).clamp(0.0, 1.0)
 }
 
 fn data_dir() -> PathBuf {
@@ -1519,7 +1567,7 @@ pub fn release_expired_memory(enabled: bool) {
 
 /// Manual refresh runs this on the scan worker, never on the UI thread.
 /// Persisted per-file stamps still avoid parsing unchanged transcripts.
-pub(crate) fn invalidate_memory() {
+pub fn invalidate_memory() {
     let mut cache = MEMORY.lock().unwrap_or_else(|e| e.into_inner());
     if crate::scan::checkpoint() {
         *cache = None;
@@ -5304,6 +5352,44 @@ mod tests {
         );
         let second = &scanned.days[&key2]["claude-opus-4.6"];
         assert_eq!(second.input, 5);
+    }
+
+    #[test]
+    fn streamed_reply_grows_without_adding_input_or_moving_its_bucket() {
+        let lines = [
+            claude_line("alpha", 100, 20, 30, 1, "2026-10-01T10:14:59Z", "one"),
+            claude_line("alpha", 90, 20, 30, 40, "2026-10-01T10:15:01Z", "one"),
+            claude_line("alpha", 100, 20, 30, 10, "2026-10-01T10:15:02Z", "one"),
+        ];
+        let scanned = parse_claude_code(lines.into_iter());
+        assert_eq!(scanned.days.len(), 1);
+        let tally = scanned.days.values().next().unwrap()["alpha"];
+        assert_eq!(
+            tally,
+            TokenTally {
+                input: 100,
+                cache_write: 20,
+                cache_read: 30,
+                output: 40
+            }
+        );
+    }
+
+    #[test]
+    fn separate_files_keep_independent_reply_identity() {
+        let line = claude_line("alpha", 100, 0, 0, 40, "2026-10-01T10:14:59Z", "one");
+        let total = |s: Scanned| {
+            s.days
+                .values()
+                .flat_map(|m| m.values())
+                .map(TokenTally::total)
+                .sum::<i64>()
+        };
+        assert_eq!(
+            total(parse_claude_code([line.clone()].into_iter()))
+                + total(parse_claude_code([line].into_iter())),
+            280
+        );
     }
 
     #[test]

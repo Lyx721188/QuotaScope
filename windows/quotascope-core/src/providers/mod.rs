@@ -12,6 +12,7 @@ pub mod augment;
 pub mod bifrost;
 pub mod chutes;
 pub mod claude_code;
+pub mod claude_session;
 pub mod claw_router;
 pub mod cline_pass;
 pub mod codebuff;
@@ -49,6 +50,7 @@ pub mod poe;
 pub mod qoder;
 pub mod qwen_cloud;
 pub mod raycast_ai;
+pub mod remaining;
 pub mod replicate;
 pub mod sakana;
 pub mod step_fun;
@@ -60,6 +62,7 @@ pub mod v0;
 pub mod v2ex;
 pub mod venice;
 pub mod vercel_ai_gateway;
+pub mod volcengine_signer;
 pub mod warp;
 pub mod xaiapi;
 pub mod xiaomi_mimo;
@@ -94,6 +97,7 @@ pub fn session_spec(provider: Provider) -> Option<SessionSpec> {
         Provider::Manus => Some(manus::SESSION),
         Provider::Mistral => Some(mistral::SESSION),
         Provider::NotionAi => Some(notion_ai::SESSION),
+        Provider::OllamaCloud => Some(remaining::OLLAMA_SESSION),
         Provider::Perplexity => Some(perplexity::SESSION),
         Provider::Qoder => Some(qoder::SESSION),
         Provider::QwenCloud => Some(qwen_cloud::SESSION),
@@ -112,14 +116,33 @@ pub fn session_spec(provider: Provider) -> Option<SessionSpec> {
 
 /// The credentials a pass may need, resolved once per pass rather than once
 /// per request.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct KeyRing {
     pub api_keys: std::collections::HashMap<String, String>,
     pub addresses: std::collections::HashMap<String, String>,
     pub copilot_token: Option<String>,
+    pub opencode_console: Option<String>,
 }
 
 impl KeyRing {
+    pub(crate) fn for_account(&self, account: &AccountKey) -> Self {
+        if account.is_primary() {
+            return self.clone();
+        }
+        let api_keys = self
+            .api_keys
+            .get(&account.id())
+            .map(|key| {
+                std::collections::HashMap::from([(account.provider.raw().to_string(), key.clone())])
+            })
+            .unwrap_or_default();
+        Self {
+            api_keys,
+            addresses: self.addresses.clone(),
+            copilot_token: None,
+            opencode_console: None,
+        }
+    }
     pub fn load() -> KeyRing {
         let mut api_keys = std::collections::HashMap::new();
         for provider in crate::model::ALL_PROVIDERS {
@@ -129,10 +152,22 @@ impl KeyRing {
                 }
             }
         }
+        for account in crate::settings::with(|s| s.ordered_enabled())
+            .into_iter()
+            .filter(|a| !a.is_primary())
+        {
+            if let Some(key) = crate::secrets::key_for(&account.id()) {
+                api_keys.insert(account.id(), key);
+            }
+        }
+        if let Some(session) = crate::secrets::key_for(claude_session::SECRET) {
+            api_keys.insert(claude_session::SECRET.into(), session);
+        }
         KeyRing {
             api_keys,
             addresses: crate::settings::with(|settings| settings.server_addresses.clone()),
             copilot_token: crate::secrets::key_for("copilot"),
+            opencode_console: crate::secrets::key_for(crate::opencode_console::SECRET),
         }
     }
 
@@ -198,7 +233,7 @@ impl Services {
     pub fn new() -> Services {
         let http = Arc::new(HttpClient::new());
         let deepseek = Arc::new(deepseek::DeepSeekService::new(http.clone()));
-        let list: Vec<Arc<dyn ProviderService>> = vec![
+        let mut list: Vec<Arc<dyn ProviderService>> = vec![
             Arc::new(claude_code::ClaudeCodeService::new(http.clone())),
             Arc::new(codex::CodexService::new(http.clone())),
             Arc::new(antigravity::AntigravityService::new()),
@@ -269,6 +304,9 @@ impl Services {
             Arc::new(type_safe::TypeSafeService::new(http.clone())),
             Arc::new(zoom_mate::ZoomMateService::new(http.clone())),
         ];
+        list.extend(remaining::PROVIDERS.iter().map(|provider| {
+            Arc::new(remaining::Service::new(*provider, http.clone())) as Arc<dyn ProviderService>
+        }));
         Services {
             list,
             http,

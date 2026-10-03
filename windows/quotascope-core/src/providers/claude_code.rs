@@ -34,9 +34,22 @@ impl ProviderService for ClaudeCodeService {
         "endpoint"
     }
 
-    fn fetch(&self, _keys: &KeyRing) -> ProviderUsage {
+    fn fetch(&self, keys: &KeyRing) -> ProviderUsage {
         let account = AccountKey::primary(Provider::ClaudeCode);
-        match self.load_access_token() {
+        if let Some(credential) = keys.api_key(Provider::ClaudeCode) {
+            let Some(root) = serde_json::from_str::<serde_json::Value>(&credential).ok() else {
+                return ProviderUsage::unavailable(account, Unavailability::ClaudeLoginExpired);
+            };
+            let oauth = &root["claudeAiOauth"];
+            if number(&oauth["expiresAt"]).is_some_and(|t| t <= crate::timeutil::now_ms() as f64) {
+                return ProviderUsage::unavailable(account, Unavailability::ClaudeLoginExpired);
+            }
+            return match oauth["accessToken"].as_str().filter(|s| !s.is_empty()) {
+                Some(token) => Self::new(self.http.clone()).endpoint_usage(account, token.into()),
+                None => ProviderUsage::unavailable(account, Unavailability::ClaudeLoginExpired),
+            };
+        }
+        let usage = match self.load_access_token() {
             Login::None => {
                 ProviderUsage::unavailable(account, Unavailability::ClaudeSignInRequired)
             }
@@ -44,6 +57,17 @@ impl ProviderService for ClaudeCodeService {
                 ProviderUsage::unavailable(account, Unavailability::ClaudeLoginExpired)
             }
             Login::Usable(token) => self.endpoint_usage(account, token),
+        };
+        if matches!(usage.state, State::Unavailable(_)) {
+            crate::statusline::read(crate::timeutil::now_ms())
+                .or_else(|| {
+                    keys.api_keys
+                        .get(super::claude_session::SECRET)
+                        .and_then(|session| super::claude_session::fetch(&self.http, session).ok())
+                })
+                .unwrap_or(usage)
+        } else {
+            usage
         }
     }
 }

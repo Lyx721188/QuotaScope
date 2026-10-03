@@ -22,6 +22,8 @@ pub enum AppMsg {
     StorePoll,
     /// A second launch asked for the settings window.
     OpenSettings,
+    OpenDashboard,
+    RefreshAll,
     DeviceFlowDone(Result<String, String>),
     /// The value estimates for the transcript-backed accounts, worked out off
     /// the UI path: account id -> window id -> the card's estimate line.
@@ -30,7 +32,10 @@ pub enum AppMsg {
         std::collections::HashMap<String, std::collections::HashMap<String, String>>,
     ),
     Histories(u64, HashMap<String, quotascope_core::history::HistoryRead>),
-    PromptCache(u64, quotascope_core::prompt_cache::CacheReading),
+    PromptCache(
+        u64,
+        HashMap<Provider, quotascope_core::prompt_cache::CacheReading>,
+    ),
     CodexDetails(u64, quotascope_core::codex_account::AccountDetails),
     UpdateChecked(bool, quotascope_core::updates::CheckResult),
 }
@@ -56,7 +61,7 @@ pub struct App {
     histories_dirty: bool,
     histories_generation: u64,
     histories_at: Option<std::time::Instant>,
-    prompt_cache: Option<quotascope_core::prompt_cache::CacheReading>,
+    prompt_cache: HashMap<Provider, quotascope_core::prompt_cache::CacheReading>,
     prompt_cache_running: bool,
     prompt_cache_at: Option<std::time::Instant>,
     codex_details: Option<quotascope_core::codex_account::AccountDetails>,
@@ -150,6 +155,29 @@ impl App {
             });
         }
 
+        for (name, dashboard) in [
+            ("QuotaScope.Windows.OpenDashboard", true),
+            ("QuotaScope.Windows.RefreshAll", false),
+        ] {
+            let (signal_tx, signal_rx) = channel::<()>();
+            crate::winutil::listen_for_action(name, signal_tx);
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for _ in signal_rx {
+                    if tx
+                        .send(if dashboard {
+                            AppMsg::OpenDashboard
+                        } else {
+                            AppMsg::RefreshAll
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+
         // First-run resolution happens exactly once, at launch, on the UI
         // path — `--json` never stamps anything.
         quotascope_core::settings::mutate(|s| s.resolve_first_run());
@@ -181,7 +209,7 @@ impl App {
             histories_dirty: true,
             histories_generation: 0,
             histories_at: None,
-            prompt_cache: None,
+            prompt_cache: HashMap::new(),
             prompt_cache_running: false,
             prompt_cache_at: None,
             codex_details: None,
@@ -226,6 +254,7 @@ impl App {
         }
         self.store.send(Command::Shutdown);
         quotascope_core::codex_rpc::shutdown();
+        quotascope_core::spend_warmer::clear();
     }
 
     fn drain(&mut self) {
@@ -236,6 +265,8 @@ impl App {
                 AppMsg::Settings(action) => self.handle_settings(action),
                 AppMsg::StorePoll => self.poll_store(),
                 AppMsg::OpenSettings => self.settings.show(),
+                AppMsg::OpenDashboard => self.settings.show_dashboard(),
+                AppMsg::RefreshAll => self.handle_tray(TrayCommand::RefreshAll),
                 AppMsg::Estimates(generation, map) => {
                     self.estimates_running = false;
                     if generation == self.histories_generation {
@@ -255,7 +286,7 @@ impl App {
                 AppMsg::PromptCache(generation, reading) => {
                     self.prompt_cache_running = false;
                     if generation == self.histories_generation {
-                        self.prompt_cache = Some(reading);
+                        self.prompt_cache = reading;
                         self.prompt_cache_at = Some(std::time::Instant::now());
                         self.rebuild_entries();
                     }
@@ -327,6 +358,7 @@ impl App {
             TrayCommand::OpenSettings => {
                 self.settings.show();
             }
+            TrayCommand::OpenDashboard => self.settings.show_dashboard(),
             TrayCommand::OpenUsagePage(url) => open_in_browser(url),
             TrayCommand::RefreshAll => {
                 self.invalidate_histories();
@@ -363,6 +395,8 @@ impl App {
     fn handle_settings(&mut self, action: SettingsAction) {
         match action {
             SettingsAction::Changed => {
+                self.tray
+                    .set_global_shortcuts(quotascope_core::settings::with(|s| s.global_shortcuts));
                 self.invalidate_histories();
                 self.panel.reload_settings();
                 self.tray
@@ -387,6 +421,12 @@ impl App {
             SettingsAction::SaveKey => {
                 self.invalidate_histories();
                 self.store.send(Command::SettingsChanged);
+            }
+            SettingsAction::RefreshAccount(account) => {
+                self.invalidate_histories();
+                self.refreshing.insert(account.id());
+                self.store.send(Command::RefreshAccount(account));
+                self.mark_refreshing();
             }
             SettingsAction::SignInCopilot => self.start_device_flow(),
             SettingsAction::SignOutCopilot => {
@@ -475,6 +515,11 @@ impl App {
         }
         if self.maintenance_at.elapsed() >= std::time::Duration::from_secs(30) {
             self.maintenance_at = std::time::Instant::now();
+            if self.settings.is_open() {
+                quotascope_core::spend_warmer::cancel_running();
+            } else {
+                quotascope_core::spend_warmer::tick();
+            }
             quotascope_core::ledger::release_expired_memory(quotascope_core::settings::with(|s| {
                 s.reads_token_spend
             }));
@@ -509,7 +554,7 @@ impl App {
         self.estimates.clear();
         self.estimates_at = None;
         self.estimates_dirty = true;
-        self.prompt_cache = None;
+        self.prompt_cache.clear();
         self.prompt_cache_at = None;
         self.codex_details = None;
         self.codex_details_at = None;
@@ -519,8 +564,9 @@ impl App {
     fn maybe_refresh_prompt_cache(&mut self) {
         let enabled = quotascope_core::settings::with(|s| {
             s.reads_token_spend
-                && s.enabled_accounts.contains("claudeCode")
-                && s.detailed_cards.contains("claudeCode")
+                && ["claudeCode", "codex"]
+                    .iter()
+                    .any(|id| s.enabled_accounts.contains(*id) && s.detailed_cards.contains(*id))
         });
         if !enabled
             || !self.panel.needs_prompt_cache()
@@ -535,10 +581,19 @@ impl App {
         let generation = self.histories_generation;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let reading = quotascope_core::prompt_cache::read(
-                &quotascope_core::home_dir(),
-                quotascope_core::timeutil::now_ms(),
-            );
+            let reading = [Provider::ClaudeCode, Provider::Codex]
+                .into_iter()
+                .map(|provider| {
+                    (
+                        provider,
+                        quotascope_core::prompt_cache::read_for(
+                            provider,
+                            &quotascope_core::home_dir(),
+                            quotascope_core::timeutil::now_ms(),
+                        ),
+                    )
+                })
+                .collect();
             let _ = tx.send(AppMsg::PromptCache(generation, reading));
         });
     }
@@ -578,11 +633,15 @@ impl App {
         let subjects: Vec<_> = settings
             .ordered_enabled()
             .into_iter()
+            .filter(|a| a.is_primary())
             .filter(|a| settings.detailed_cards.contains(&a.id()))
             .filter(|a| a.provider.provides_history())
             .filter(|a| {
                 settings.reads_token_spend
-                    || matches!(a.provider, Provider::Zai | Provider::GlmCoding)
+                    || matches!(
+                        a.provider,
+                        Provider::Zai | Provider::GlmCoding | Provider::OpenCodeGo
+                    )
             })
             .collect();
         if subjects.is_empty() {
@@ -632,6 +691,7 @@ impl App {
         let subjects: Vec<ProviderUsage> = self
             .readings
             .values()
+            .filter(|r| r.account.is_primary())
             .filter(|r| {
                 matches!(
                     r.account.provider,
@@ -657,8 +717,11 @@ impl App {
         std::thread::spawn(move || {
             let now = quotascope_core::timeutil::now_ms();
             let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
+            let mut elsewhere = quotascope_core::elsewhere::Watch::load();
+            quotascope_core::ledger::invalidate_memory();
             for reading in subjects {
                 let ledger = quotascope_core::ledger::ledger(reading.account.provider);
+                elsewhere.observe(&reading, &ledger, now);
                 // Only Antigravity can say which of its logged models spent a
                 // given window; every other provider's windows are priced as
                 // account-wide or not at all.
@@ -668,14 +731,29 @@ impl App {
                 };
                 let mut lines = HashMap::new();
                 for window in &reading.windows {
-                    if let Some(text) =
-                        quotascope_core::estimate::window_text(window, &ledger, now, rule)
-                    {
+                    if elsewhere.marked(&reading, window) {
+                        lines.insert(
+                            window.id.clone(),
+                            quotascope_core::localization::t(
+                                "Usage outside this computer was detected; value estimate paused.",
+                            )
+                            .to_string(),
+                        );
+                        continue;
+                    }
+                    if let Some(text) = quotascope_core::estimate::window_text_at(
+                        window,
+                        &ledger,
+                        reading.observed_at,
+                        now,
+                        rule,
+                    ) {
                         lines.insert(window.id.clone(), text);
                     }
                 }
                 out.insert(reading.account.id(), lines);
             }
+            elsewhere.save();
             let _ = tx.send(AppMsg::Estimates(generation, out));
         });
     }
@@ -695,16 +773,20 @@ impl App {
                 if self.refreshing.contains(&account.id()) {
                     entry.ring.is_refreshing = true;
                 }
+                entry.account = account.clone();
+                entry.title = crate::panel::account_title(account.provider, &account, &settings);
                 entry.value_lines = self
                     .estimates
                     .get(&account.id())
                     .cloned()
                     .unwrap_or_default();
                 entry.history = self.histories.get(&account.id()).cloned();
-                if account.provider == Provider::ClaudeCode {
-                    entry.prompt_cache = self.prompt_cache.clone();
+                if account.is_primary()
+                    && matches!(account.provider, Provider::ClaudeCode | Provider::Codex)
+                {
+                    entry.prompt_cache = self.prompt_cache.get(&entry.account.provider).cloned();
                 }
-                if account.provider == Provider::Codex {
+                if account.is_primary() && account.provider == Provider::Codex {
                     entry.codex_details = self.codex_details.clone();
                 }
                 entry
@@ -764,6 +846,7 @@ impl App {
         if !self.settings.is_open() {
             return;
         }
+        self.settings.set_readings(&self.readings);
         for (id, reading) in &self.readings {
             let provider_raw = reading.provider().raw().to_string();
             let _ = id;

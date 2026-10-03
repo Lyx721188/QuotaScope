@@ -71,8 +71,7 @@ impl ProviderService for CursorService {
             return ProviderUsage::unavailable(account, Unavailability::CursorLoginExpired);
         };
 
-        let response = self
-            .http
+        let response = crate::proxy::client(&self.http)
             .get(ENDPOINT)
             .header("Cookie", cookie)
             .header("Accept", "application/json")
@@ -148,7 +147,7 @@ fn database_path() -> Option<std::path::PathBuf> {
 /// aside would take the main database without the journal holding the newest
 /// writes, and opening it writable would touch a directory that isn't ours.
 /// Read-only leaves all three alone.
-fn stored_token() -> Option<String> {
+pub(crate) fn stored_token() -> Option<String> {
     let path = database_path()?;
     if !path.exists() {
         return None;
