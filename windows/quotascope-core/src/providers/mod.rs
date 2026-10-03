@@ -123,6 +123,8 @@ pub struct KeyRing {
     pub addresses: std::collections::HashMap<String, String>,
     pub copilot_token: Option<String>,
     pub opencode_console: Option<String>,
+    /// Account id -> its explicitly stored DeepSeek console session.
+    pub deepseek_console: std::collections::HashMap<String, String>,
 }
 
 impl KeyRing {
@@ -142,6 +144,11 @@ impl KeyRing {
             addresses: self.addresses.clone(),
             copilot_token: None,
             opencode_console: None,
+            deepseek_console: self
+                .deepseek_console
+                .get(&account.id())
+                .map(|token| std::collections::HashMap::from([(account.id(), token.clone())]))
+                .unwrap_or_default(),
         }
     }
     pub fn load() -> KeyRing {
@@ -164,11 +171,18 @@ impl KeyRing {
         if let Some(session) = crate::secrets::key_for(claude_session::SECRET) {
             api_keys.insert(claude_session::SECRET.into(), session);
         }
+        let deepseek_console = crate::settings::with(|s| s.ordered_enabled())
+            .into_iter()
+            .chain(std::iter::once(AccountKey::primary(Provider::DeepSeek)))
+            .filter(|a| a.provider == Provider::DeepSeek)
+            .filter_map(|a| crate::deepseek_session::token(&a).map(|token| (a.id(), token)))
+            .collect();
         KeyRing {
             api_keys,
             addresses: crate::settings::with(|settings| settings.server_addresses.clone()),
             copilot_token: crate::secrets::key_for("copilot"),
             opencode_console: crate::secrets::key_for(crate::opencode_console::SECRET),
+            deepseek_console,
         }
     }
 

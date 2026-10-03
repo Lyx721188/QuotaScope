@@ -41,6 +41,9 @@ pub fn remove(account: &AccountKey) {
         return;
     }
     crate::secrets::set_key(&account.id(), "");
+    if account.provider == Provider::DeepSeek {
+        crate::deepseek_session::set_token(account, "");
+    }
     crate::settings::mutate(|s| {
         let id = account.id();
         s.enabled_accounts.remove(&id);
@@ -66,6 +69,8 @@ mod tests {
             "web".into(),
         );
         keys.opencode_console = Some("console".into());
+        keys.deepseek_console
+            .insert("deepSeek".into(), "primary-console".into());
         keys.copilot_token = Some("copilot".into());
         let isolated = keys.for_account(&account);
         assert_eq!(isolated.api_keys.len(), 1);
@@ -74,9 +79,26 @@ mod tests {
             Some("own")
         );
         assert!(isolated.opencode_console.is_none() && isolated.copilot_token.is_none());
+        assert!(isolated.deepseek_console.is_empty());
         assert!(keys
             .for_account(&AccountKey::from_id("claudeCode#2").unwrap())
             .api_keys
+            .is_empty());
+    }
+
+    #[test]
+    fn additional_deepseek_accounts_keep_their_own_console_slot() {
+        let mut keys = crate::providers::KeyRing::default();
+        keys.deepseek_console
+            .insert("deepSeek".into(), "primary".into());
+        keys.deepseek_console
+            .insert("deepSeek#1".into(), "additional".into());
+        let own = keys.for_account(&AccountKey::from_id("deepSeek#1").unwrap());
+        assert_eq!(own.deepseek_console.len(), 1);
+        assert_eq!(own.deepseek_console["deepSeek#1"], "additional");
+        assert!(keys
+            .for_account(&AccountKey::from_id("deepSeek#2").unwrap())
+            .deepseek_console
             .is_empty());
     }
 }

@@ -5,35 +5,55 @@ use std::io::Read;
 use std::path::Path;
 type Values = BTreeMap<Vec<u8>, (u64, Option<Vec<u8>>)>;
 pub fn windsurf() -> Option<(String, String)> {
+    let keys = [
+        "devin_session_token",
+        "devin_auth1_token",
+        "devin_account_id",
+        "devin_primary_org_id",
+    ];
+    let (values, browser) = find("https://windsurf.com", &keys, |values| {
+        keys.iter()
+            .all(|key| values.get(*key).is_some_and(|v| !v.is_empty()))
+    })?;
+    Some((serde_json::to_string(&values).ok()?, browser))
+}
+
+/// Default profile first, followed by a bounded, deterministic set of named
+/// profiles. The underlying reader still selects only this origin and keys.
+pub fn find(
+    origin: &str,
+    keys: &[&str],
+    accept: impl Fn(&BTreeMap<String, String>) -> bool,
+) -> Option<(BTreeMap<String, String>, String)> {
     let local = std::env::var_os("LOCALAPPDATA")?;
-    for browser in [
-        "Microsoft/Edge/User Data",
-        "Google/Chrome/User Data",
-        "BraveSoftware/Brave-Browser/User Data",
-        "Vivaldi/User Data",
+    for (browser, relative) in [
+        ("Edge", "Microsoft/Edge/User Data"),
+        ("Chrome", "Google/Chrome/User Data"),
+        ("Brave", "BraveSoftware/Brave-Browser/User Data"),
+        ("Vivaldi", "Vivaldi/User Data"),
     ] {
-        let root = std::path::PathBuf::from(&local).join(browser);
-        for profile in std::fs::read_dir(root).ok().into_iter().flatten().flatten() {
-            let name = profile.file_name().to_string_lossy().to_string();
-            if name != "Default" && !name.starts_with("Profile ") {
-                continue;
-            }
-            let path = profile.path().join("Local Storage/leveldb");
-            let keys = [
-                "devin_session_token",
-                "devin_auth1_token",
-                "devin_account_id",
-                "devin_primary_org_id",
-            ];
-            if let Some(values) = read(&path, "https://windsurf.com", &keys) {
-                if keys
-                    .iter()
-                    .all(|key| values.get(*key).is_some_and(|v| !v.is_empty()))
-                {
-                    return Some((
-                        serde_json::to_string(&values).ok()?,
-                        browser.split('/').next()?.to_string(),
-                    ));
+        let root = std::path::PathBuf::from(&local).join(relative);
+        let mut named: Vec<_> = std::fs::read_dir(&root)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .take(256)
+            .filter(|profile| {
+                profile
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("Profile ")
+            })
+            .map(|profile| profile.path())
+            .collect();
+        named.sort();
+        named.truncate(31);
+        for profile in std::iter::once(root.join("Default")).chain(named) {
+            let path = profile.join("Local Storage/leveldb");
+            if let Some(values) = read(&path, origin, keys) {
+                if accept(&values) {
+                    return Some((values, browser.into()));
                 }
             }
         }

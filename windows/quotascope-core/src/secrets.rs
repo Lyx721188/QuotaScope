@@ -11,6 +11,9 @@ use std::collections::HashMap;
 
 const MAGIC: &[u8; 8] = b"QSCOPEK1";
 const LEGACY_MAGIC: &[u8; 8] = b"PULSEK1\0";
+// A background session renewal can coincide with editing another account.
+// Serialize the read/modify/write pair so neither update drops other keys.
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Serialize, Deserialize, Default)]
 struct KeyStore {
@@ -29,6 +32,7 @@ pub fn key_for(provider: &str) -> Option<String> {
 }
 
 pub fn set_key(provider: &str, key: &str) {
+    let _write = WRITE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let mut store = load().unwrap_or_default();
     if key.is_empty() {
         store.keys.remove(provider);
