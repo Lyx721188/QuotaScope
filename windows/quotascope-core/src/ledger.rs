@@ -1364,12 +1364,26 @@ fn scan(provider: Provider) -> (BTreeMap<String, BTreeMap<String, TokenTally>>, 
     let Some(root) = transcript_root(provider) else {
         return (BTreeMap::new(), FileCache::default());
     };
-    let mut cache = FileCache::load(provider);
+    let scanned = scan_cached(provider, &root, FileCache::load(provider));
+    if scanned.changed {
+        scanned.cache.save(provider);
+    }
+    (scanned.buckets, scanned.cache)
+}
+
+struct TranscriptScan {
+    buckets: BTreeMap<String, BTreeMap<String, TokenTally>>,
+    cache: FileCache,
+    changed: bool,
+}
+
+fn scan_cached(provider: Provider, root: &Path, mut cache: FileCache) -> TranscriptScan {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut fresh: BTreeMap<String, CachedEntry> = BTreeMap::new();
+    let mut changed = false;
 
     let mut files: Vec<PathBuf> = Vec::new();
-    collect_jsonl(&root, &mut files);
+    collect_jsonl(root, &mut files);
     files.sort();
 
     for file in files {
@@ -1381,8 +1395,21 @@ fn scan(provider: Provider) -> (BTreeMap<String, BTreeMap<String, TokenTally>>, 
         };
         let key = file.to_string_lossy().to_string();
 
-        let Ok(entry) = read_entry(&file, provider, stamp, cache.files.remove(&key)) else {
-            continue;
+        let known = cache.files.remove(&key);
+        // read_entry returns this exact entry when its stamp is unchanged.
+        // New/edited entries and old entries dropped after a read failure
+        // require persistence; a repricing-only pass does not.
+        let reused = known.as_ref().is_some_and(|entry| entry.stamp == stamp);
+        let had_known = known.is_some();
+        let entry = match read_entry(&file, provider, stamp, known) {
+            Ok(entry) => {
+                changed |= !reused;
+                entry
+            }
+            Err(_) => {
+                changed |= had_known;
+                continue;
+            }
         };
 
         for (day, models) in &entry.days {
@@ -1400,9 +1427,13 @@ fn scan(provider: Provider) -> (BTreeMap<String, BTreeMap<String, TokenTally>>, 
         fresh.insert(key, entry);
     }
 
+    changed |= !cache.files.is_empty(); // deleted or no longer readable files
     cache.files = fresh;
-    cache.save(provider);
-    (buckets, cache)
+    TranscriptScan {
+        buckets,
+        cache,
+        changed,
+    }
 }
 
 /// Turns buckets into days, slots and money. **Static and free of instance
@@ -4980,6 +5011,59 @@ mod tests {
             .flat_map(|models| models.values())
             .map(TokenTally::total)
             .sum()
+    }
+
+    #[test]
+    fn unchanged_and_repriced_transcripts_do_not_request_a_cache_write() {
+        let file = TranscriptFixture::new(&(codex_header("alpha") + &stream_codex_count(1)));
+        let root = file.0.parent().unwrap();
+        let first = scan_cached(Provider::Codex, root, FileCache::default());
+        assert!(first.changed);
+        let old_bytes = serde_json::to_vec(&first.cache).unwrap();
+        let cache = serde_json::from_slice(&old_bytes).unwrap();
+        let second = scan_cached(Provider::Codex, root, cache);
+        assert!(!second.changed);
+        assert_eq!(serde_json::to_vec(&second.cache).unwrap(), old_bytes);
+        assert_eq!(second.buckets, first.buckets);
+
+        let old_prices = BTreeMap::from([("alpha".into(), price(1.0, 2.0, None))]);
+        let new_prices = BTreeMap::from([("alpha".into(), price(3.0, 4.0, None))]);
+        let before = priced(&second.buckets, &old_prices, None);
+        let after = priced(&second.buckets, &new_prices, None);
+        assert_eq!(before.days[0].tokens, after.days[0].tokens);
+        assert_ne!(before.days[0].cost, after.days[0].cost);
+        assert_eq!(serde_json::to_vec(&second.cache).unwrap(), old_bytes);
+    }
+
+    #[test]
+    fn transcript_edits_and_deletions_request_persistence_after_cache_reload() {
+        let file = TranscriptFixture::new(&(codex_header("alpha") + &stream_codex_count(1)));
+        let root = file.0.parent().unwrap();
+        let first = scan_cached(Provider::Codex, root, FileCache::default());
+        let old = serde_json::from_slice(&serde_json::to_vec(&first.cache).unwrap()).unwrap();
+        file.append(&stream_codex_count(2));
+        let appended = scan_cached(Provider::Codex, root, old);
+        assert!(appended.changed);
+        assert_eq!(
+            entry_total(appended.cache.files.values().next().unwrap()),
+            310
+        );
+        std::fs::write(&file.0, codex_header("beta") + &stream_codex_count(1)).unwrap();
+        let rewritten = scan_cached(Provider::Codex, root, appended.cache);
+        assert!(rewritten.changed);
+        assert_eq!(
+            entry_total(rewritten.cache.files.values().next().unwrap()),
+            155
+        );
+        assert!(rewritten
+            .buckets
+            .values()
+            .all(|models| !models.contains_key("alpha")));
+        std::fs::remove_file(&file.0).unwrap();
+        let removed = scan_cached(Provider::Codex, root, rewritten.cache);
+        assert!(removed.changed);
+        assert!(removed.cache.files.is_empty() && removed.buckets.is_empty());
+        assert!(!scan_cached(Provider::Codex, root, removed.cache).changed);
     }
 
     #[test]

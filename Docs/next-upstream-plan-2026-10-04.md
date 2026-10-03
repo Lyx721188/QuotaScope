@@ -1,9 +1,9 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**N0、N1a-1 已验证，N1a-2 为当前下一项**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0、N1a 已验证，N1b 为当前下一项**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N1a-2：未变化的解析缓存不重写**。N0 同步、源码检查和流式 UI 基线、N1a-1 查价索引已完成；每阶段满足退出条件后才开始下一阶段。版本号为建议，实施时再确认。
+当前唯一下一项是 **N1b：聚合缓存与后台计算接线**。N0 同步、源码检查和流式 UI 基线、N1a 查价与缓存写盘优化已完成；每阶段满足退出条件后才开始下一阶段。版本号为建议，实施时再确认。
 
 执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
@@ -298,7 +298,8 @@ before / after 性能样本、构建 profile 与程序哈希：
 | N0b 源码基线 | 已验证 | fmt、普通 Clippy、workspace tests（644 passed / 6 ignored）、release 均 exit 0；见 `baseline-results.json` |
 | N0b 流式 UI 基线 | 已验证 | 3 轮 40 万行合成记录：150/450/600/750 Token 与磁盘缓存一致；已固定 Debug before payload |
 | N1a-1 查价优化 | 本地已验证 | 单表惰性大小写索引、model/vendor 命中及未命中缓存；ledger 批量复用；10 项价格、45 项 ledger 定向测试通过，普通 Clippy exit 0 |
-| N1a-2 / N1b / N1c | 待实现 | 按上面的任务卡依次退出 |
+| N1a-2 解析缓存写盘 | 本地及隔离 UI 已验证 | 47 项 ledger、8 项 disk-cache 定向测试与 Debug build/fmt/普通 Clippy 通过；两次原进程结束后的热读取保持缓存 mtime/哈希，追加/重启/改写仍正确 |
+| N1b / N1c | 待实现 | 按上面的任务卡依次退出 |
 | N2 / N3 / N4 | 待实现 | 不使用 fixture 成功替代实际账号/客户端验收 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
@@ -306,6 +307,8 @@ before / after 性能样本、构建 profile 与程序哈希：
 N0 明细：fmt 3.87 s、Clippy 104.70 s、workspace tests 120.77 s、release 215.78 s。测试累计 644 passed、0 failed、6 ignored；Clippy 仍有已有告警。三轮流式 UI 完整读取分别 5209/5642/7418 ms，中位数 5642 ms；追加中位数 939 ms、重启中位数 520 ms、改写中位数 752 ms。存在系统调度波动，保留 `baseline-stream-summary.json` 及逐轮原始 JSON，不把单次最小值当整体性能。
 
 N1a-1 合成 probe：`cargo run -p quotascope-core --example price-lookup-benchmark --release --locked`，1001 条价格、每类 10000 次查找，断言命中数和价率。三轮同一 Release 树的 single/indexed 中位数：别名 765050/1304 µs、未计价 780399/2519 µs、精确 ID 1426/1609 µs；索引包含构建和首次解析。该测量是查价路径对比，不是整应用 CPU、内存或实际日志扫描提速。原始旧树三轮保存为 `price-before-*.jsonl`，改后两种路径为 `price-after-*.jsonl`；定向检查日志为 `n1a1-{prices-tests,ledger-tests,clippy}.log`。
+
+N1a-2：`scan_cached` 跟踪 entry 的 stamp/新增/删除及失败移除，原始缓存未变时不调用 save；重新计价继续作用于新价格表。隔离 UI 命令为 streaming probe 的 `-Records 2000 -VerifyUnchangedCache`，结果 `n1a2-cache-ui-result.json` 的 `UnchangedCacheVerified=true`；该开关通过重新启动进程排除旧屏幕结果造成的假通过，不属于前后性能测量。完整/追加/重启/改写为 150/450/600/750 Token，SHA-256 `1A0F291B1EE4308B5839729150DA4C1FB4AB8309913618745156A3DBD9EF38D3`。单独修改了测试脚本可选参数，普通 before/after 的测量流程保持原有四阶段。
 
 ## 参考证据
 

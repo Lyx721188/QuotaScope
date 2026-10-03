@@ -2,7 +2,8 @@
 param(
   [Parameter(Mandatory=$true)][string]$Executable,
   [Parameter(Mandatory=$true)][ValidateSet('before','after')][string]$Label,
-  [ValidateRange(1,2000000)][int]$Records=400000
+  [ValidateRange(1,2000000)][int]$Records=400000,
+  [switch]$VerifyUnchangedCache
 )
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -105,6 +106,30 @@ try {
   $watch=[Diagnostics.Stopwatch]::StartNew()
   $spend.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
   $full=Wait-Complete 'full' 150 $watch $initialBaseline
+  $unchangedCacheVerified=$false
+  if($VerifyUnchangedCache){
+    $cachePath=Join-Path $data 'ledger-4-codex.json'
+    $cacheStamp=(Get-Item -LiteralPath $cachePath).LastWriteTimeUtc.Ticks
+    $cacheHash=(Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash
+    for($refreshIndex=0;$refreshIndex -lt 2;$refreshIndex++){
+      # A new process has no previous UI result, so a matching count really
+      # proves the warm read completed rather than observing an old label.
+      $testApp.Kill()
+      $testApp.WaitForExit()
+      $testApp.Dispose()
+      $testApp=[Diagnostics.Process]::Start($info)
+      Wait-Window
+      Start-Sleep -Seconds 2
+      $unchangedBaseline=(Sample 'unchanged-baseline').PrivateBytes
+      $spend=Nodes|Where-Object{$_.Current.Name -eq 'Token 消耗' -and $_.Current.ClassName -like '*NavigationViewItem'}|Select-Object -First 1
+      $watch=[Diagnostics.Stopwatch]::StartNew()
+      $spend.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+      [void](Wait-Complete 'unchanged' 150 $watch $unchangedBaseline)
+      if((Get-Item -LiteralPath $cachePath).LastWriteTimeUtc.Ticks -ne $cacheStamp){throw 'Unchanged transcript cache was rewritten'}
+      if((Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash -ne $cacheHash){throw 'Unchanged transcript cache contents changed'}
+    }
+    $unchangedCacheVerified=$true
+  }
   $tail=(Counter 2)+"`n"+(Counter 2)+"`n"+'{"payload":{"model":"fixture-beta"}}'+"`n"+(Counter 3)+"`n"
   [IO.File]::AppendAllText($session,$tail,[Text.UTF8Encoding]::new($false))
   $appendBaseline=(Sample 'append-baseline').PrivateBytes
@@ -131,7 +156,7 @@ try {
   $watch=[Diagnostics.Stopwatch]::StartNew()
   (Refresh-Button).GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
   $rewrite=Wait-Complete 'rewrite' 750 $watch $rewriteBaseline
-  $result=[pscustomobject]@{Passed=$true;Label=$Label;ExecutableSHA256=(Get-FileHash -LiteralPath $info.FileName -Algorithm SHA256).Hash;FixtureBytes=$fixtureBytes;Records=$Records;Full=$full;Append=$append;Restart=$restart;RestartFromDisk=$true;ProcessIds=@($firstProcessId,$testApp.Id);Rewrite=$rewrite}
+  $result=[pscustomobject]@{Passed=$true;Label=$Label;ExecutableSHA256=(Get-FileHash -LiteralPath $info.FileName -Algorithm SHA256).Hash;FixtureBytes=$fixtureBytes;Records=$Records;Full=$full;Append=$append;Restart=$restart;RestartFromDisk=$true;UnchangedCacheVerified=$unchangedCacheVerified;ProcessIds=@($firstProcessId,$testApp.Id);Rewrite=$rewrite}
   $samples|ConvertTo-Json|Set-Content -LiteralPath ('target/stream-'+$Label+'-samples.json') -Encoding utf8
   $result|ConvertTo-Json -Depth 5|Tee-Object -FilePath ('target/stream-'+$Label+'-result.json')
 } finally {
