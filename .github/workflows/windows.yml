@@ -12,6 +12,7 @@ on:
       - "README.md"
       - "Docs/**"
       - "THIRD_PARTY_NOTICES.md"
+      - "CHANGELOG.md"
       - ".github/workflows/windows.yml"
   pull_request:
     paths:
@@ -46,17 +47,15 @@ jobs:
 
       - name: Format check
         run: cargo fmt --all -- --check
-        continue-on-error: true
 
       - name: Clippy
-        run: cargo clippy --workspace
-        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --locked
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --locked
 
       # Smoke test for the status-line contract: `--json` must print a valid
       # document and exit 0 without touching the network or the keyring.
@@ -94,6 +93,23 @@ jobs:
           Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $archive -Force
           Write-Host (Get-Item $archive).Length
 
+      - name: Build installer and stage release assets
+        shell: pwsh
+        run: |
+          ./installer/build-installer.ps1 -SkipBuild
+          $manifest = Get-Content Cargo.toml -Raw
+          $version = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^\"]+)"').Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "windows-v$version") {
+            throw 'Release tag does not match the workspace version'
+          }
+          $assets = Join-Path (Get-Location) 'target/release-assets'
+          New-Item -ItemType Directory -Path $assets -Force | Out-Null
+          Copy-Item -LiteralPath 'target/release/quotascope-windows-x64.zip' -Destination $assets
+          Copy-Item -LiteralPath "target/installer/QuotaScope-$version-windows-x64-Setup.exe", "target/installer/QuotaScope-$version-windows-x64-Setup.exe.sha256" -Destination $assets
+          $zip = Join-Path $assets 'quotascope-windows-x64.zip'
+          $digest = Get-FileHash -LiteralPath $zip -Algorithm SHA256
+          "$($digest.Hash)  quotascope-windows-x64.zip" | Set-Content -LiteralPath "$zip.sha256" -Encoding ascii
+
       # Exercise the files users actually download. Missing PRI files can let
       # WinUI launch and then fail several seconds later with 0xc000027b.
       - name: Packaged settings lifecycle regression
@@ -104,17 +120,17 @@ jobs:
           Expand-Archive target/release/quotascope-windows-x64.zip -DestinationPath $package -Force
 
           $env:QUOTASCOPE_TEST_EXE = Join-Path $package "quotascope.exe"
-          cargo test -p quotascope-win --test settings_lifecycle -- --ignored --nocapture --test-threads=1
+          cargo test -p quotascope-win --test settings_lifecycle --locked -- --ignored --nocapture --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw "Packaged Settings lifecycle regression failed" }
 
       - name: Upload quotascope-windows-x64
         uses: actions/upload-artifact@v4
         with:
           name: quotascope-windows-x64
-          path: windows/target/release/quotascope-windows-x64.zip
+          path: windows/target/release-assets/*
           if-no-files-found: error
 
-  # Tag windows-v1.2.3, and the zip the build job just made becomes a
+  # Tag windows-v*, and the assets the build job just made become a
   # Release. The version for the title comes from the tag itself; the build
   # job remains the single place that decides what a shipped quotascope.exe is.
   release:
@@ -134,6 +150,7 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TITLE="QuotaScope for Windows ${GITHUB_REF_NAME#windows-v}"
           BODY="Windows x64 release of QuotaScope ${GITHUB_REF_NAME#windows-v}. Requires Windows 10 1809+ or Windows 11."
@@ -148,10 +165,10 @@ jobs:
           # Re-runnable: a re-tag or a re-run replaces the asset in place
           # instead of failing on an existing release.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" quotascope-windows-x64.zip --clobber
+            gh release upload "$GITHUB_REF_NAME" quotascope-windows-x64.zip* QuotaScope-*-windows-x64-Setup.exe* --clobber
             echo "Updated existing release $GITHUB_REF_NAME."
           else
-            gh release create "$GITHUB_REF_NAME" quotascope-windows-x64.zip \
+            gh release create "$GITHUB_REF_NAME" quotascope-windows-x64.zip* QuotaScope-*-windows-x64-Setup.exe* \
               --title "$TITLE" \
               --notes "$BODY"
           fi

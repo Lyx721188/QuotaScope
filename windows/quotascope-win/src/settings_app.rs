@@ -32,6 +32,9 @@ pub enum SettingsAction {
     SignInCopilot,
     SignOutCopilot,
     OpenUrl(String),
+    OpenFolder(std::path::PathBuf),
+    CheckUpdates,
+    SkipUpdate(String),
 }
 
 /// What the app pushes to the window while it is open. The poller watches
@@ -43,7 +46,40 @@ struct SettingsSnapshot {
     spend: Option<Arc<quotascope_core::spend::Snapshot>>,
     spend_generation: u64,
     spend_loading: bool,
+    spend_worker_running: bool,
     spend_failed: bool,
+    spend_cancelled: bool,
+    spend_control: Option<Arc<quotascope_core::scan::Control>>,
+    spend_progress: Option<quotascope_core::scan::Progress>,
+    update: UpdateStatus,
+    maintenance_running: bool,
+    cache: Option<quotascope_core::statistics_cache::Inventory>,
+    maintenance_result: Option<MaintenanceResult>,
+    diagnostic_path: Option<std::path::PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum MaintenanceOperation {
+    Inspect,
+    Clear,
+    Enforce,
+    Export,
+}
+
+#[derive(Clone)]
+enum MaintenanceResult {
+    Inspected,
+    Cleaned(quotascope_core::statistics_cache::Cleanup),
+    Exported,
+    Failed,
+}
+
+#[derive(Default, Clone)]
+pub enum UpdateStatus {
+    #[default]
+    Idle,
+    Checking,
+    Done(quotascope_core::updates::CheckResult),
 }
 
 pub(crate) struct Shared {
@@ -57,39 +93,204 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn request_spend(self: &Arc<Self>) {
-        let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
-        let generation = {
+    fn request_maintenance(self: &Arc<Self>, operation: MaintenanceOperation) {
+        use quotascope_core::diagnostics::{Runtime, ScanStatus, UpdateStatus as DiagnosticUpdate};
+        let runtime = {
             let mut state = self.snapshot.lock().unwrap();
-            if allowed && state.spend_loading {
+            if state.maintenance_running
+                || (state.spend_worker_running
+                    && matches!(
+                        operation,
+                        MaintenanceOperation::Clear | MaintenanceOperation::Enforce
+                    ))
+            {
+                return;
+            }
+            state.maintenance_running = true;
+            state.maintenance_result = None;
+            state.generation = state.generation.wrapping_add(1);
+            let progress = state.spend_progress.clone().unwrap_or_default();
+            Runtime {
+                settings_visible: self.alive.load(Ordering::SeqCst),
+                scan_status: if state.spend_worker_running {
+                    if state.spend_cancelled
+                        || state
+                            .spend_control
+                            .as_ref()
+                            .is_some_and(|c| c.is_cancelled())
+                    {
+                        ScanStatus::Stopping
+                    } else {
+                        ScanStatus::Running
+                    }
+                } else if state.spend_failed {
+                    ScanStatus::Failed
+                } else if state.spend_cancelled {
+                    ScanStatus::Cancelled
+                } else if state.spend.is_some() {
+                    ScanStatus::Complete
+                } else {
+                    ScanStatus::Idle
+                },
+                sources_done: progress.sources_done,
+                sources_total: progress.sources_total,
+                files_read: progress.files_read,
+                update_status: match state.update {
+                    UpdateStatus::Idle => DiagnosticUpdate::Idle,
+                    UpdateStatus::Checking => DiagnosticUpdate::Checking,
+                    UpdateStatus::Done(quotascope_core::updates::CheckResult::Failed) => {
+                        DiagnosticUpdate::Failed
+                    }
+                    UpdateStatus::Done(quotascope_core::updates::CheckResult::UpToDate) => {
+                        DiagnosticUpdate::UpToDate
+                    }
+                    UpdateStatus::Done(_) => DiagnosticUpdate::Available,
+                },
+                process: Default::default(),
+            }
+        };
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(|| match operation {
+                MaintenanceOperation::Inspect => (MaintenanceResult::Inspected, None),
+                MaintenanceOperation::Clear => (
+                    MaintenanceResult::Cleaned(quotascope_core::ledger::clear_statistics_cache()),
+                    None,
+                ),
+                MaintenanceOperation::Enforce => (
+                    MaintenanceResult::Cleaned(quotascope_core::statistics_cache::enforce()),
+                    None,
+                ),
+                MaintenanceOperation::Export => {
+                    let mut runtime = runtime;
+                    runtime.process = crate::winutil::process_metrics();
+                    match quotascope_core::diagnostics::export(runtime) {
+                        Ok(path) => (MaintenanceResult::Exported, Some(path)),
+                        Err(_) => (MaintenanceResult::Failed, None),
+                    }
+                }
+            });
+            let inventory = quotascope_core::statistics_cache::inspect();
+            let mut state = shared.snapshot.lock().unwrap();
+            state.maintenance_running = false;
+            state.cache = Some(inventory);
+            let (result, path) = result.unwrap_or((MaintenanceResult::Failed, None));
+            state.maintenance_result = Some(result);
+            if path.is_some() {
+                state.diagnostic_path = path;
+            }
+            state.generation = state.generation.wrapping_add(1);
+            let retry = state.spend_loading
+                && !state.spend_worker_running
+                && shared.alive.load(Ordering::SeqCst);
+            drop(state);
+            if retry {
+                shared.request_spend(false);
+            }
+        });
+    }
+
+    fn release_spend(&self) {
+        let mut state = self.snapshot.lock().unwrap();
+        if let Some(control) = &state.spend_control {
+            control.cancel();
+        }
+        state.spend = None;
+        state.spend_generation = state.spend_generation.wrapping_add(1);
+        state.spend_loading = false;
+        state.spend_failed = false;
+        state.spend_cancelled = false;
+        state.spend_progress = None;
+        state.generation = state.generation.wrapping_add(1);
+    }
+
+    fn cancel_spend(&self) {
+        let mut state = self.snapshot.lock().unwrap();
+        if !state.spend_worker_running || state.spend_cancelled {
+            return;
+        }
+        if let Some(control) = &state.spend_control {
+            control.cancel();
+        }
+        state.spend_generation = state.spend_generation.wrapping_add(1);
+        state.spend_loading = false;
+        state.spend_cancelled = true;
+        state.spend_failed = false;
+        state.generation = state.generation.wrapping_add(1);
+    }
+
+    fn request_spend(self: &Arc<Self>, refresh: bool) {
+        let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
+        if !allowed {
+            self.release_spend();
+            return;
+        }
+        let (generation, control) = {
+            let mut state = self.snapshot.lock().unwrap();
+            if state.maintenance_running {
+                state.spend_loading = true;
+                state.generation = state.generation.wrapping_add(1);
+                return;
+            }
+            if state.spend_worker_running {
+                // A reopened Spend page waits for the existing scan instead
+                // of starting another one over the same transcript files.
+                state.spend_loading = true;
+                state.spend_cancelled = false;
+                state.generation = state.generation.wrapping_add(1);
                 return;
             }
             state.spend_generation = state.spend_generation.wrapping_add(1);
             state.generation += 1;
-            state.spend_loading = allowed;
+            state.spend_loading = true;
             state.spend_failed = false;
-            if !allowed {
-                state.spend = None;
-                return;
-            }
-            state.spend_generation
+            state.spend_cancelled = false;
+            state.spend_progress = None;
+            let control = Arc::new(quotascope_core::scan::Control::default());
+            state.spend_control = Some(control.clone());
+            state.spend_worker_running = true;
+            (state.spend_generation, control)
         };
         let shared = self.clone();
         std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(quotascope_core::spend::Snapshot::read_native);
+            let progress_shared = shared.clone();
+            let result = std::panic::catch_unwind(|| {
+                quotascope_core::spend::Snapshot::read_controlled(
+                    control,
+                    refresh,
+                    move |progress| {
+                        let mut state = progress_shared.snapshot.lock().unwrap();
+                        if state.spend_generation == generation && state.spend_loading {
+                            state.spend_progress = Some(progress);
+                            state.generation = state.generation.wrapping_add(1);
+                        }
+                    },
+                )
+            });
             let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
             let mut state = shared.snapshot.lock().unwrap();
+            state.spend_worker_running = false;
+            state.spend_control = None;
+            state.generation = state.generation.wrapping_add(1);
             if state.spend_generation != generation {
+                let retry = state.spend_loading && allowed && shared.alive.load(Ordering::SeqCst);
+                state.spend_loading = false;
+                drop(state);
+                if retry {
+                    shared.request_spend(false);
+                }
                 return;
             }
             state.spend_loading = false;
             state.spend_failed = result.is_err();
-            state.spend = if allowed {
-                result.ok().map(Arc::new)
-            } else {
-                None
-            };
-            state.generation += 1;
+            match result {
+                Ok(Ok(snapshot)) if allowed => state.spend = Some(Arc::new(snapshot)),
+                Ok(Err(_)) => state.spend_cancelled = true,
+                _ => {}
+            }
+            if !allowed {
+                state.spend = None;
+            }
         });
     }
     fn generation(&self) -> u64 {
@@ -152,6 +353,12 @@ impl SettingsHost {
         self.shared.snapshot.lock().unwrap().generation += 1;
     }
 
+    pub fn set_update_status(&self, update: UpdateStatus) {
+        let mut snapshot = self.shared.snapshot.lock().unwrap();
+        snapshot.update = update;
+        snapshot.generation = snapshot.generation.wrapping_add(1);
+    }
+
     pub fn is_open(&self) -> bool {
         self.shared.alive.load(Ordering::SeqCst)
     }
@@ -208,7 +415,7 @@ unsafe extern "system" fn settings_subclass(
                 return false;
             }
             shared.alive.store(false, Ordering::SeqCst);
-            shared.snapshot.lock().unwrap().generation += 1;
+            shared.release_spend();
             true
         });
         if hide {
@@ -278,6 +485,7 @@ enum Page {
     Accounts,
     Spend,
     Notifications,
+    Maintenance,
     About,
 }
 
@@ -288,6 +496,7 @@ impl Page {
             Page::Accounts => "accounts",
             Page::Spend => "spend",
             Page::Notifications => "notifications",
+            Page::Maintenance => "maintenance",
             Page::About => "about",
         }
     }
@@ -296,6 +505,7 @@ impl Page {
             "accounts" => Page::Accounts,
             "spend" => Page::Spend,
             "notifications" => Page::Notifications,
+            "maintenance" => Page::Maintenance,
             "about" => Page::About,
             _ => Page::General,
         }
@@ -306,6 +516,7 @@ impl Page {
             Page::Accounts => "Accounts",
             Page::Spend => "Token spend",
             Page::Notifications => "Notifications",
+            Page::Maintenance => "Storage and diagnostics",
             Page::About => "About",
         }
     }
@@ -315,6 +526,7 @@ impl Page {
             Page::Accounts => "\u{E77B}",
             Page::Spend => "\u{E9D9}",
             Page::Notifications => "\u{EA8F}",
+            Page::Maintenance => "\u{E7B8}",
             Page::About => "\u{E946}",
         }
     }
@@ -336,6 +548,7 @@ enum ToggleKey {
     Alerts,
     AlertReset,
     AlertFailure,
+    CheckUpdates,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -347,6 +560,7 @@ enum ChoiceKey {
     WarningThreshold,
     Interval,
     AlertThreshold,
+    StatisticsCache,
 }
 
 #[derive(Clone, PartialEq)]
@@ -356,6 +570,9 @@ enum Message {
     SpendPage(bool),
     SpendDrill(String),
     SpendRefresh,
+    SpendCancel,
+    Maintenance(MaintenanceOperation),
+    OpenDiagnosticsFolder,
     Nav(Option<String>),
     Toggle(ToggleKey, bool),
     ToggleEnabled(usize, bool),
@@ -377,6 +594,9 @@ enum Message {
     ImportSession(usize),
     CopilotAuth,
     OpenGitHub,
+    CheckUpdates,
+    OpenUpdate(String),
+    SkipUpdate(String),
 }
 
 struct SettingsApp {
@@ -470,6 +690,9 @@ impl Component for SettingsApp {
                 } else if self.hwnd.is_some()
                     && self.shared.show_requested.swap(false, Ordering::SeqCst)
                 {
+                    if self.page == Page::Spend {
+                        self.shared.release_spend();
+                    }
                     self.page = Page::General;
                     self.revealed_keys.clear();
                     self.keys.clear();
@@ -492,13 +715,31 @@ impl Component for SettingsApp {
                 self.status = self.shared.read_status();
             }
             Message::Nav(tag) => {
+                let previous = self.page;
                 self.page = tag.as_deref().map(Page::from_tag).unwrap_or(self.page);
+                if previous == Page::Spend && self.page != Page::Spend {
+                    self.shared.release_spend();
+                }
                 if self.page == Page::Spend {
-                    self.shared.request_spend();
+                    self.shared.request_spend(false);
+                }
+                if self.page == Page::Maintenance {
+                    self.shared
+                        .request_maintenance(MaintenanceOperation::Inspect);
                 }
                 self.revealed_keys.clear();
             }
-            Message::SpendRefresh => self.shared.request_spend(),
+            Message::SpendRefresh => self.shared.request_spend(true),
+            Message::SpendCancel => self.shared.cancel_spend(),
+            Message::Maintenance(operation) => self.shared.request_maintenance(operation),
+            Message::OpenDiagnosticsFolder => {
+                if let Some(path) = &self.shared.snapshot.lock().unwrap().diagnostic_path {
+                    if let Some(folder) = path.parent() {
+                        self.shared
+                            .send(SettingsAction::OpenFolder(folder.to_owned()));
+                    }
+                }
+            }
             Message::SpendPage(next) => {
                 self.spend_page = if next {
                     self.spend_page.saturating_add(1)
@@ -682,9 +923,15 @@ impl Component for SettingsApp {
             }
             Message::Toggle(key, value) => {
                 Self::apply_toggle(key, value);
-                self.shared.send(SettingsAction::Changed);
+                if key != ToggleKey::CheckUpdates {
+                    self.shared.send(SettingsAction::Changed);
+                }
                 if key == ToggleKey::TokenSpend {
-                    self.shared.request_spend();
+                    if self.page == Page::Spend {
+                        self.shared.request_spend(false);
+                    } else {
+                        self.shared.release_spend();
+                    }
                 }
             }
             Message::ToggleEnabled(index, value) => {
@@ -720,6 +967,24 @@ impl Component for SettingsApp {
                 self.extension_problems = scan.problems;
                 self.shared.send(SettingsAction::Changed);
             }
+            Message::Choice(ChoiceKey::StatisticsCache, Some(index)) => {
+                let blocked = {
+                    let state = self.shared.snapshot.lock().unwrap();
+                    state.maintenance_running || state.spend_worker_running
+                };
+                if !blocked {
+                    if let Some(value) = quotascope_core::statistics_cache::LIMITS_MB.get(index) {
+                        if quotascope_core::settings::with(|s| {
+                            s.statistics_cache_limit_mb != *value
+                        }) {
+                            Self::apply_choice(ChoiceKey::StatisticsCache, index);
+                            self.shared
+                                .request_maintenance(MaintenanceOperation::Enforce);
+                        }
+                    }
+                }
+            }
+            Message::Choice(ChoiceKey::StatisticsCache, None) => {}
             Message::Choice(key, selected) => {
                 Self::apply_choice(key, selected.unwrap_or(0));
                 self.shared.send(SettingsAction::Changed);
@@ -834,6 +1099,9 @@ impl Component for SettingsApp {
                     "https://github.com/Lyx721188/QuotaScope".into(),
                 ));
             }
+            Message::CheckUpdates => self.shared.send(SettingsAction::CheckUpdates),
+            Message::OpenUpdate(url) => self.shared.send(SettingsAction::OpenUrl(url)),
+            Message::SkipUpdate(version) => self.shared.send(SettingsAction::SkipUpdate(version)),
         }
         // Re-arm the watcher whichever way this update came, so the next
         // push from the app wakes us again.
@@ -860,6 +1128,7 @@ impl Component for SettingsApp {
                         Page::Accounts,
                         Page::Spend,
                         Page::Notifications,
+                        Page::Maintenance,
                         Page::About,
                     ]
                     .map(|page| {
@@ -886,20 +1155,25 @@ impl Component for SettingsApp {
                     NavigationViewSlot::Content,
                     // A different page needs a new scroll viewport. Ordinary
                     // updates keep its identity so typing does not reset it.
-                    View::keyed_fragment([(
-                        self.page.tag(),
-                        ScrollViewer::new().content(
-                            Border::new().padding(Thickness::uniform(28.0)).content(
-                                match self.page {
-                                    Page::General => self.general_view(context).into(),
-                                    Page::Accounts => self.accounts_view(context),
-                                    Page::Spend => self.spend_view(context),
-                                    Page::Notifications => self.notifications_view(context),
-                                    Page::About => self.about_view(context),
-                                },
+                    if self.shared.alive.load(Ordering::SeqCst) {
+                        View::keyed_fragment([(
+                            self.page.tag(),
+                            ScrollViewer::new().content(
+                                Border::new()
+                                    .padding(Thickness::uniform(28.0))
+                                    .content(match self.page {
+                                        Page::General => self.general_view(context).into(),
+                                        Page::Accounts => self.accounts_view(context),
+                                        Page::Spend => self.spend_view(context),
+                                        Page::Notifications => self.notifications_view(context),
+                                        Page::Maintenance => self.maintenance_view(context),
+                                        Page::About => self.about_view(context),
+                                    }),
                             ),
-                        ),
-                    )]),
+                        )])
+                    } else {
+                        View::empty()
+                    },
                 ),
             ]);
         let mut visuals = WindowVisuals::new().backdrop(WindowBackdrop::Mica);
@@ -992,8 +1266,10 @@ impl SettingsApp {
         let t = quotascope_core::localization::t;
         let mut content = vec![
             heading("Token spend").into(),
-            self.muted("Local records · API value is an estimate, not your bill.")
-                .into(),
+            self.muted(t(
+                "Local records · API value is an estimate, not your bill.",
+            ))
+            .into(),
             self.toggle(
                 ToggleKey::TokenSpend,
                 "Read local token spend",
@@ -1003,30 +1279,63 @@ impl SettingsApp {
         ];
         if !settings.reads_token_spend {
             content.push(
-                self.muted("Enable local reading to analyze records on this computer.")
-                    .into(),
+                self.muted(t(
+                    "Enable local reading to analyze records on this computer.",
+                ))
+                .into(),
             );
             return StackPanel::new()
                 .spacing(18.0)
                 .children((View::keyed_fragment(content.into_iter().enumerate()),));
         }
-        let (snapshot, loading, failed) = {
+        let (snapshot, loading, running, failed, cancelled, progress, stopping) = {
             let state = self.shared.snapshot.lock().unwrap();
-            (state.spend.clone(), state.spend_loading, state.spend_failed)
+            (
+                state.spend.clone(),
+                state.spend_loading,
+                state.spend_worker_running,
+                state.spend_failed,
+                state.spend_cancelled,
+                state.spend_progress.clone(),
+                state
+                    .spend_control
+                    .as_ref()
+                    .is_some_and(|c| c.is_cancelled()),
+            )
+        };
+        let status = if running && stopping {
+            "Stopping local scan…"
+        } else if loading {
+            "Reading local records…"
+        } else if cancelled {
+            "Local scan cancelled."
+        } else if failed {
+            "Unable to read local records."
+        } else {
+            "Only records available on this computer are included."
         };
         content.push(row((
             Button::new()
-                .is_enabled(!loading)
+                .is_enabled(!running)
                 .on_click(context.message(Message::SpendRefresh))
                 .content(t("Refresh")),
-            self.muted(if loading {
-                "Reading local records…"
-            } else if failed {
-                "Unable to read local records."
-            } else {
-                "Only records available on this computer are included."
-            }),
+            Button::new()
+                .is_enabled(running && !cancelled)
+                .on_click(context.message(Message::SpendCancel))
+                .content(t("Cancel scan")),
+            self.muted(t(status)),
         )));
+        if let Some(progress) = progress.filter(|_| loading || running) {
+            let text = t("Scanning {source} · sources {done}/{total} · files read {files}")
+                .replace("{source}", &progress.source)
+                .replace("{done}", &progress.sources_done.to_string())
+                .replace("{total}", &progress.sources_total.to_string())
+                .replace("{files}", &progress.files_read.to_string());
+            content.push(self.muted(&text).into());
+        }
+        if snapshot.is_some() && (loading || running || cancelled || failed) {
+            content.push(self.muted(t("Previous results remain displayed.")).into());
+        }
         let Some(snapshot) = snapshot else {
             return StackPanel::new()
                 .spacing(18.0)
@@ -1126,7 +1435,7 @@ impl SettingsApp {
             .column_spacing(24.0)
             .children((
                 StackPanel::new().spacing(6.0).children((
-                    self.muted("Total tokens"),
+                    self.muted(t("Total tokens")),
                     TextBlock::new()
                         .text(total.tokens.to_string())
                         .font_size(28.0)
@@ -1143,7 +1452,7 @@ impl SettingsApp {
                     )),
                 )),
                 StackPanel::new().grid_column(1).spacing(6.0).children((
-                    self.muted("API value"),
+                    self.muted(t("API value")),
                     TextBlock::new()
                         .text(format!("≈ ${:.2}", total.cost))
                         .font_size(28.0)
@@ -1173,7 +1482,7 @@ impl SettingsApp {
         }
         if total.tokens == 0 {
             content.push(
-                self.muted("No measured token records in this range.")
+                self.muted(t("No measured token records in this range."))
                     .into(),
             );
         }
@@ -1321,7 +1630,7 @@ impl SettingsApp {
                 .content(t("Next")),
         )));
         content.push(
-            self.muted("* API value excludes tokens without a published price.")
+            self.muted(t("* API value excludes tokens without a published price."))
                 .into(),
         );
         let coverage = snapshot
@@ -1480,6 +1789,7 @@ impl SettingsApp {
             ToggleKey::Alerts => s.wants_alerts = value,
             ToggleKey::AlertReset => s.alerts_on_reset = value,
             ToggleKey::AlertFailure => s.alerts_on_failure = value,
+            ToggleKey::CheckUpdates => s.checks_for_updates = value,
             ToggleKey::Startup => {}
         });
         if key == ToggleKey::Startup {
@@ -1552,6 +1862,11 @@ impl SettingsApp {
                     3 => 95,
                     _ => 75,
                 };
+            }
+            ChoiceKey::StatisticsCache => {
+                if let Some(value) = quotascope_core::statistics_cache::LIMITS_MB.get(selected) {
+                    s.statistics_cache_limit_mb = *value;
+                }
             }
         });
     }
@@ -2191,6 +2506,85 @@ impl SettingsApp {
             .into()
     }
 
+    fn maintenance_view(&self, context: &ViewContext<Self>) -> View {
+        use quotascope_core::localization::t;
+        let (cache, busy, scanning, result, path) = {
+            let state = self.shared.snapshot.lock().unwrap();
+            (
+                state.cache.clone(),
+                state.maintenance_running,
+                state.spend_worker_running,
+                state.maintenance_result.clone(),
+                state.diagnostic_path.clone(),
+            )
+        };
+        let limit = quotascope_core::settings::with(|s| {
+            quotascope_core::statistics_cache::limit_mb(s.statistics_cache_limit_mb)
+        });
+        let selected = quotascope_core::statistics_cache::LIMITS_MB
+            .iter()
+            .position(|v| *v == limit)
+            .unwrap_or(2);
+        let size_text = cache
+            .map(|cache| {
+                t("Statistics cache: {size} MiB · {files} files")
+                    .replace("{size}", &format!("{:.2}", cache.bytes as f64 / 1048576.0))
+                    .replace("{files}", &cache.files.len().to_string())
+            })
+            .unwrap_or_else(|| t("Reading cache information…").into());
+        let status = if busy {
+            t("Working…").to_owned()
+        } else {
+            match result {
+                Some(MaintenanceResult::Cleaned(cleanup)) => {
+                    t("Removed {files} cache files · freed {size} MiB · {failed} failures")
+                        .replace("{files}", &cleanup.removed_files.to_string())
+                        .replace(
+                            "{size}",
+                            &format!("{:.2}", cleanup.freed_bytes as f64 / 1048576.0),
+                        )
+                        .replace("{failed}", &cleanup.failed_files.to_string())
+                }
+                Some(MaintenanceResult::Exported) => t("Diagnostics exported locally.").into(),
+                Some(MaintenanceResult::Failed) => t(
+                    "Could not complete this operation. Check folder permissions and try again.",
+                )
+                .into(),
+                _ => String::new(),
+            }
+        };
+        StackPanel::new().spacing(14.0).children((
+            heading("Storage and diagnostics"),
+            self.surface(StackPanel::new().spacing(10.0).children((
+                section("Statistics cache"),
+                TextBlock::new().text(size_text),
+                self.aligned("Disk cache budget", ComboBox::new()
+                    .is_enabled(!busy && !scanning)
+                    .min_width(170.0)
+                    .items_source(["No disk cache", "16 MiB", "64 MiB (default)", "256 MiB"].map(t))
+                    .selected_index(selected)
+                    .on_selection_changed(context.callback(|index| Message::Choice(ChoiceKey::StatisticsCache, index))).into()),
+                self.muted(t("Oldest statistics caches are removed when over budget. Oversized files are not saved. Account settings, keys and original logs are kept.")),
+                self.muted(t("After clearing, statistics are rebuilt on the next read. The price table is retained.")),
+                if scanning { self.muted(t("Wait for the local scan to stop before clearing or changing the budget.")).into() } else { View::empty() },
+                StackPanel::new().orientation(Orientation::Horizontal).spacing(8.0).children((
+                    Button::new().is_enabled(!busy).on_click(context.message(Message::Maintenance(MaintenanceOperation::Inspect))).content(t("Refresh cache information")),
+                    Button::new().is_enabled(!busy && !scanning).on_click(context.message(Message::Maintenance(MaintenanceOperation::Clear))).content(t("Clear statistics cache")),
+                )),
+            ))),
+            self.surface(StackPanel::new().spacing(10.0).children((
+                section("Diagnostics"),
+                self.muted(t("Export a local JSON report with version, process resources, cache sizes and scan status. Keys, account addresses and conversation contents are excluded. A new export replaces the previous report.")),
+                StackPanel::new().orientation(Orientation::Horizontal).spacing(8.0).children((
+                    Button::new().is_enabled(!busy).on_click(context.message(Message::Maintenance(MaintenanceOperation::Export))).content(t("Export diagnostics")),
+                    Button::new().is_enabled(path.is_some() && !busy).on_click(context.message(Message::OpenDiagnosticsFolder)).content(t("Open diagnostics folder")),
+                )),
+                TextBlock::new().text(path.map(|p| p.display().to_string()).unwrap_or_default()).is_text_selection_enabled(true).text_wrapping(TextWrapping::Wrap),
+            ))),
+            TextBlock::new().text(status).text_wrapping(TextWrapping::Wrap),
+        ))
+    }
+
     fn about_view(&self, context: &ViewContext<Self>) -> View {
         StackPanel::new()
             .spacing(10.0)
@@ -2205,8 +2599,9 @@ impl SettingsApp {
                     env!("CARGO_PKG_VERSION")
                 )),
                 TextBlock::new().text("HarmonyOS Sans · Copyright 2021 Huawei Device Co., Ltd."),
+                self.updates_view(context),
                 self.muted(&quotascope_core::localization::t(
-                    "No QuotaScope servers, no QuotaScope account, no telemetry. Requests go to the providers you already use and follow the Windows system proxy settings.",
+                    "No QuotaScope servers, no QuotaScope account, no telemetry. Provider requests follow the Windows system proxy settings. Optional update checks contact GitHub.",
                 )),
                 Button::new()
                     .on_click(context.message(Message::OpenGitHub))
@@ -2214,11 +2609,165 @@ impl SettingsApp {
             ))
             .into()
     }
+
+    fn updates_view(&self, context: &ViewContext<Self>) -> View {
+        use quotascope_core::localization::t;
+        use quotascope_core::updates::CheckResult;
+        let (automatic, skipped) = quotascope_core::settings::with(|s| {
+            (s.checks_for_updates, s.skipped_update_version.clone())
+        });
+        let status = self.shared.snapshot.lock().unwrap().update.clone();
+        let checking = matches!(status, UpdateStatus::Checking);
+        let (text, actions): (String, View) = match status {
+            UpdateStatus::Idle => (
+                t("Updates are installed only when you choose.").into(),
+                View::empty(),
+            ),
+            UpdateStatus::Checking => (t("Checking for updates…").into(), View::empty()),
+            UpdateStatus::Done(CheckResult::UpToDate) => (
+                t("You have the latest Windows release.").into(),
+                View::empty(),
+            ),
+            UpdateStatus::Done(CheckResult::Failed) => (
+                t("Could not check for updates. Try again later or open the releases page.").into(),
+                Button::new()
+                    .on_click(context.message(Message::OpenUpdate(
+                        quotascope_core::updates::RELEASES_PAGE.into(),
+                    )))
+                    .content(t("Open releases page")),
+            ),
+            UpdateStatus::Done(CheckResult::Available(release)) => {
+                let is_skipped = skipped.as_deref() == Some(&release.version);
+                (
+                    format!(
+                        "{} {}{}",
+                        t("Windows update available:"),
+                        release.version,
+                        if is_skipped {
+                            t(" (reminders skipped)")
+                        } else {
+                            ""
+                        }
+                    ),
+                    StackPanel::new()
+                        .orientation(Orientation::Horizontal)
+                        .spacing(8.0)
+                        .children((
+                            Button::new()
+                                .on_click(context.message(Message::OpenUpdate(release.url)))
+                                .content(t("Open update page")),
+                            Button::new()
+                                .is_enabled(!is_skipped)
+                                .on_click(context.message(Message::SkipUpdate(release.version)))
+                                .content(t("Skip this version")),
+                        )),
+                )
+            }
+        };
+        self.surface(
+            StackPanel::new().spacing(12.0).children((
+                section("Updates"),
+                self.toggle(
+                    ToggleKey::CheckUpdates,
+                    "Check for updates automatically",
+                    automatic,
+                    context,
+                ),
+                self.muted(t(
+                    "Check once a day when enabled. Download and installation are your choice.",
+                )),
+                TextBlock::new()
+                    .text(text)
+                    .text_wrapping(TextWrapping::Wrap),
+                Button::new()
+                    .is_enabled(!checking)
+                    .on_click(context.message(Message::CheckUpdates))
+                    .content(t("Check for updates")),
+                actions,
+            )),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::positive_or_empty;
+
+    #[test]
+    fn cleanup_and_budget_changes_wait_for_a_running_scan() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host = super::SettingsHost::new(tx, std::sync::mpsc::channel().0);
+        let shared = host.shared();
+        shared.snapshot.lock().unwrap().spend_worker_running = true;
+        shared.request_maintenance(super::MaintenanceOperation::Clear);
+        shared.request_maintenance(super::MaintenanceOperation::Enforce);
+        let state = shared.snapshot.lock().unwrap();
+        assert!(!state.maintenance_running);
+        assert!(state.maintenance_result.is_none());
+        assert_eq!(state.generation, 0);
+    }
+
+    #[test]
+    fn hiding_settings_releases_spend_and_invalidates_pending_results() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let host = super::SettingsHost::new(tx, std::sync::mpsc::channel().0);
+        let shared = host.shared();
+        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
+        {
+            let mut state = shared.snapshot.lock().unwrap();
+            state.spend = Some(std::sync::Arc::new(Default::default()));
+            state.spend_loading = true;
+            state.spend_generation = 42;
+            state.spend_worker_running = true;
+            state.spend_control = Some(control.clone());
+            state.spend_progress = Some(Default::default());
+        }
+        shared.release_spend();
+        let state = shared.snapshot.lock().unwrap();
+        assert!(state.spend.is_none());
+        assert!(!state.spend_loading);
+        assert_ne!(state.spend_generation, 42);
+        assert!(control.is_cancelled());
+        assert!(state.spend_progress.is_none());
+        assert!(
+            state.spend_worker_running,
+            "a second scan must wait for this worker to exit"
+        );
+    }
+
+    #[test]
+    fn cancelling_keeps_the_last_complete_snapshot_and_invalidates_worker_results() {
+        let host =
+            super::SettingsHost::new(std::sync::mpsc::channel().0, std::sync::mpsc::channel().0);
+        let shared = host.shared();
+        let snapshot = std::sync::Arc::new(quotascope_core::spend::Snapshot::default());
+        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
+        {
+            let mut state = shared.snapshot.lock().unwrap();
+            state.spend = Some(snapshot.clone());
+            state.spend_worker_running = true;
+            state.spend_loading = true;
+            state.spend_control = Some(control.clone());
+            state.spend_generation = 42;
+        }
+        shared.cancel_spend();
+        let generation = shared.generation();
+        shared.cancel_spend();
+        assert_eq!(
+            shared.generation(),
+            generation,
+            "duplicate cancellation is harmless"
+        );
+        let state = shared.snapshot.lock().unwrap();
+        assert!(control.is_cancelled());
+        assert!(std::sync::Arc::ptr_eq(
+            state.spend.as_ref().unwrap(),
+            &snapshot
+        ));
+        assert!(!state.spend_loading);
+        assert!(state.spend_cancelled);
+        assert_ne!(state.spend_generation, 42);
+    }
 
     #[test]
     fn balance_edits_reject_nonfinite_zero_negative_and_half_typed_amounts() {

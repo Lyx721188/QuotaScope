@@ -95,6 +95,7 @@ fn build_icon() -> HICON {
             None,
             0,
         ) else {
+            let _ = windows::Win32::Graphics::Gdi::DeleteDC(hdc);
             return HICON::default();
         };
         let old = windows::Win32::Graphics::Gdi::SelectObject(hdc, bitmap.into());
@@ -201,10 +202,8 @@ impl TrayIcon {
             };
             let tip: Vec<u16> = "QuotaScope".encode_utf16().collect();
             data.szTip[..tip.len()].copy_from_slice(&tip);
-            if Shell_NotifyIconW(NIM_ADD, &mut data).as_bool() {
-                tray.data = data;
-                tray.added = true;
-            }
+            tray.added = Shell_NotifyIconW(NIM_ADD, &mut data).as_bool();
+            tray.data = data;
         }
         tray
     }
@@ -269,7 +268,10 @@ impl Drop for TrayIcon {
     fn drop(&mut self) {
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &mut self.data);
+            let _ = KillTimer(Some(self.hwnd), 2);
+            SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
             let _ = DestroyWindow(self.hwnd);
+            let _ = DestroyIcon(self.data.hIcon);
         }
     }
 }

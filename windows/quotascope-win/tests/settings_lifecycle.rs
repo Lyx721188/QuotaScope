@@ -18,6 +18,7 @@ struct Search {
     pid: u32,
     tray: Option<HWND>,
     settings: Option<HWND>,
+    panel: Option<HWND>,
 }
 unsafe extern "system" fn find(hwnd: HWND, data: LPARAM) -> BOOL {
     let search = &mut *(data.0 as *mut Search);
@@ -28,6 +29,9 @@ unsafe extern "system" fn find(hwnd: HWND, data: LPARAM) -> BOOL {
         let len = GetClassNameW(hwnd, &mut class);
         if String::from_utf16_lossy(&class[..len as usize]) == "QuotaScopeTrayWindow" {
             search.tray = Some(hwnd);
+        }
+        if String::from_utf16_lossy(&class[..len as usize]) == "QuotaScopePanel" {
+            search.panel = Some(hwnd);
         }
         let mut title = [0u16; 128];
         let len = GetWindowTextW(hwnd, &mut title);
@@ -42,6 +46,7 @@ fn windows(pid: u32) -> Search {
         pid,
         tray: None,
         settings: None,
+        panel: None,
     };
     unsafe {
         let _ = EnumWindows(Some(find), LPARAM(&mut search as *mut _ as isize));
@@ -107,6 +112,7 @@ fn tray_settings_close_and_reopen_reuses_window_and_exits_cleanly() {
     let mut app = RunningApp(
         Command::new(executable)
             .env("APPDATA", &profile)
+            .env("QUOTASCOPE_TEST_INSTANCE", stamp.to_string())
             .spawn()
             .unwrap(),
     );
@@ -117,6 +123,28 @@ fn tray_settings_close_and_reopen_reuses_window_and_exits_cleanly() {
     // idle regression runs so it does not leave a blank dock on the desktop.
     unsafe {
         PostMessageW(Some(tray), WM_COMMAND, WPARAM(1001), LPARAM(0)).unwrap();
+    }
+    wait_for(&mut app, |s| {
+        s.panel
+            .is_some_and(|h| unsafe { !IsWindowVisible(h).as_bool() })
+    });
+    // Recreating a released composition canvas must work repeatedly.
+    for _ in 0..3 {
+        unsafe {
+            PostMessageW(Some(tray), WM_COMMAND, WPARAM(1001), LPARAM(0)).unwrap();
+        }
+        wait_for(&mut app, |s| {
+            s.panel
+                .is_some_and(|h| unsafe { IsWindowVisible(h).as_bool() })
+        });
+        stay_alive(&mut app, Duration::from_millis(300));
+        unsafe {
+            PostMessageW(Some(tray), WM_COMMAND, WPARAM(1001), LPARAM(0)).unwrap();
+        }
+        wait_for(&mut app, |s| {
+            s.panel
+                .is_some_and(|h| unsafe { !IsWindowVisible(h).as_bool() })
+        });
     }
     // Starting without --settings must also survive waiting before first open.
     stay_alive(&mut app, idle);
@@ -182,7 +210,12 @@ fn tray_settings_close_and_reopen_reuses_window_and_exits_cleanly() {
     });
     let exe = std::env::var("QUOTASCOPE_TEST_EXE")
         .unwrap_or_else(|_| env!("CARGO_BIN_EXE_quotascope").into());
-    assert!(Command::new(exe).status().unwrap().success());
+    assert!(Command::new(exe)
+        .env("APPDATA", &profile)
+        .env("QUOTASCOPE_TEST_INSTANCE", stamp.to_string())
+        .status()
+        .unwrap()
+        .success());
     wait_for(&mut app, |s| {
         s.settings
             .is_some_and(|h| unsafe { IsWindowVisible(h).as_bool() })

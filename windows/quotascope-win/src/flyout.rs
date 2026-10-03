@@ -33,6 +33,7 @@ pub struct Flyout {
     dpi: f64,
     units: (f64, f64),
     tracking_mouse: bool,
+    hidden_at: Option<std::time::Instant>,
 }
 
 impl Flyout {
@@ -59,6 +60,7 @@ impl Flyout {
             dpi: 1.0,
             units: (0.0, 0.0),
             tracking_mouse: false,
+            hidden_at: None,
         });
         unsafe {
             let hwnd = CreateWindowExW(
@@ -88,6 +90,7 @@ impl Flyout {
     /// Moves, sizes, shows. `units` is the card's design size; the canvas
     /// is kept in step with it and the monitor's DPI.
     pub fn show_at(&mut self, x: i32, y: i32, units: (f64, f64), dpi: f64) {
+        self.hidden_at = None;
         let px_w = (units.0 * dpi).ceil() as i32;
         let px_h = (units.1 * dpi).ceil() as i32;
         let resized = self.units != units || self.dpi != dpi;
@@ -122,9 +125,20 @@ impl Flyout {
     pub fn hide(&mut self) {
         if self.is_shown() {
             self.pointer_inside = false;
+            self.hidden_at = Some(std::time::Instant::now());
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
             }
+        }
+    }
+
+    pub fn release_idle_canvas(&mut self) {
+        if self
+            .hidden_at
+            .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(60))
+        {
+            self.canvas = None;
+            self.hidden_at = None;
         }
     }
 
@@ -166,6 +180,16 @@ impl Flyout {
         };
         let _ = draw_card(&painter, m, (0.0, 0.0), data, alpha);
         canvas.present();
+    }
+}
+
+impl Drop for Flyout {
+    fn drop(&mut self) {
+        self.canvas = None;
+        unsafe {
+            SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
+            let _ = DestroyWindow(self.hwnd);
+        }
     }
 }
 

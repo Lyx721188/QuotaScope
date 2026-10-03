@@ -13,6 +13,12 @@
 #ifndef OutputName
   #define OutputName "QuotaScope-" + AppVersion + "-windows-x64-Setup"
 #endif
+#ifndef InstallerGroupName
+  #define InstallerGroupName "QuotaScope"
+#endif
+#ifndef InstallerDefaultDir
+  #define InstallerDefaultDir "{localappdata}\Programs\QuotaScope"
+#endif
 
 [Setup]
 AppId={#InstallerAppId}
@@ -20,8 +26,8 @@ AppName=QuotaScope
 AppVersion={#AppVersion}
 AppPublisher=Lyx721188
 AppPublisherURL=https://github.com/Lyx721188/QuotaScope
-DefaultDirName={localappdata}\Programs\QuotaScope
-DefaultGroupName=QuotaScope
+DefaultDirName={#InstallerDefaultDir}
+DefaultGroupName={#InstallerGroupName}
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

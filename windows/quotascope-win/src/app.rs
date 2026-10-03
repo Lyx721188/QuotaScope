@@ -12,7 +12,7 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::panel::{PanelEvent, PanelWindow, RailEntry};
-use crate::settings_app::{SettingsAction, SettingsHost};
+use crate::settings_app::{SettingsAction, SettingsHost, UpdateStatus};
 use crate::tray::{DashboardEntry, TrayCommand, TrayIcon};
 
 pub enum AppMsg {
@@ -25,10 +25,14 @@ pub enum AppMsg {
     DeviceFlowDone(Result<String, String>),
     /// The value estimates for the transcript-backed accounts, worked out off
     /// the UI path: account id -> window id -> the card's estimate line.
-    Estimates(std::collections::HashMap<String, std::collections::HashMap<String, String>>),
+    Estimates(
+        u64,
+        std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    ),
     Histories(u64, HashMap<String, quotascope_core::history::HistoryRead>),
     PromptCache(u64, quotascope_core::prompt_cache::CacheReading),
     CodexDetails(u64, quotascope_core::codex_account::AccountDetails),
+    UpdateChecked(bool, quotascope_core::updates::CheckResult),
 }
 
 pub struct App {
@@ -58,6 +62,9 @@ pub struct App {
     codex_details: Option<quotascope_core::codex_account::AccountDetails>,
     codex_details_running: bool,
     codex_details_at: Option<std::time::Instant>,
+    update_check_running: bool,
+    update_notified: Option<String>,
+    maintenance_at: std::time::Instant,
 }
 
 /// Long enough that moving between rings does not rescan, short enough that
@@ -74,6 +81,8 @@ impl App {
         shared_tx: std::sync::mpsc::Sender<std::sync::Arc<crate::settings_app::Shared>>,
     ) -> App {
         let (tx, rx) = channel::<AppMsg>();
+        // Reclaim pre-existing oversized statistics without blocking either UI.
+        std::thread::spawn(quotascope_core::statistics_cache::enforce);
 
         // The windows speak their own vocabularies; forwarder threads fold
         // them into the one channel the loop listens to.
@@ -178,6 +187,9 @@ impl App {
             codex_details: None,
             codex_details_running: false,
             codex_details_at: None,
+            update_check_running: false,
+            update_notified: None,
+            maintenance_at: std::time::Instant::now(),
         };
 
         // Paint the rail from the cache before the first round trip, so it
@@ -193,7 +205,6 @@ impl App {
 
         // Timers: the panel's frame clock, and the store's poll.
         unsafe {
-            let _ = SetTimer(Some(app.panel.hwnd), 1, 30, None);
             let _ = SetTimer(Some(app.tray.hwnd), 2, 250, None);
         }
 
@@ -225,11 +236,13 @@ impl App {
                 AppMsg::Settings(action) => self.handle_settings(action),
                 AppMsg::StorePoll => self.poll_store(),
                 AppMsg::OpenSettings => self.settings.show(),
-                AppMsg::Estimates(map) => {
+                AppMsg::Estimates(generation, map) => {
                     self.estimates_running = false;
-                    self.estimates_at = Some(std::time::Instant::now());
-                    self.estimates = map;
-                    self.rebuild_entries();
+                    if generation == self.histories_generation {
+                        self.estimates_at = Some(std::time::Instant::now());
+                        self.estimates = map;
+                        self.rebuild_entries();
+                    }
                 }
                 AppMsg::Histories(generation, map) => {
                     self.histories_running = false;
@@ -255,6 +268,34 @@ impl App {
                         self.rebuild_entries();
                     }
                 }
+                AppMsg::UpdateChecked(manual, result) => {
+                    self.update_check_running = false;
+                    if let quotascope_core::updates::CheckResult::Available(release) = &result {
+                        let remind = quotascope_core::settings::with(|s| {
+                            s.checks_for_updates
+                                && s.skipped_update_version.as_deref() != Some(&release.version)
+                        });
+                        if !manual
+                            && remind
+                            && self.update_notified.as_deref() != Some(&release.version)
+                        {
+                            self.tray.show_balloon(
+                                "QuotaScope",
+                                &format!(
+                                    "{} {} · {}",
+                                    quotascope_core::localization::t("Windows update available:"),
+                                    release.version,
+                                    quotascope_core::localization::t(
+                                        "Open Settings → About to choose an update."
+                                    )
+                                ),
+                                false,
+                            );
+                            self.update_notified = Some(release.version.clone());
+                        }
+                    }
+                    self.settings.set_update_status(UpdateStatus::Done(result));
+                }
                 AppMsg::DeviceFlowDone(result) => match result {
                     Ok(token) => {
                         quotascope_core::secrets::set_key("copilot", &token);
@@ -278,9 +319,7 @@ impl App {
         match command {
             TrayCommand::TogglePanel => {
                 if self.panel.is_visible() {
-                    unsafe {
-                        let _ = ShowWindow(self.panel.hwnd, SW_HIDE);
-                    }
+                    self.panel.hide();
                 } else {
                     self.panel.show();
                 }
@@ -355,6 +394,12 @@ impl App {
                 self.settings.refresh();
             }
             SettingsAction::OpenUrl(url) => open_in_browser(&url),
+            SettingsAction::OpenFolder(path) => open_in_browser(&path.to_string_lossy()),
+            SettingsAction::CheckUpdates => self.check_updates(true),
+            SettingsAction::SkipUpdate(version) => {
+                quotascope_core::settings::mutate(|s| s.skipped_update_version = Some(version));
+                self.settings.refresh();
+            }
         }
     }
 
@@ -422,16 +467,48 @@ impl App {
             }
         }
         self.update_settings_status();
-        self.maybe_refresh_estimates();
-        self.maybe_refresh_histories();
-        self.maybe_refresh_prompt_cache();
-        self.maybe_refresh_codex_details();
+        if self.panel.is_visible() {
+            self.maybe_refresh_estimates();
+            self.maybe_refresh_histories();
+            self.maybe_refresh_prompt_cache();
+            self.maybe_refresh_codex_details();
+        }
+        if self.maintenance_at.elapsed() >= std::time::Duration::from_secs(30) {
+            self.maintenance_at = std::time::Instant::now();
+            quotascope_core::ledger::release_expired_memory(quotascope_core::settings::with(|s| {
+                s.reads_token_spend
+            }));
+        }
+        self.check_updates(false);
+    }
+
+    fn check_updates(&mut self, manual: bool) {
+        let now = quotascope_core::timeutil::now_ms();
+        let due = quotascope_core::settings::with(|s| {
+            s.checks_for_updates
+                && s.last_update_check_at
+                    .is_none_or(|at| now < at || now.saturating_sub(at) >= 24 * 60 * 60 * 1000)
+        });
+        if self.update_check_running || (!manual && !due) {
+            return;
+        }
+        self.update_check_running = true;
+        quotascope_core::settings::mutate(|s| s.last_update_check_at = Some(now));
+        self.settings.set_update_status(UpdateStatus::Checking);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = quotascope_core::updates::check(env!("CARGO_PKG_VERSION"));
+            let _ = tx.send(AppMsg::UpdateChecked(manual, result));
+        });
     }
 
     fn invalidate_histories(&mut self) {
         self.histories_dirty = true;
         self.histories_generation = self.histories_generation.wrapping_add(1);
         self.histories.clear();
+        self.estimates.clear();
+        self.estimates_at = None;
+        self.estimates_dirty = true;
         self.prompt_cache = None;
         self.prompt_cache_at = None;
         self.codex_details = None;
@@ -576,6 +653,7 @@ impl App {
         self.estimates_running = true;
         self.estimates_dirty = false;
         let tx = self.tx.clone();
+        let generation = self.histories_generation;
         std::thread::spawn(move || {
             let now = quotascope_core::timeutil::now_ms();
             let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -598,7 +676,7 @@ impl App {
                 }
                 out.insert(reading.account.id(), lines);
             }
-            let _ = tx.send(AppMsg::Estimates(out));
+            let _ = tx.send(AppMsg::Estimates(generation, out));
         });
     }
 

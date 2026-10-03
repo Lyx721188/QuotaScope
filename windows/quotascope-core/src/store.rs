@@ -94,7 +94,9 @@ fn worker(cmd_rx: Receiver<Command>, upd_tx: Sender<Update>) {
 
     loop {
         let now = crate::timeutil::now_ms();
-        let wait = (next_pass_at - now).clamp(1, 1000) as u64;
+        // Commands wake recv_timeout immediately. Idle work does not need
+        // a one-second wakeup; a minute still notices wall-clock changes.
+        let wait = (next_pass_at - now).clamp(1, 60_000) as u64;
 
         match cmd_rx.recv_timeout(std::time::Duration::from_millis(wait)) {
             Ok(Command::Shutdown) => return,
