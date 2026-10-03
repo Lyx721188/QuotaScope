@@ -67,6 +67,7 @@ struct SettingsSnapshot {
     account_details: HashMap<Provider, Arc<AccountDetails>>,
     account_detail_controls: HashMap<Provider, Arc<quotascope_core::scan::Control>>,
     account_detail_generation: u64,
+    codex_signals: crate::codex_signal_state::State,
     console_operations: HashMap<String, ConsoleOperation>,
 }
 
@@ -309,6 +310,7 @@ impl Shared {
             control.cancel();
         }
         state.account_details.clear();
+        state.codex_signals.release();
         state.account_detail_generation = state.account_detail_generation.wrapping_add(1);
         state.generation = state.generation.wrapping_add(1);
     }
@@ -371,6 +373,90 @@ impl Shared {
             }
             state.generation = state.generation.wrapping_add(1);
         });
+    }
+
+    fn request_codex_signals(
+        self: &Arc<Self>,
+        query: crate::codex_signal_state::Query,
+        force: bool,
+    ) {
+        if !self.alive.load(Ordering::SeqCst)
+            || !quotascope_core::settings::with(|s| s.reads_token_spend)
+        {
+            return;
+        }
+        let mut state = self.snapshot.lock().unwrap();
+        let signals = &mut state.codex_signals;
+        signals.select(query, force);
+        if !signals.dirty || signals.worker_running || signals.failed || signals.cancelled {
+            return;
+        }
+        signals.worker_running = true;
+        state.generation = state.generation.wrapping_add(1);
+        let shared = self.clone();
+        drop(state);
+        std::thread::spawn(move || shared.run_codex_signals());
+    }
+
+    fn run_codex_signals(self: Arc<Self>) {
+        loop {
+            let (query, generation, control, reader) = {
+                let mut state = self.snapshot.lock().unwrap();
+                let signals = &mut state.codex_signals;
+                if !self.alive.load(Ordering::SeqCst)
+                    || !signals.dirty
+                    || signals.query.is_none()
+                    || signals.failed
+                    || signals.cancelled
+                {
+                    signals.worker_running = false;
+                    signals.control = None;
+                    state.generation = state.generation.wrapping_add(1);
+                    return;
+                }
+                let control = Arc::new(quotascope_core::scan::Control::default());
+                signals.control = Some(control.clone());
+                (
+                    signals.query.clone().expect("checked above"),
+                    signals.generation,
+                    control,
+                    signals.reader.clone().expect("selection owns a reader"),
+                )
+            };
+            let result = std::panic::catch_unwind(|| {
+                quotascope_core::scan::run(
+                    control,
+                    1,
+                    |_| {},
+                    || {
+                        let report =
+                            reader
+                                .lock()
+                                .unwrap()
+                                .read(&query.home, query.days, query.today);
+                        crate::codex_signal_state::Summary::from_report(report)
+                    },
+                )
+            });
+            let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
+            let mut state = self.snapshot.lock().unwrap();
+            let signals = &mut state.codex_signals;
+            signals.control = None;
+            if signals.accepts(&query, generation) && allowed && self.alive.load(Ordering::SeqCst) {
+                signals.dirty = false;
+                match result {
+                    Ok(Ok(summary)) => signals.result = Some(Arc::new(summary)),
+                    Ok(Err(_)) => signals.cancelled = true,
+                    Err(_) => {
+                        signals.failed = true;
+                        signals.reader = None;
+                    }
+                }
+            } else if !allowed || !self.alive.load(Ordering::SeqCst) {
+                signals.release();
+            }
+            state.generation = state.generation.wrapping_add(1);
+        }
     }
 
     fn request_maintenance(self: &Arc<Self>, operation: MaintenanceOperation) {

@@ -273,6 +273,11 @@ pub fn parse(lines: impl Iterator<Item = String>) -> Facts {
                             window = Some((size, model.clone()));
                         }
                     }
+                    // Codex emits initial context/rate-limit messages with
+                    // no completed usage. They are not missing responses.
+                    if info["last_token_usage"].is_null() {
+                        continue;
+                    }
                     let totals = info["total_token_usage"]
                         .as_object()
                         .map(|usage| {
@@ -379,6 +384,22 @@ mod tests {
             .flat_map(|day| day.values())
             .map(|counts| counts.responses)
             .sum()
+    }
+
+    #[test]
+    fn initial_null_usage_is_not_an_incomplete_response_or_a_zero_sample() {
+        let facts = read(vec![
+            meta("0.146.0"),
+            context("root", "model-a", "high", 1),
+            line(
+                "event_msg",
+                json!({"type":"token_count","info":{"last_token_usage":null,"total_token_usage":null,"model_context_window":10000}}),
+                2,
+            ),
+            count(Some(516), 100, 10000, 3),
+        ]);
+        assert!(!facts.partial);
+        assert_eq!(response_count(&facts), 1);
     }
 
     #[test]

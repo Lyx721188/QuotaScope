@@ -10,6 +10,7 @@ mod assets;
 mod autostart;
 mod card;
 mod clipboard;
+mod codex_signal_state;
 mod d2d;
 mod flyout;
 mod fonts;

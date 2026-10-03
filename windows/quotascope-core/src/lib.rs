@@ -13,6 +13,7 @@ pub mod browser_storage;
 pub mod cache;
 pub mod codex_account;
 pub mod codex_rpc;
+pub mod codex_signal_reader;
 pub mod codex_signals;
 pub mod deepseek_console;
 pub mod deepseek_history;
