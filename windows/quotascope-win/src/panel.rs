@@ -181,7 +181,7 @@ impl RailEntry {
 
 /// What a rail entry calls its account: the extension's own name when it is
 /// one, the product's name otherwise.
-fn account_title(
+pub(crate) fn account_title(
     provider: quotascope_core::model::Provider,
     account: &AccountKey,
     settings: &quotascope_core::settings::AppSettings,
@@ -193,7 +193,11 @@ fn account_title(
             .cloned()
             .unwrap_or_else(|| account.slot.clone());
     }
-    provider.display_name().to_string()
+    if account.is_primary() {
+        provider.display_name().to_string()
+    } else {
+        format!("{} #{}", provider.display_name(), account.slot)
+    }
 }
 
 struct DragState {
@@ -368,7 +372,7 @@ impl PanelWindow {
         let settings = quotascope_core::settings::with(|s| s.clone());
         self.m = Metrics::from_settings(&settings);
         self.edge = Edge::from_name(&settings.dock_side);
-        self.docked = true;
+        self.docked = !settings.floating;
         // A setting that forbids retreating also summons a retreated bar
         // straight back out.
         if !self.can_retreat() {
@@ -451,6 +455,10 @@ impl PanelWindow {
                 work.left + (work.width() - physical.0) / 2,
                 work.top + margin,
             ),
+            (true, Edge::Bottom) => (
+                work.left + (work.width() - physical.0) / 2,
+                work.bottom - physical.1 - margin,
+            ),
             (false, _) => {
                 let x = settings.float_x.clamp(0.0, 1.0);
                 let y = settings.float_y.clamp(0.0, 1.0);
@@ -484,7 +492,7 @@ impl PanelWindow {
             self.edge,
             self.base_pos,
             physical,
-            (work.left, work.top, work.right),
+            (work.left, work.top, work.right, work.bottom),
             peek,
         );
         self.apply_position();
@@ -740,12 +748,14 @@ impl PanelWindow {
         let settings = quotascope_core::settings::with(|s| s.clone());
         let detailed = settings.detailed_cards.contains(&entry.account.id());
         let history_enabled = detailed
+            && entry.account.is_primary()
             && usage.provider().provides_history()
             && (settings.reads_token_spend
                 || matches!(
                     usage.provider(),
                     quotascope_core::model::Provider::Zai
                         | quotascope_core::model::Provider::GlmCoding
+                        | quotascope_core::model::Provider::OpenCodeGo
                 ));
         let data = CardData {
             usage: usage.clone(),
@@ -795,6 +805,7 @@ impl PanelWindow {
         let (wx, wy) = self.base_pos;
         let (ww, wh) = self.phys_size;
         let (_, work) = winutil::monitor_work_at(wx + ww / 2, wy + wh / 2);
+        let ch = ch.min((work.height() as f64 / self.dpi - 24.0).max(120.0));
         let dpi = self.dpi;
         let rail = (0.0, 0.0, self.window_units.0, self.window_units.1);
         let center = ring_center(&self.m, slot, rail, self.edge);
@@ -808,6 +819,7 @@ impl PanelWindow {
             Edge::Right => (wx as f64 - gap - w, ring_y - h / 2.0),
             Edge::Left => (wx as f64 + ww as f64 + gap, ring_y - h / 2.0),
             Edge::Top => (ring_x - w / 2.0, wy as f64 + wh as f64 + gap),
+            Edge::Bottom => (ring_x - w / 2.0, wy as f64 - gap - h),
         };
         tx = tx.clamp(
             work.left as f64,
@@ -1065,7 +1077,7 @@ impl PanelWindow {
         let count = self.entries.len();
         let rail = (0.0, 0.0, self.window_units.0, self.window_units.1);
         let along = match self.edge {
-            Edge::Top => ux - rail.0,
+            Edge::Top | Edge::Bottom => ux - rail.0,
             _ => uy - rail.1,
         };
         let slot = geometry::dock::slot_at(&self.m, along, self.edge.axis(), count);
@@ -1146,7 +1158,7 @@ impl PanelWindow {
         // A click on a ring refreshes that account — the ring is a button.
         let rail = (0.0, 0.0, self.window_units.0, self.window_units.1);
         let along = match self.edge {
-            Edge::Top => ux - rail.0,
+            Edge::Top | Edge::Bottom => ux - rail.0,
             _ => uy - rail.1,
         };
         if let Some(slot) = geometry::dock::slot_at(&self.m, along, self.edge.axis(), count) {
@@ -1227,10 +1239,12 @@ impl PanelWindow {
             Some(Edge::Left)
         } else if dist_top <= fuse {
             Some(Edge::Top)
+        } else if (work.bottom - want_y - (self.window_units.1 * dpi_scale) as i32).abs() <= fuse {
+            Some(Edge::Bottom)
         } else {
             None
         };
-        let new_docked = new_edge.is_some() || self.docked;
+        let new_docked = new_edge.is_some();
         let new_edge = new_edge.unwrap_or(self.edge);
 
         if new_edge != self.edge || new_docked != self.docked {
@@ -1253,6 +1267,13 @@ impl PanelWindow {
                     (work.right - phys_w - margin).max(work.left + margin),
                 );
                 (x, work.top + margin)
+            }
+            (true, Edge::Bottom) => {
+                let x = want_x.clamp(
+                    work.left + margin,
+                    (work.right - phys_w - margin).max(work.left + margin),
+                );
+                (x, work.bottom - phys_h - margin)
             }
             _ => {
                 let x = want_x.clamp(
@@ -1317,6 +1338,7 @@ impl PanelWindow {
                 Edge::Left => "left".into(),
                 Edge::Right => "right".into(),
                 Edge::Top => "top".into(),
+                Edge::Bottom => "bottom".into(),
             };
             s.float_x = x;
             s.float_y = y;
@@ -1364,7 +1386,11 @@ impl PanelWindow {
                 .card_slot
                 .and_then(|i| self.entries.get(i))
                 .is_some_and(|entry| {
-                    entry.account.provider == quotascope_core::model::Provider::ClaudeCode
+                    matches!(
+                        entry.account.provider,
+                        quotascope_core::model::Provider::ClaudeCode
+                            | quotascope_core::model::Provider::Codex
+                    )
                 })
     }
 }
@@ -1523,6 +1549,7 @@ unsafe extern "system" fn panel_wndproc(
         // The flyout's pointer traffic, folded into the same linger logic.
         winutil::WM_APP_CARD => {
             panel.on_card_pointer(wparam.0 != 0);
+            panel.redraw();
             LRESULT(0)
         }
         // The system appearance changed: re-read it, re-tint the backdrops,

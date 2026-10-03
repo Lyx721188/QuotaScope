@@ -36,6 +36,9 @@ impl ProviderService for OpenCodeService {
         let key = pasted_or_none(keys.api_key(Provider::OpenCodeGo))
             .or_else(crate::model::opencode_stored_key);
         let Some(key) = key else {
+            if let Some(cookie) = &keys.opencode_console {
+                return crate::opencode_console::usage(&self.http, cookie);
+            }
             return ProviderUsage::unavailable(account, Unavailability::ApiKeyMissing);
         };
 
@@ -49,7 +52,20 @@ impl ProviderService for OpenCodeService {
                 .fetch_json(crate::http::Method::Get, ENDPOINT, &header_refs, None)
             {
                 Ok(v) => v,
-                Err(reason) => return ProviderUsage::unavailable(account, reason),
+                Err(reason) => {
+                    if matches!(
+                        reason,
+                        Unavailability::ApiKeyRefused
+                            | Unavailability::Unreachable
+                            | Unavailability::ServerError
+                            | Unavailability::UnreadableReply
+                    ) {
+                        if let Some(cookie) = &keys.opencode_console {
+                            return crate::opencode_console::usage(&self.http, cookie);
+                        }
+                    }
+                    return ProviderUsage::unavailable(account, reason);
+                }
             };
 
         let windows = parse_windows(&root);

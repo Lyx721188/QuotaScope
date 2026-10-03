@@ -29,6 +29,12 @@ use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    if args.iter().any(|a| a == "--statusline") {
+        attach_console();
+        quotascope_core::statusline::run(std::io::stdin().lock());
+        return;
+    }
+
     if args.iter().any(|a| a == "--json") {
         attach_console();
         quotascope_core::settings::initialize();
@@ -39,13 +45,39 @@ fn main() {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("QuotaScope — a screen-edge monitor for your AI coding allowances.");
         println!("  --json   print the last readings for status lines and scripts");
+        println!("  --statusline   capture Claude's reported rate_limits from stdin");
+        println!("  --dashboard | --refresh | --settings");
+        println!("  --url quotascope://settings|dashboard|refresh");
         return;
     }
+
+    use quotascope_core::integration::Action;
+    let action = if let Some(index) = args.iter().position(|a| a == "--url") {
+        let Some(action) = args
+            .get(index + 1)
+            .and_then(|u| quotascope_core::integration::link(u))
+        else {
+            return;
+        };
+        Some(action)
+    } else if args.iter().any(|a| a == "--dashboard") {
+        Some(Action::Dashboard)
+    } else if args.iter().any(|a| a == "--refresh") {
+        Some(Action::Refresh)
+    } else if args.iter().any(|a| a == "--settings") {
+        Some(Action::Settings)
+    } else {
+        None
+    };
 
     // A second launch opens Settings in the first instance — the answer to
     // "I clicked it again and nothing happened" — then exits.
     if !winutil::acquire_single_instance() {
-        winutil::signal_open_settings();
+        match action {
+            Some(Action::Dashboard) => winutil::signal_action("QuotaScope.Windows.OpenDashboard"),
+            Some(Action::Refresh) => winutil::signal_action("QuotaScope.Windows.RefreshAll"),
+            _ => winutil::signal_open_settings(),
+        }
         return;
     }
 
@@ -73,7 +105,7 @@ fn main() {
 
     // `quotascope --settings` opens the settings window right away — the same
     // surface the tray menu reaches.
-    if args.iter().any(|a| a == "--settings") {
+    if matches!(action, Some(Action::Settings | Action::Dashboard)) {
         let _ = open_tx.send(());
     }
     drop(open_tx);
@@ -81,6 +113,9 @@ fn main() {
     // Keep the WinUI host for the application's lifetime. Restarting it
     // after tearing down the Settings controls crashes the current runtime.
     if let Ok(shared) = shared_rx.recv() {
+        if action == Some(Action::Dashboard) {
+            shared.request_dashboard();
+        }
         if open_rx.recv().is_ok() {
             settings_app::serve(&shared, open_rx);
         }

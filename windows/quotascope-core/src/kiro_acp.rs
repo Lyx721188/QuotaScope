@@ -223,6 +223,7 @@ pub fn usage() -> Result<Value, Failure> {
             command.env("PATH", path);
         }
     }
+    crate::proxy::environment(&mut command);
     usage_with(command, Duration::from_secs(20))
 }
 
@@ -383,9 +384,10 @@ mod tests {
         eprint!("{}", "x".repeat(256 * 1024));
         emit(json!({"jsonrpc":"2.0","method":"fixture/update","params":{}}));
         emit(json!({"jsonrpc":"2.0","id":1,"result":{"stale":true}}));
-        let mut result: Value =
-            serde_json::from_str(include_str!("../tests/fixtures/kiro-pro-plus-usage.json"))
-                .unwrap();
+        let mut result: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/upstream-kiro-pro-plus-usage.json"
+        ))
+        .unwrap();
         if mode == "descendant" {
             let child = command("sleep")
                 .stdin(Stdio::null())

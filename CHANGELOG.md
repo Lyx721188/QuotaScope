@@ -5,6 +5,21 @@ What each release changed, written for somebody deciding whether to install it.
 Windows releases use their own version sequence. Entries below 1.1.1 include
 inherited macOS history and do not establish Windows feature availability.
 
+## 1.3.1 (Windows, 2026-10-03)
+
+- Kiro uses a dedicated native CLI ACP reader with strict, upstream-grounded decoding of credit pools, provider-specific login/version errors, stable pool IDs and deterministic parsing fixtures. Missing limits remain unknown; date-only monthly resets do not imply a fixed duration or a value estimate.
+- Each refresh waits for initialization before reading usage, bounds pipe reads and writes, and tears down the hidden CLI and its Windows helper processes on success, failure or timeout. Settings uses Kiro's own saved CLI login and offers enable/refresh controls without storing a Kiro credential.
+- Fixture and isolated ACP process tests cover parsing and cleanup. Real Kiro account verification is still pending; see [Kiro Windows](Docs/providers/windows-kiro.md).
+
+## 1.3.0 (Windows, released 2026-10-03)
+
+- **Ten more quota routes.** Windows now reads Kiro, Ollama Cloud, Grok Bot, Volcengine, Devin, Alibaba Token Plan, Gemini, JetBrains AI, Windsurf and Nous Portal. Some routes depend on local CLI state or browser sessions; provider fixtures do not replace verification with a real account.
+- **More accounts and useful fallback readings.** Add API-key or session-backed accounts independently. Claude can use an explicitly imported desktop/browser session or status-line cache when its normal route is unavailable. OpenCode adds Go allowance and actual console billing; OpenCode and Kilo can read their local SQLite histories.
+- **More detail from local usage.** Claude/Codex views add model share, cache hit rates and available response timing; estimates now handle partial windows proportionally and pause when unexplained external usage is detected. Additional agent logs appear in the spend view, and 20 catalog sources accept the documented import format where native readers are not implemented.
+- **Windows controls and integrations.** The panel can dock at the bottom, display horizontal cards and scroll long cards. The tray opens a usage dashboard; optional shortcuts, HTTP proxy settings, deep links, status-line input and CSV export are available.
+- **Locale and scan controls.** Traditional Chinese, Japanese and Korean dictionaries are included. Optional background spend scanning uses a bounded cache and can be cancelled when disabled.
+- **Known limits.** Interactive OAuth for added accounts, 20 native agent formats, complete BotMark animation and several translations remain incomplete. New provider routes have not all been checked with real accounts. See [the port status](Docs/upstream-implementation-status.md).
+
 ## 1.2.4 (Windows, released 2026-10-03)
 
 - Settings keeps its WinUI host and navigation shell, while releasing page controls and the Token spend snapshot on close. Leaving Token spend also releases the snapshot; late scans cannot restore a closed page's data or overlap a new scan.

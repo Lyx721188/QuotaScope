@@ -46,6 +46,7 @@ DisableProgramGroupPage=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
+Name: "urlprotocol"; Description: "Open quotascope:// links with QuotaScope"; GroupDescription: "Integrations:"; Flags: unchecked
 
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -58,14 +59,25 @@ Name: "{autodesktop}\QuotaScope"; Filename: "{app}\quotascope.exe"; WorkingDir: 
 [Run]
 Filename: "{app}\quotascope.exe"; Parameters: "--settings"; Description: "Launch QuotaScope"; Flags: nowait postinstall skipifsilent
 
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\quotascope"; ValueType: string; ValueData: "URL:QuotaScope"; Tasks: urlprotocol
+Root: HKCU; Subkey: "Software\Classes\quotascope"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Tasks: urlprotocol
+Root: HKCU; Subkey: "Software\Classes\quotascope\shell\open\command"; ValueType: string; ValueData: """{app}\quotascope.exe"" --url ""%1"""; Tasks: urlprotocol
+
 [Code]
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   StartupCommand: String;
+  ProtocolCommand: String;
 begin
   if CurUninstallStep = usUninstall then
     if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
       'QuotaScope', StartupCommand) then
       if CompareText(StartupCommand, '"' + ExpandConstant('{app}\quotascope.exe') + '"') = 0 then
         RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'QuotaScope');
+  if CurUninstallStep = usUninstall then
+    if RegQueryStringValue(HKCU, 'Software\Classes\quotascope\shell\open\command',
+      '', ProtocolCommand) then
+      if CompareText(ProtocolCommand, '"' + ExpandConstant('{app}\quotascope.exe') + '" --url "%1"') = 0 then
+        RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\quotascope');
 end;

@@ -5,8 +5,9 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-const FILES: [&str; 3] = [
+const FILES: [&str; 4] = [
     "ledger-4-claudeCode.json",
+    "ledger-5-claudeCode.json",
     "ledger-4-codex.json",
     "token-spend-2.json",
 ];

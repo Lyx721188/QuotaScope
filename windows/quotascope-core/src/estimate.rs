@@ -26,7 +26,8 @@
 //! - Logs that start after the window did miss part of the spending, which
 //!   would put the window's worth too low.
 //! - Work done on another machine is invisible here, and pulls the same way.
-//!   Nothing can detect that, which is the honest limit of this figure.
+//!   A quota rise while this machine is quiet can be detected; simultaneous
+//!   local and remote work still cannot be separated.
 
 use crate::ledger::UsageLedger;
 use crate::model::UsageWindow;
@@ -37,7 +38,7 @@ use crate::model::UsageWindow;
 /// labelled an estimate and a quarter either way still tells you whether a
 /// window is worth ten dollars or a thousand. Below 2% it stops meaning
 /// anything at all.
-pub const MINIMUM_USED: f64 = 0.02;
+pub const MINIMUM_USED: f64 = 0.05;
 
 /// And below this there isn't enough money in play to be worth reporting.
 pub const MINIMUM_SPEND: f64 = 0.20;
@@ -114,7 +115,18 @@ pub fn estimate(
     now_ms: i64,
     rule: Rule,
 ) -> Option<BudgetEstimate> {
-    if window.window_seconds <= 0 {
+    estimate_at(window, ledger, None, now_ms, rule)
+}
+
+pub fn estimate_at(
+    window: &UsageWindow,
+    ledger: &UsageLedger,
+    observed_at: Option<i64>,
+    now_ms: i64,
+    rule: Rule,
+) -> Option<BudgetEstimate> {
+    if window.window_seconds <= 0 || ledger.has_partial_records || !window.used_fraction.is_finite()
+    {
         return None;
     }
     let resets = window.resets_at?;
@@ -122,8 +134,9 @@ pub fn estimate(
         return None;
     }
 
-    let opened_ms = resets - window.window_seconds * 1000;
-    if opened_ms >= now_ms {
+    let opened_ms = resets.checked_sub(window.window_seconds.checked_mul(1000)?)?;
+    let read_ms = observed_at.unwrap_or(now_ms).min(now_ms);
+    if opened_ms >= read_ms || read_ms >= resets {
         return None;
     }
 
@@ -135,8 +148,16 @@ pub fn estimate(
     }
 
     let spent = match (&window.scope, rule.place) {
-        (None, _) => ledger.spend_since(opened_ms).1,
-        (Some(scope), Some(place)) => scoped_spend(ledger, opened_ms, scope, place)?,
+        (None, _) => {
+            if ledger.slots.iter().any(|s| {
+                s.unpriced_tokens > 0
+                    && crate::ledger::slot_share(s.start_ms, opened_ms, read_ms) > 0.0
+            }) {
+                return None;
+            }
+            ledger.cost_between(opened_ms, read_ms)
+        }
+        (Some(scope), Some(place)) => scoped_spend(ledger, opened_ms, read_ms, scope, place)?,
         // A limit scoped to one model is spent by that model alone, but the
         // logs' spending for the period is everything together — dividing one
         // by the other priced Claude Code's 2%-used Fable window at ten
@@ -144,7 +165,7 @@ pub fn estimate(
         // through Opus.
         (Some(_), None) => return None,
     };
-    if spent < MINIMUM_SPEND {
+    if !spent.is_finite() || spent < MINIMUM_SPEND {
         return None;
     }
 
@@ -165,12 +186,14 @@ pub fn estimate(
 fn scoped_spend(
     ledger: &UsageLedger,
     opened_ms: i64,
+    read_ms: i64,
     scope: &str,
     place: fn(&str, &str) -> Placement,
 ) -> Option<f64> {
     let mut spent = 0.0;
     for slot in &ledger.slots {
-        if slot.start_ms < opened_ms {
+        let share = crate::ledger::slot_share(slot.start_ms, opened_ms, read_ms);
+        if share <= 0.0 {
             continue;
         }
         // Placed by what was logged, not by what reached a price: a model the
@@ -179,7 +202,7 @@ fn scoped_spend(
         // something nobody can say.
         for model in slot.models.keys() {
             match place(scope, model) {
-                Placement::InScope => spent += slot.costs.get(model).copied().unwrap_or(0.0),
+                Placement::InScope => spent += slot.costs.get(model).copied()? * share,
                 Placement::OutOfScope => {}
                 Placement::Unknown => return None,
             }
@@ -198,7 +221,17 @@ pub fn window_text(
     now_ms: i64,
     rule: Rule,
 ) -> Option<String> {
-    let e = estimate(window, ledger, now_ms, rule)?;
+    window_text_at(window, ledger, None, now_ms, rule)
+}
+
+pub fn window_text_at(
+    window: &UsageWindow,
+    ledger: &UsageLedger,
+    observed_at: Option<i64>,
+    now_ms: i64,
+    rule: Rule,
+) -> Option<String> {
+    let e = estimate_at(window, ledger, observed_at, now_ms, rule)?;
     Some(crate::localization::t_fmt(
         "Estimated value {value} · {spent} used",
         &[&approximate(e.full), &approximate(e.spent)],
@@ -425,5 +458,40 @@ mod tests {
         assert_eq!(approximate(99.99), "≈$99.99");
         assert_eq!(approximate(12.0), "≈$12.00");
         assert_eq!(approximate(10_000.0), "≈$10000");
+    }
+
+    #[test]
+    fn observed_quota_excludes_later_spend_and_prorates_both_boundaries() {
+        let w = window(0.25, 3600, 3_900_000, None);
+        let ledger = ledger_with(vec![
+            slot(0, 90.0),
+            slot(900_000, 90.0),
+            slot(1_800_000, 900.0),
+        ]);
+        let e = estimate_at(&w, &ledger, Some(1_200_000), 3_000_000, Rule::default()).unwrap();
+        assert!((e.spent - 90.0).abs() < 1e-9);
+        assert!((e.full - 360.0).abs() < 1e-9);
+        assert_eq!(
+            estimate_at(&w, &ledger, Some(300_000), 3_000_000, Rule::default()),
+            None
+        );
+        assert_eq!(
+            estimate_at(&w, &ledger, Some(3_900_000), 4_000_000, Rule::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn coarse_percentages_below_five_and_missing_prices_are_withheld() {
+        let mut w = window(0.04, 3600, 3_600_000, None);
+        let mut ledger = ledger_with(vec![slot(0, 90.0)]);
+        assert_eq!(estimate(&w, &ledger, 1_800_000, Rule::default()), None);
+        w.used_fraction = 0.05;
+        assert!(estimate(&w, &ledger, 1_800_000, Rule::default()).is_some());
+        ledger.slots[0].unpriced_tokens = 10;
+        assert_eq!(estimate(&w, &ledger, 1_800_000, Rule::default()), None);
+        ledger.slots[0].unpriced_tokens = 0;
+        ledger.has_partial_records = true;
+        assert_eq!(estimate(&w, &ledger, 1_800_000, Rule::default()), None);
     }
 }

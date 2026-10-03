@@ -140,9 +140,12 @@ pub fn acquire_single_instance() -> bool {
 /// app gives on reopen. The mutex says "already running"; this named event
 /// carries the request across to the first instance.
 pub fn signal_open_settings() {
+    signal_action("QuotaScope.Windows.OpenSettings");
+}
+pub fn signal_action(event_name: &str) {
     use windows::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
     unsafe {
-        let name = instance_object_name("QuotaScope.Windows.OpenSettings");
+        let name = instance_object_name(event_name);
         if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(name.as_ptr())) {
             let _ = SetEvent(event);
             let _ = windows::Win32::Foundation::CloseHandle(event);
@@ -154,10 +157,13 @@ pub fn signal_open_settings() {
 /// signal into a message on `tx`. The handle lives for the process
 /// lifetime on purpose.
 pub fn listen_for_open_settings(tx: std::sync::mpsc::Sender<()>) {
+    listen_for_action("QuotaScope.Windows.OpenSettings", tx);
+}
+pub fn listen_for_action(event_name: &'static str, tx: std::sync::mpsc::Sender<()>) {
     use windows::Win32::Foundation::WAIT_OBJECT_0;
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
     std::thread::spawn(move || unsafe {
-        let name = instance_object_name("QuotaScope.Windows.OpenSettings");
+        let name = instance_object_name(event_name);
         let event = CreateEventW(None, false, false, PCWSTR(name.as_ptr()));
         let Ok(event) = event else { return };
         loop {

@@ -34,6 +34,8 @@ pub struct Flyout {
     units: (f64, f64),
     tracking_mouse: bool,
     hidden_at: Option<std::time::Instant>,
+    scroll: f64,
+    scroll_max: f64,
 }
 
 impl Flyout {
@@ -61,6 +63,8 @@ impl Flyout {
             units: (0.0, 0.0),
             tracking_mouse: false,
             hidden_at: None,
+            scroll: 0.0,
+            scroll_max: 0.0,
         });
         unsafe {
             let hwnd = CreateWindowExW(
@@ -90,6 +94,9 @@ impl Flyout {
     /// Moves, sizes, shows. `units` is the card's design size; the canvas
     /// is kept in step with it and the monitor's DPI.
     pub fn show_at(&mut self, x: i32, y: i32, units: (f64, f64), dpi: f64) {
+        if !self.is_shown() {
+            self.scroll = 0.0;
+        }
         self.hidden_at = None;
         let px_w = (units.0 * dpi).ceil() as i32;
         let px_h = (units.1 * dpi).ceil() as i32;
@@ -165,6 +172,8 @@ impl Flyout {
     /// Draws the card's content over its Mica. `alpha` is the entrance
     /// fade, driven by the panel's spring.
     pub fn draw(&mut self, data: &CardData, m: &Metrics, alpha: f32) {
+        self.scroll_max = (crate::card::body_size(m, data).1 - self.units.1).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, self.scroll_max);
         let Some(canvas) = self.canvas.as_ref() else {
             return;
         };
@@ -178,7 +187,7 @@ impl Flyout {
             rt: &canvas.rt,
             engine: global_engine(),
         };
-        let _ = draw_card(&painter, m, (0.0, 0.0), data, alpha);
+        let _ = draw_card(&painter, m, (0.0, -self.scroll), data, alpha);
         canvas.present();
     }
 }
@@ -206,6 +215,13 @@ unsafe extern "system" fn flyout_wndproc(
     let flyout = &mut *(state as *mut Flyout);
 
     match msg {
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam.0 >> 16) as u16) as i16;
+            flyout.scroll =
+                (flyout.scroll - f64::from(delta) / 120.0 * 48.0).clamp(0.0, flyout.scroll_max);
+            let _ = SendMessageW(flyout.bar, WM_APP_CARD, Some(WPARAM(1)), Some(LPARAM(0)));
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             flyout.pointer_inside = true;
             flyout.track_mouse();

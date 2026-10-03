@@ -14,12 +14,13 @@ pub enum Edge {
     Left,
     Right,
     Top,
+    Bottom,
 }
 
 impl Edge {
     pub fn axis(self) -> Axis {
         match self {
-            Edge::Top => Axis::Horizontal,
+            Edge::Top | Edge::Bottom => Axis::Horizontal,
             _ => Axis::Vertical,
         }
     }
@@ -32,6 +33,7 @@ impl Edge {
         match name {
             "left" => Edge::Left,
             "top" => Edge::Top,
+            "bottom" => Edge::Bottom,
             _ => Edge::Right,
         }
     }
@@ -157,13 +159,14 @@ pub mod dock {
         edge: Edge,
         base: (i32, i32),
         size: (i32, i32),
-        work: (i32, i32, i32),
+        work: (i32, i32, i32, i32),
         peek: i32,
     ) -> (i32, i32) {
         match edge {
             Edge::Right => (work.2 - peek, base.1),
             Edge::Left => (work.0 - size.0 + peek, base.1),
             Edge::Top => (base.0, work.1 - size.1 + peek),
+            Edge::Bottom => (base.0, work.3 - peek),
         }
     }
 
@@ -289,12 +292,19 @@ mod tests {
                 let size = ((64.0 * scale) as i32, (240.0 * scale) as i32);
                 let peek = (5.0 * scale) as i32;
                 let base = (left + 40, top + 60);
-                for edge in [Edge::Left, Edge::Right, Edge::Top] {
-                    let (x, y) = dock::retreat_position(edge, base, size, (left, top, right), peek);
+                for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+                    let (x, y) = dock::retreat_position(
+                        edge,
+                        base,
+                        size,
+                        (left, top, right, top + 1080),
+                        peek,
+                    );
                     match edge {
                         Edge::Left => assert_eq!(x + size.0 - left, peek),
                         Edge::Right => assert_eq!(right - x, peek),
                         Edge::Top => assert_eq!(y + size.1 - top, peek),
+                        Edge::Bottom => assert_eq!(top + 1080 - y, peek),
                     }
                     if edge.is_vertical() {
                         assert_eq!(y, base.1);

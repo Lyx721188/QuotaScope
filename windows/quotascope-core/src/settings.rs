@@ -11,9 +11,8 @@ use crate::model::AccountKey;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
-    /// Account ids currently enabled. The first account of a provider is
-    /// enabled as a whole; added accounts are not ported yet, so today an id
-    /// is a provider raw value.
+    /// Enabled account ids: a provider raw value for its primary account,
+    /// or `<provider>#<slot>` for an independently stored additional account.
     pub enabled_accounts: HashSet<String>,
     /// Provider raw values, in the order the rail draws them.
     pub provider_order: Vec<String>,
@@ -52,15 +51,22 @@ pub struct AppSettings {
     /// Off by default, as upstream's `readsTokenSpend` is: reading the CLIs'
     /// transcripts is an act worth consenting to.
     pub reads_token_spend: bool,
+    /// Optional five-minute warm scans while Settings is closed; off by default.
+    pub background_token_spend: bool,
+    pub proxy_mode: String,
+    pub proxy_url: String,
+    pub global_shortcuts: bool,
+    pub animated_bots: bool,
+    pub next_account_slot: u64,
     /// Budget for rebuildable disk statistics; 0 disables persistence.
     pub statistics_cache_limit_mb: u32,
     pub spend_span: crate::spend::Span,
     /// Collapse to the 6pt sliver while docked and unhovered.
     pub auto_collapse: bool,
     pub follows_active_display: bool,
-    /// left | right | top.
+    /// left | right | top | bottom; also the axis when freely placed.
     pub dock_side: String,
-    /// Legacy field retained for old files. Interactive startup clears it.
+    /// Free placement preserves its position across launches.
     pub floating: bool,
     /// The rail's position as fractions of the display it sits on. The rail's
     /// position is stored, never the window's — the window is wider than the
@@ -69,7 +75,7 @@ pub struct AppSettings {
     pub float_y: f64,
     /// Display the panel lives on, as its device path; empty is the primary.
     pub display: String,
-    /// auto | en | zh
+    /// auto | en | zh | zh-Hant | ja | ko
     pub language: String,
     // --- Alerts. All off by default, all silent. ---
     pub wants_alerts: bool,
@@ -124,6 +130,12 @@ impl Default for AppSettings {
             warning_threshold: 75,
             hides_tray_icon: false,
             reads_token_spend: false,
+            background_token_spend: false,
+            proxy_mode: "system".into(),
+            proxy_url: String::new(),
+            global_shortcuts: false,
+            animated_bots: false,
+            next_account_slot: 1,
             statistics_cache_limit_mb: 64,
             spend_span: crate::spend::Span::default(),
             auto_collapse: true,
@@ -198,6 +210,18 @@ impl AppSettings {
             .map(AccountKey::primary)
             .collect();
 
+        let mut added: Vec<AccountKey> = self
+            .enabled_accounts
+            .iter()
+            .filter_map(|id| AccountKey::from_id(id))
+            .filter(|a| {
+                !a.is_primary()
+                    && a.provider != Provider::Extension
+                    && crate::accounts::supports(a.provider)
+            })
+            .collect();
+        added.sort_by_key(AccountKey::id);
+        accounts.extend(added);
         let mut extensions: Vec<AccountKey> = self
             .enabled_accounts
             .iter()
@@ -218,8 +242,6 @@ impl AppSettings {
     /// something to say on this machine, so nobody gets a rail of rings
     /// asking to be configured.
     pub fn resolve_first_run(&mut self) {
-        // Free-floating placement was retired; retain the selected edge.
-        self.floating = false;
         if self.has_run {
             return;
         }
@@ -280,6 +302,11 @@ pub fn initialize() {
     match lang.as_str() {
         "en" => crate::localization::set_language(crate::localization::Language::English),
         "zh" => crate::localization::set_language(crate::localization::Language::Chinese),
+        "zh-Hant" => {
+            crate::localization::set_language(crate::localization::Language::TraditionalChinese)
+        }
+        "ja" => crate::localization::set_language(crate::localization::Language::Japanese),
+        "ko" => crate::localization::set_language(crate::localization::Language::Korean),
         _ => {}
     }
 }

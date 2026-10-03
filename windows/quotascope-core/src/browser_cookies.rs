@@ -91,6 +91,35 @@ pub fn session(hosts: &[&str], cookies: &[&str]) -> Option<Found> {
     let bases = bases();
     session_in(&bases, hosts, cookies)
 }
+/// User-triggered import from Claude Desktop's Electron profile. App-Bound
+/// encryption stays unsupported, just as for ordinary Chromium profiles.
+pub fn claude_desktop_session() -> Option<String> {
+    let root = bases().roaming.join("Claude");
+    let key = local_state_key(&root)?;
+    for path in [
+        "Network/Cookies",
+        "Cookies",
+        "Default/Network/Cookies",
+        "Default/Cookies",
+    ] {
+        let rows = chromium_cookies_at(&root.join(path), "claude.ai", &key);
+        if rows
+            .iter()
+            .any(|(name, value)| name == "sessionKey" && !value.is_empty())
+        {
+            return Some(
+                rows.into_iter()
+                    .filter(|(name, _)| {
+                        crate::providers::claude_session::COOKIES.contains(&name.as_str())
+                    })
+                    .map(|(name, value)| format!("{name}={value}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+        }
+    }
+    None
+}
 
 fn session_in(bases: &Bases, hosts: &[&str], cookies: &[&str]) -> Option<Found> {
     let mut browsers = present_in(bases);

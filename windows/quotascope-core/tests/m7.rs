@@ -2,15 +2,21 @@ use quotascope_core::model::{AccountKey, Provider, ALL_PROVIDERS};
 use quotascope_core::settings::AppSettings;
 
 #[test]
-fn old_floating_configuration_returns_to_its_dock_even_after_first_run() {
+fn free_placement_survives_relaunch_and_preserves_axis_and_spacing() {
     let mut settings: AppSettings = serde_json::from_str(
         r#"{"hasRun":true,"floating":true,"dockSide":"left","railSpacing":"roomy"}"#,
     )
     .unwrap();
     settings.resolve_first_run();
-    assert!(!settings.floating);
+    assert!(settings.floating);
     assert_eq!(settings.dock_side, "left");
     assert_eq!(settings.rail_spacing, "roomy");
+    settings.dock_side = "bottom".into();
+    let saved = serde_json::to_string(&settings).unwrap();
+    let mut reopened: AppSettings = serde_json::from_str(&saved).unwrap();
+    reopened.resolve_first_run();
+    assert!(reopened.floating);
+    assert_eq!(reopened.dock_side, "bottom");
 }
 
 #[test]

@@ -1,6 +1,8 @@
 # QuotaScope for Windows
 
-Current Windows 1.2 implementation and limitations:
+Windows 1.3.0 的新增能力与未完成部分见 [上游移植状态](../Docs/upstream-implementation-status.md)。
+
+Current Windows implementation and limitations:
 [usage guide](../Docs/windows-1.2.md), [all 77 provider routes](../Docs/providers/windows-ports.md),
 and [extension contract](../Docs/extensions.md). The inherited provider table
 below predates the expanded catalog; use the linked Windows table for support.

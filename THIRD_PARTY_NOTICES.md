@@ -4,7 +4,7 @@ The Kiro Windows provider and ACP handshake are adapted from Pulse by
 qunqin24, Copyright (c) 2026 qunqin24, under Apache License 2.0:
 `Sources/Pulse/Providers/KiroUsageService.swift` and `KiroACPClient.swift` at
 commit `3696a65b428272aa25c3ba611de8df2536983515`.
-`windows/quotascope-core/tests/fixtures/kiro-pro-plus-usage.json` preserves
+`windows/quotascope-core/tests/fixtures/upstream-kiro-pro-plus-usage.json` preserves
 the upstream fixture. Source: <https://github.com/qunqin24/Pulse>.
 The Apache-2.0 license is included in this repository's `LICENSE`.
 
@@ -60,3 +60,9 @@ The Claude, OpenAI, Antigravity, Cursor, OpenCode, Kimi, Ollama, Z.ai, 智谱
 and 清言, MiniMax, GitHub, Grok and xAI, and Volcengine names and marks remain
 the property of their respective owners. Their inclusion identifies compatible
 services and does not imply endorsement.
+
+The Traditional Chinese, Japanese and Korean localization dictionaries and
+provider quota fixtures in this update are adapted from
+[Pulse](https://github.com/qunqin24/Pulse), commit `b396306`,
+Copyright (c) 2026 qunqin24, under the Apache License, Version 2.0.
+The full Apache license is included in `LICENSE`.

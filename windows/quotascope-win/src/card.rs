@@ -224,6 +224,7 @@ fn activity(data: &CardData) -> Option<Activity> {
         Some(HistoryRead::Answered {
             ledger,
             account_wide,
+            actual_costs,
         }) => {
             if !account_wide && !ledger.has_partial_records {
                 if let Some(rate) =
@@ -237,8 +238,7 @@ fn activity(data: &CardData) -> Option<Activity> {
             }
             if ledger.has_partial_records {
                 lines.push(
-                    t("Antigravity omits unclassified token counts; records without a turn time use the conversation start time.")
-                        .into(),
+                    t("Some records are incomplete; totals cover only readable records.").into(),
                 );
             }
             let days = recent_days(ledger);
@@ -253,7 +253,7 @@ fn activity(data: &CardData) -> Option<Activity> {
                 );
             } else {
                 let cost: f64 = days.iter().map(|day| day.cost).sum();
-                section.priced = !account_wide && cost > 0.0;
+                section.priced = *actual_costs || (!account_wide && cost > 0.0);
                 let today = chrono::Local::now().date_naive();
                 for (label, span) in [("Today", 1), ("7 days", 7), ("30 days", 30)] {
                     let cutoff = today - chrono::Days::new(span - 1);
@@ -265,7 +265,7 @@ fn activity(data: &CardData) -> Option<Activity> {
                     section.figures.push(ActivityFigure {
                         label: t(label),
                         tokens,
-                        cost: (section.priced && cost > 0.0).then_some(cost),
+                        cost: section.priced.then_some(cost),
                     });
                 }
                 let mut models: std::collections::BTreeMap<&str, i64> = Default::default();
@@ -286,21 +286,26 @@ fn activity(data: &CardData) -> Option<Activity> {
                 let unpriced = days
                     .iter()
                     .fold(0_i64, |sum, day| sum.saturating_add(day.unpriced_tokens));
-                if !account_wide && unpriced > 0 {
+                if (!account_wide || *actual_costs) && unpriced > 0 {
                     lines.push(t_fmt(
                         "{tokens} tokens have no published price",
                         &[&short_tokens(unpriced)],
                     ));
                 }
             }
-            section.footer = Some(t(if *account_wide {
+            section.footer = Some(t(if *actual_costs {
+                "Provider request bills · all machines · actual recorded USD cost"
+            } else if *account_wide {
                 "Provider statistics · all machines · no price breakdown"
             } else {
                 "Local records · API value is an estimate, not a bill"
             }));
         }
     }
-    if data.usage.provider() == quotascope_core::model::Provider::ClaudeCode {
+    if matches!(
+        data.usage.provider(),
+        quotascope_core::model::Provider::ClaudeCode | quotascope_core::model::Provider::Codex
+    ) {
         let now = quotascope_core::timeutil::now_ms();
         if let Some(reading) = &data.prompt_cache {
             let alive = reading.alive(now);
@@ -316,12 +321,30 @@ fn activity(data: &CardData) -> Option<Activity> {
                 } else {
                     "5m"
                 };
-                section.notes.push(t_fmt(
-                    "{tier} cache · expires in {minutes} min",
-                    &[tier, &minutes.to_string()],
-                ));
+                section.notes.push(
+                    if data.usage.provider() == quotascope_core::model::Provider::Codex {
+                        t_fmt(
+                            "Cache eligible for at least {minutes} min; a hit is not guaranteed.",
+                            &[&minutes.to_string()],
+                        )
+                    } else {
+                        t_fmt(
+                            "{tier} cache · expires in {minutes} min",
+                            &[tier, &minutes.to_string()],
+                        )
+                    },
+                );
             } else if reading.latest_lapsed(now).is_some() {
-                section.notes.push(t("Prompt cache has expired.").into());
+                section.notes.push(
+                    t(
+                        if data.usage.provider() == quotascope_core::model::Provider::Codex {
+                            "The minimum cache window has ended; entries may remain cached."
+                        } else {
+                            "Prompt cache has expired."
+                        },
+                    )
+                    .into(),
+                );
                 section
                     .notes
                     .push(t("The next message will rebuild the cache.").into());
@@ -1281,6 +1304,7 @@ mod tests {
         let mut payload = data(HistoryRead::Answered {
             ledger,
             account_wide: false,
+            actual_costs: false,
         });
         let section = activity(&payload).unwrap();
         assert_eq!(section.figures.len(), 3);

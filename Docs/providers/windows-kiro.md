@@ -1,6 +1,7 @@
 # Kiro Windows 读取与配置
 
-本次基于已合并 Windows 1.2.4（`d9a1644`），移植 Pulse
+原始移植基于已合并 Windows 1.2.4（`d9a1644`），发布时整合至 1.3.0
+并更新为 Windows 1.3.1，替换其通用 Kiro 路由。字段与协议依据 Pulse
 [`3696a65`](https://github.com/qunqin24/Pulse/tree/3696a65b428272aa25c3ba611de8df2536983515)
 的 [KiroUsageService](https://github.com/qunqin24/Pulse/blob/3696a65b428272aa25c3ba611de8df2536983515/Sources/Pulse/Providers/KiroUsageService.swift)
 与 [KiroACPClient](https://github.com/qunqin24/Pulse/blob/3696a65b428272aa25c3ba611de8df2536983515/Sources/Pulse/Providers/KiroACPClient.swift)。
@@ -52,14 +53,14 @@ JSON 读数来源为 `kiroACP`，不添加猜测的网页版用量链接。
 
 ## 验证边界
 
-- [解析 fixture](../../windows/quotascope-core/tests/fixtures/kiro-pro-plus-usage.json)
+- [解析 fixture](../../windows/quotascope-core/tests/fixtures/upstream-kiro-pro-plus-usage.json)
   原样来自上述上游提交，重置日期为 `2099-10-01`。它是上游测试样本，未作为本机账号实际额度。
 - [解析与注册测试](../../windows/quotascope-core/tests/kiro.rs) 固定读取时刻，覆盖准确比例、日期、空/无限额度、错误类型、耗尽、稳定 ID、旧配置和路由注册。
 - [隔离 ACP 测试](../../windows/quotascope-core/src/kiro_acp.rs) 用测试程序充当 CLI，验证初始化顺序、通知/请求/旧 ID、stderr、错误、EOF、超时、重启和 Windows 子进程回收。
 - **真实 Kiro 账号：未验证。** 本机当前未发现原生 `kiro-cli.exe`；不安装 CLI、不触发登录，未用真实账号请求。上游的账号验证不能替代 Windows 验证。
 - 设置入口已接入并参与 Windows 编译；真实 Kiro 账户的启用/刷新交互尚未人工验收。
 
-2026-10-03 本轮最终源码验证：`cargo fmt --all -- --check`、CI 同款
+2026-10-03 原始 1.2.4 分支验证：`cargo fmt --all -- --check`、CI 同款
 `cargo clippy --workspace --all-targets --locked`、`cargo test --workspace --locked`
 （614 passed、6 ignored）及 `cargo build --release --locked` 均通过。
 Clippy 保留既有风格告警，没有 Kiro 新文件告警。
@@ -67,8 +68,13 @@ Clippy 保留既有风格告警，没有 Kiro 新文件告警。
 Debug 构建的真实托盘设置打开、关闭、重开、重复请求、第二次启动和隐藏退出回归通过（38.14 秒）。
 本机发布版桌面测试首次遇到正在运行的安装版单实例锁并正常退出；
 1.2.4 只有 Debug 构建支持测试隔离命名空间，因此该次失败保留为独立记录，
-不记为发布版桌面验证成功。未打包、安装或发布本次 Kiro 改动。
+不记为发布版桌面验证成功。该记录不替代 1.3.1 发布时的重新验证。
 日志在本工作树 `windows/work/kiro-validation-20261003/`，不纳入 Git。
+
+发布整合后的 1.3.1 源码已重新通过格式、CI 同款 Clippy 及全工作区测试
+（644 passed、6 ignored）。最终 Windows 包含安装器、便携 ZIP 和各自的 SHA-256；
+包内真实桌面生命周期回归由 Windows Actions 执行，发布状态以 GitHub 工作流和 Release 为准。
+真实 Kiro 账号验证状态不因构建或发布而改变。
 
 实际账号验收需要在支持的 Windows 系统安装并登录 Kiro CLI，再在设置中启用/刷新，
 把套餐、各额度池和重置日期与同一账号的 Kiro `/usage` 页面比较。

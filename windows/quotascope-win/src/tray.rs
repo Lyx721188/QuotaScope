@@ -1,5 +1,5 @@
 //! The tray icon and its menu — the Windows counterpart of the macOS
-//! status item. Left click shows or hides the panel; right click opens the
+//! status item. Left click opens the graphical dashboard; right click opens the
 //! menu. Balloon notifications ride the same icon.
 
 use std::sync::mpsc::Sender;
@@ -17,6 +17,7 @@ use crate::winutil;
 pub enum TrayCommand {
     TogglePanel,
     OpenSettings,
+    OpenDashboard,
     RefreshAll,
     OpenUsagePage(&'static str),
     Exit,
@@ -26,6 +27,7 @@ const ID_TOGGLE: u32 = 1001;
 const ID_SETTINGS: u32 = 1002;
 const ID_REFRESH: u32 = 1003;
 const ID_EXIT: u32 = 1004;
+const ID_DASHBOARD: u32 = 1005;
 const ID_USAGE_BASE: u32 = 2000;
 
 pub struct DashboardEntry {
@@ -190,6 +192,7 @@ impl TrayIcon {
             .expect("tray window");
             tray.hwnd = hwnd;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*tray as *const TrayIcon as isize);
+            tray.set_global_shortcuts(quotascope_core::settings::with(|s| s.global_shortcuts));
 
             let mut data = NOTIFYICONDATAW {
                 cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -239,6 +242,25 @@ impl TrayIcon {
         self.poll = Some(poll);
     }
 
+    pub fn set_global_shortcuts(&self, enabled: bool) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            RegisterHotKey, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+        };
+        unsafe {
+            for (id, key) in [(1, 0x79_u32), (2, 0x7A), (3, 0x7B)] {
+                let _ = UnregisterHotKey(Some(self.hwnd), id);
+                if enabled {
+                    let _ = RegisterHotKey(
+                        Some(self.hwnd),
+                        id,
+                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                        key,
+                    );
+                }
+            }
+        }
+    }
+
     pub fn set_dashboard(&mut self, entries: Vec<DashboardEntry>) {
         self.dashboard = entries;
     }
@@ -266,6 +288,7 @@ impl TrayIcon {
 
 impl Drop for TrayIcon {
     fn drop(&mut self) {
+        self.set_global_shortcuts(false);
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &mut self.data);
             let _ = KillTimer(Some(self.hwnd), 2);
@@ -289,11 +312,23 @@ unsafe extern "system" fn tray_wndproc(
     let tray = &mut *(state as *mut TrayIcon);
 
     match msg {
+        WM_HOTKEY => {
+            let command = match wparam.0 {
+                1 => Some(TrayCommand::TogglePanel),
+                2 => Some(TrayCommand::OpenDashboard),
+                3 => Some(TrayCommand::RefreshAll),
+                _ => None,
+            };
+            if let Some(command) = command {
+                let _ = tray.commands.send(command);
+            }
+            LRESULT(0)
+        }
         m if m == winutil::WM_APP_TRAY => {
             let event = (lparam.0 & 0xFFFF) as u32;
             match event {
                 WM_LBUTTONUP => {
-                    let _ = tray.commands.send(TrayCommand::TogglePanel);
+                    let _ = tray.commands.send(TrayCommand::OpenDashboard);
                     LRESULT(0)
                 }
                 WM_RBUTTONUP | WM_CONTEXTMENU => {
@@ -318,6 +353,7 @@ unsafe extern "system" fn tray_wndproc(
                 ID_SETTINGS => Some(TrayCommand::OpenSettings),
                 ID_REFRESH => Some(TrayCommand::RefreshAll),
                 ID_EXIT => Some(TrayCommand::Exit),
+                ID_DASHBOARD => Some(TrayCommand::OpenDashboard),
                 _ => id
                     .checked_sub(ID_USAGE_BASE)
                     .and_then(|index| tray.dashboard.get(index as usize))
@@ -382,7 +418,11 @@ unsafe fn show_menu(hwnd: HWND, dashboard: &[DashboardEntry]) {
     }
     // Each UTF-16 buffer must outlive its AppendMenuW, so they are all
     // materialised before any menu item is appended.
-    let entries: [(u32, Option<&str>); 6] = [
+    let entries: [(u32, Option<&str>); 7] = [
+        (
+            ID_DASHBOARD,
+            Some(quotascope_core::localization::t("Dashboard")),
+        ),
         (
             ID_TOGGLE,
             Some(quotascope_core::localization::t("Show panel")),

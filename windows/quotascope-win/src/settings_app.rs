@@ -28,6 +28,7 @@ pub enum SettingsAction {
     /// A setting changed; the app re-reads everything it drives.
     Changed,
     RefreshProvider(String),
+    RefreshAccount(quotascope_core::model::AccountKey),
     SaveKey,
     SignInCopilot,
     SignOutCopilot,
@@ -43,6 +44,8 @@ pub enum SettingsAction {
 struct SettingsSnapshot {
     generation: u64,
     status: HashMap<String, String>,
+    readings: HashMap<String, quotascope_core::model::ProviderUsage>,
+    dashboard_requested: bool,
     spend: Option<Arc<quotascope_core::spend::Snapshot>>,
     spend_generation: u64,
     spend_loading: bool,
@@ -56,6 +59,15 @@ struct SettingsSnapshot {
     cache: Option<quotascope_core::statistics_cache::Inventory>,
     maintenance_result: Option<MaintenanceResult>,
     diagnostic_path: Option<std::path::PathBuf>,
+    account_details: HashMap<Provider, Arc<AccountDetails>>,
+    account_detail_controls: HashMap<Provider, Arc<quotascope_core::scan::Control>>,
+    account_detail_generation: u64,
+}
+
+struct AccountDetails {
+    models: Vec<quotascope_core::model_details::Model>,
+    cache: quotascope_core::prompt_cache::CacheReading,
+    partial: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -93,6 +105,81 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    pub(crate) fn request_dashboard(&self) {
+        let mut state = self.snapshot.lock().unwrap();
+        state.dashboard_requested = true;
+        state.generation += 1;
+    }
+    fn release_account_details(&self) {
+        let mut state = self.snapshot.lock().unwrap();
+        for control in state.account_detail_controls.values() {
+            control.cancel();
+        }
+        state.account_details.clear();
+        state.account_detail_generation = state.account_detail_generation.wrapping_add(1);
+        state.generation = state.generation.wrapping_add(1);
+    }
+
+    fn request_account_details(self: &Arc<Self>, provider: Provider) {
+        if !matches!(provider, Provider::ClaudeCode | Provider::Codex)
+            || !self.alive.load(Ordering::SeqCst)
+            || !quotascope_core::settings::with(|s| s.reads_token_spend)
+        {
+            return;
+        }
+        let (generation, control) = {
+            let mut state = self.snapshot.lock().unwrap();
+            if state.account_detail_controls.contains_key(&provider) {
+                return;
+            }
+            let control = Arc::new(quotascope_core::scan::Control::default());
+            state
+                .account_detail_controls
+                .insert(provider, control.clone());
+            state.generation = state.generation.wrapping_add(1);
+            (state.account_detail_generation, control)
+        };
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(|| {
+                quotascope_core::scan::run(
+                    control,
+                    3,
+                    |_| {},
+                    || {
+                        let ledger = quotascope_core::ledger::ledger(provider);
+                        let now = quotascope_core::timeutil::now_ms();
+                        let timings = quotascope_core::ledger::transcript_root(provider)
+                            .map(|root| {
+                                quotascope_core::model_details::read_timings(provider, &root, now)
+                            })
+                            .unwrap_or_default();
+                        AccountDetails {
+                            models: quotascope_core::model_details::models(&ledger, &timings, 30),
+                            cache: quotascope_core::prompt_cache::read_for(
+                                provider,
+                                &quotascope_core::home_dir(),
+                                now,
+                            ),
+                            partial: ledger.has_partial_records,
+                        }
+                    },
+                )
+            });
+            let mut state = shared.snapshot.lock().unwrap();
+            state.account_detail_controls.remove(&provider);
+            if generation == state.account_detail_generation
+                && shared.alive.load(Ordering::SeqCst)
+                && quotascope_core::settings::with(|s| s.reads_token_spend)
+            {
+                if let Ok(Ok(details)) = result {
+                    state.account_details.insert(provider, Arc::new(details));
+                }
+            }
+            state.generation = state.generation.wrapping_add(1);
+        });
+    }
+
     fn request_maintenance(self: &Arc<Self>, operation: MaintenanceOperation) {
         use quotascope_core::diagnostics::{Runtime, ScanStatus, UpdateStatus as DiagnosticUpdate};
         let runtime = {
@@ -220,10 +307,20 @@ impl Shared {
     }
 
     fn request_spend(self: &Arc<Self>, refresh: bool) {
+        quotascope_core::spend_warmer::cancel_running();
         let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
         if !allowed {
             self.release_spend();
             return;
+        }
+        if !refresh {
+            if let Some(snapshot) = quotascope_core::spend_warmer::snapshot() {
+                let mut state = self.snapshot.lock().unwrap();
+                state.spend = Some(snapshot);
+                state.spend_loading = false;
+                state.generation += 1;
+                return;
+            }
         }
         let (generation, control) = {
             let mut state = self.snapshot.lock().unwrap();
@@ -347,6 +444,17 @@ impl SettingsHost {
         snapshot.status.insert(provider_raw.to_string(), text);
         snapshot.generation += 1;
     }
+    pub fn set_readings(&self, readings: &HashMap<String, quotascope_core::model::ProviderUsage>) {
+        let mut state = self.shared.snapshot.lock().unwrap();
+        if state.readings != *readings {
+            state.readings = readings.clone();
+            state.generation += 1;
+        }
+    }
+    pub fn show_dashboard(&mut self) {
+        self.shared.snapshot.lock().unwrap().dashboard_requested = true;
+        self.show();
+    }
 
     /// Something the window shows has changed out from under it.
     pub fn refresh(&self) {
@@ -416,6 +524,7 @@ unsafe extern "system" fn settings_subclass(
             }
             shared.alive.store(false, Ordering::SeqCst);
             shared.release_spend();
+            shared.release_account_details();
             true
         });
         if hide {
@@ -482,6 +591,7 @@ fn window_icon() -> Option<&'static str> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     General,
+    Dashboard,
     Accounts,
     Spend,
     Notifications,
@@ -493,6 +603,7 @@ impl Page {
     fn tag(self) -> &'static str {
         match self {
             Page::General => "general",
+            Page::Dashboard => "dashboard",
             Page::Accounts => "accounts",
             Page::Spend => "spend",
             Page::Notifications => "notifications",
@@ -502,6 +613,7 @@ impl Page {
     }
     fn from_tag(tag: &str) -> Page {
         match tag {
+            "dashboard" => Page::Dashboard,
             "accounts" => Page::Accounts,
             "spend" => Page::Spend,
             "notifications" => Page::Notifications,
@@ -513,6 +625,7 @@ impl Page {
     fn label(self) -> &'static str {
         match self {
             Page::General => "General",
+            Page::Dashboard => "Dashboard",
             Page::Accounts => "Accounts",
             Page::Spend => "Token spend",
             Page::Notifications => "Notifications",
@@ -523,6 +636,7 @@ impl Page {
     fn glyph(self) -> &'static str {
         match self {
             Page::General => "\u{E713}",
+            Page::Dashboard => "\u{E80F}",
             Page::Accounts => "\u{E77B}",
             Page::Spend => "\u{E9D9}",
             Page::Notifications => "\u{EA8F}",
@@ -543,6 +657,9 @@ enum ToggleKey {
     FollowDisplay,
     HideTrayIcon,
     TokenSpend,
+    BackgroundSpend,
+    AnimatedBots,
+    GlobalShortcuts,
     CodexResetCredits,
     Startup,
     Alerts,
@@ -553,7 +670,9 @@ enum ToggleKey {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ChoiceKey {
+    ProxyMode,
     Dock,
+    Language,
     PanelSize,
     RailSpacing,
     ClockDirection,
@@ -577,6 +696,7 @@ enum Message {
     Toggle(ToggleKey, bool),
     ToggleEnabled(usize, bool),
     ExpandAccount(usize),
+    RefreshAccountDetails(usize),
     ToggleExtension(usize, bool),
     RescanExtensions,
     Choice(ChoiceKey, Option<usize>),
@@ -591,7 +711,17 @@ enum Message {
     SaveBalance(usize),
     Save(usize),
     Refresh(usize),
+    RefreshAccount(String),
     ImportSession(usize),
+    ProxyEdit(String),
+    SaveProxy,
+    ImportStorage(usize),
+    AddAccount(usize),
+    RemoveAccount(String),
+    ImportOpenCodeConsole,
+    ImportClaudeSession,
+    ForgetClaudeSession,
+    ForgetOpenCodeConsole,
     CopilotAuth,
     OpenGitHub,
     CheckUpdates,
@@ -641,7 +771,11 @@ impl Component for SettingsApp {
         SettingsApp {
             shared: shared.clone(),
             hwnd: None,
-            page: Page::General,
+            page: if shared.snapshot.lock().unwrap().dashboard_requested {
+                Page::Dashboard
+            } else {
+                Page::General
+            },
             spend_group: Default::default(),
             spend_sort: Default::default(),
             spend_descending: true,
@@ -693,7 +827,14 @@ impl Component for SettingsApp {
                     if self.page == Page::Spend {
                         self.shared.release_spend();
                     }
-                    self.page = Page::General;
+                    let requested = std::mem::take(
+                        &mut self.shared.snapshot.lock().unwrap().dashboard_requested,
+                    );
+                    self.page = if requested {
+                        Page::Dashboard
+                    } else {
+                        Page::General
+                    };
                     self.revealed_keys.clear();
                     self.keys.clear();
                     self.addresses =
@@ -719,6 +860,9 @@ impl Component for SettingsApp {
                 self.page = tag.as_deref().map(Page::from_tag).unwrap_or(self.page);
                 if previous == Page::Spend && self.page != Page::Spend {
                     self.shared.release_spend();
+                }
+                if previous == Page::Accounts && self.page != Page::Accounts {
+                    self.shared.release_account_details();
                 }
                 if self.page == Page::Spend {
                     self.shared.request_spend(false);
@@ -798,6 +942,13 @@ impl Component for SettingsApp {
                 if !self.expanded_accounts.insert(index) {
                     self.expanded_accounts.remove(&index);
                     self.revealed_keys.remove(&index);
+                } else if let Some(provider) = all_providers().get(index) {
+                    self.shared.request_account_details(*provider);
+                }
+            }
+            Message::RefreshAccountDetails(index) => {
+                if let Some(provider) = all_providers().get(index) {
+                    self.shared.request_account_details(*provider);
                 }
             }
             Message::Search(text) => {
@@ -987,6 +1138,9 @@ impl Component for SettingsApp {
             Message::Choice(ChoiceKey::StatisticsCache, None) => {}
             Message::Choice(key, selected) => {
                 Self::apply_choice(key, selected.unwrap_or(0));
+                if matches!(key, ChoiceKey::ProxyMode) {
+                    quotascope_core::codex_rpc::shutdown();
+                }
                 self.shared.send(SettingsAction::Changed);
             }
             Message::KeyEdit(index, text) => {
@@ -1047,10 +1201,36 @@ impl Component for SettingsApp {
                         .send(SettingsAction::RefreshProvider(provider.raw().to_string()));
                 }
             }
+            Message::RefreshAccount(id) => {
+                if let Some(account) = quotascope_core::model::AccountKey::from_id(&id) {
+                    self.shared.send(SettingsAction::RefreshAccount(account));
+                }
+            }
             Message::Refresh(index) => {
                 if let Some(provider) = all_providers().get(index) {
                     self.shared
                         .send(SettingsAction::RefreshProvider(provider.raw().to_string()));
+                }
+            }
+            Message::ProxyEdit(text) => {
+                self.addresses.insert("__proxy".into(), text);
+            }
+            Message::SaveProxy => {
+                let text =
+                    self.addresses.get("__proxy").cloned().unwrap_or_else(|| {
+                        quotascope_core::settings::with(|s| s.proxy_url.clone())
+                    });
+                if text.trim().is_empty() || quotascope_core::proxy::valid(text.trim()) {
+                    quotascope_core::settings::mutate(|s| {
+                        s.proxy_url = text.trim().into();
+                        s.proxy_mode = if text.trim().is_empty() {
+                            "system".into()
+                        } else {
+                            "manual".into()
+                        };
+                    });
+                    quotascope_core::codex_rpc::shutdown();
+                    self.shared.send(SettingsAction::SaveKey);
                 }
             }
             Message::ImportSession(index) => {
@@ -1085,6 +1265,134 @@ impl Component for SettingsApp {
                         }
                     }
                 }
+            }
+            Message::ImportClaudeSession => {
+                let session =
+                    quotascope_core::browser_cookies::claude_desktop_session().or_else(|| {
+                        quotascope_core::browser_cookies::session(
+                            &["claude.ai"],
+                            quotascope_core::providers::claude_session::COOKIES,
+                        )
+                        .filter(|found| {
+                            found
+                                .header
+                                .split(';')
+                                .any(|p| p.trim().starts_with("sessionKey="))
+                        })
+                        .map(|found| found.header)
+                    });
+                if let Some(session) = session {
+                    quotascope_core::secrets::set_key(
+                        quotascope_core::providers::claude_session::SECRET,
+                        &session,
+                    );
+                    self.shared.send(SettingsAction::SaveKey);
+                    self.shared.send(SettingsAction::RefreshProvider(
+                        Provider::ClaudeCode.raw().into(),
+                    ));
+                } else {
+                    self.status.insert(
+                        Provider::ClaudeCode.raw().into(),
+                        quotascope_core::localization::t(
+                            "No matching session found in your browsers.",
+                        )
+                        .into(),
+                    );
+                }
+            }
+            Message::ForgetClaudeSession => {
+                quotascope_core::secrets::set_key(
+                    quotascope_core::providers::claude_session::SECRET,
+                    "",
+                );
+                self.shared.send(SettingsAction::SaveKey);
+            }
+            Message::ImportOpenCodeConsole => {
+                use quotascope_core::opencode_console as console;
+                if let Some(found) =
+                    quotascope_core::browser_cookies::session(console::HOSTS, console::COOKIES)
+                        .and_then(|found| {
+                            console::cookie(&found.header).map(|header| (found.browser, header))
+                        })
+                {
+                    quotascope_core::secrets::set_key(console::SECRET, &found.1);
+                    self.status.insert(
+                        Provider::OpenCodeGo.raw().into(),
+                        quotascope_core::localization::t_fmt(
+                            "Imported the session from {browser}.",
+                            &[&found.0.name()],
+                        ),
+                    );
+                    self.shared.send(SettingsAction::SaveKey);
+                    self.shared.send(SettingsAction::RefreshProvider(
+                        Provider::OpenCodeGo.raw().into(),
+                    ));
+                } else {
+                    self.status.insert(
+                        Provider::OpenCodeGo.raw().into(),
+                        quotascope_core::localization::t(
+                            "No matching session found in your browsers.",
+                        )
+                        .into(),
+                    );
+                }
+            }
+            Message::AddAccount(index) => {
+                if let Some(provider) = all_providers().get(index) {
+                    let credential = self.keys.get(provider.raw()).cloned().unwrap_or_default();
+                    if quotascope_core::accounts::add(*provider, &credential).is_some() {
+                        self.keys.remove(provider.raw());
+                        self.shared.send(SettingsAction::SaveKey);
+                        self.shared.send(SettingsAction::Changed);
+                    } else {
+                        self.status.insert(
+                            provider.raw().into(),
+                            quotascope_core::localization::t(
+                                "Enter a valid credential for the additional account.",
+                            )
+                            .into(),
+                        );
+                    }
+                }
+            }
+            Message::RemoveAccount(id) => {
+                if let Some(account) = quotascope_core::model::AccountKey::from_id(&id) {
+                    quotascope_core::accounts::remove(&account);
+                    self.shared.send(SettingsAction::SaveKey);
+                    self.shared.send(SettingsAction::Changed);
+                }
+            }
+            Message::ImportStorage(index) => {
+                if let Some(provider) = all_providers().get(index) {
+                    if let Some((session, browser)) = quotascope_core::browser_storage::windsurf() {
+                        quotascope_core::secrets::set_key(provider.raw(), &session);
+                        self.status.insert(
+                            provider.raw().into(),
+                            quotascope_core::localization::t_fmt(
+                                "Imported the session from {browser}.",
+                                &[&browser],
+                            ),
+                        );
+                        self.shared.send(SettingsAction::SaveKey);
+                        self.shared
+                            .send(SettingsAction::RefreshProvider(provider.raw().into()));
+                    } else {
+                        self.status.insert(
+                            provider.raw().into(),
+                            quotascope_core::localization::t(
+                                "No matching session found in your browsers.",
+                            )
+                            .into(),
+                        );
+                    }
+                }
+            }
+            Message::ForgetOpenCodeConsole => {
+                quotascope_core::secrets::set_key(quotascope_core::opencode_console::SECRET, "");
+                self.shared.send(SettingsAction::SaveKey);
+                self.shared.send(SettingsAction::RefreshProvider(
+                    Provider::OpenCodeGo.raw().into(),
+                ));
             }
             Message::CopilotAuth => {
                 if quotascope_core::secrets::key_for("copilot").is_some() {
@@ -1125,6 +1433,7 @@ impl Component for SettingsApp {
                     NavigationViewSlot::MenuItems,
                     [
                         Page::General,
+                        Page::Dashboard,
                         Page::Accounts,
                         Page::Spend,
                         Page::Notifications,
@@ -1164,6 +1473,7 @@ impl Component for SettingsApp {
                                     .content(match self.page {
                                         Page::General => self.general_view(context).into(),
                                         Page::Accounts => self.accounts_view(context),
+                                        Page::Dashboard => self.dashboard_view(context),
                                         Page::Spend => self.spend_view(context),
                                         Page::Notifications => self.notifications_view(context),
                                         Page::Maintenance => self.maintenance_view(context),
@@ -1260,6 +1570,121 @@ impl SettingsApp {
         )
     }
 
+    fn dashboard_view(&self, context: &ViewContext<Self>) -> View {
+        let state = self.shared.snapshot.lock().unwrap();
+        let settings = quotascope_core::settings::with(Clone::clone);
+        let rows: Vec<View> = settings
+            .ordered_enabled()
+            .into_iter()
+            .map(|account| {
+                let reading = state.readings.get(&account.id());
+                let headline = reading.and_then(|u| {
+                    u.headline_window(
+                        settings
+                            .pinned_windows
+                            .get(&account.id())
+                            .map(String::as_str),
+                    )
+                });
+                let percent = headline
+                    .map(|w| format!("{:.0}%", w.used_fraction * 100.0))
+                    .unwrap_or_else(|| "—".into());
+                self.surface(
+                    StackPanel::new().spacing(8.0).children((
+                        row((
+                            TextBlock::new()
+                                .text(format!(
+                                    "{}{} · {percent}",
+                                    account.provider.display_name(),
+                                    if account.is_primary() {
+                                        String::new()
+                                    } else {
+                                        format!(" #{}", account.slot)
+                                    }
+                                ))
+                                .font_size(20.0),
+                            Button::new()
+                                .on_click(context.message(Message::RefreshAccount(account.id())))
+                                .content(quotascope_core::localization::t("Refresh")),
+                            if account.is_primary() {
+                                View::empty()
+                            } else {
+                                Button::new()
+                                    .on_click(context.message(Message::RemoveAccount(account.id())))
+                                    .content(quotascope_core::localization::t("Remove account"))
+                                    .into()
+                            },
+                        )),
+                        if let Some(window) = headline {
+                            ProgressBar::new()
+                                .maximum(100.0)
+                                .value((window.used_fraction * 100.0).clamp(0.0, 100.0))
+                                .into()
+                        } else {
+                            View::empty()
+                        },
+                        self.muted(
+                            &reading
+                                .map(|u| match u.state {
+                                    quotascope_core::model::State::Unavailable(reason) => {
+                                        reason.message().to_string()
+                                    }
+                                    _ => u.plan.clone().unwrap_or_default(),
+                                })
+                                .unwrap_or_default(),
+                        ),
+                        self.muted(
+                            &reading
+                                .map(|u| {
+                                    let source = u.origin.as_deref().unwrap_or("unknown");
+                                    let age = u.observed_at.map(|at| {
+                                        (quotascope_core::timeutil::now_ms() - at).max(0) / 1000
+                                    });
+                                    format!(
+                                        "{}: {source} · {}: {} · {}: {} s",
+                                        quotascope_core::localization::t("Connection source"),
+                                        quotascope_core::localization::t("Cached reading"),
+                                        u.is_cached,
+                                        quotascope_core::localization::t("Reading age"),
+                                        age.map(|s| s.to_string()).unwrap_or_else(|| "—".into())
+                                    )
+                                })
+                                .unwrap_or_default(),
+                        ),
+                    )),
+                )
+                .into()
+            })
+            .collect();
+        StackPanel::new()
+            .spacing(16.0)
+            .children((
+                heading("Dashboard"),
+                if settings.animated_bots {
+                    TextBlock::new()
+                        .text(
+                            if settings.ordered_enabled().iter().any(|a| {
+                                state.readings.get(&a.id()).is_some_and(|u| {
+                                    u.windows.iter().any(|w| w.used_fraction >= 0.99)
+                                })
+                            }) {
+                                "○(•︵•)○"
+                            } else if (quotascope_core::timeutil::now_ms() / 1000) % 4 == 0 {
+                                "○(−‿−)○"
+                            } else {
+                                "○(•‿•)○"
+                            },
+                        )
+                        .font_size(28.0)
+                        .into()
+                } else {
+                    View::empty()
+                },
+                View::keyed_fragment(rows.into_iter().enumerate()),
+            ))
+            .into()
+    }
+
     fn spend_view(&self, context: &ViewContext<Self>) -> View {
         use quotascope_core::spend::{Group, Sort, Span};
         let settings = quotascope_core::settings::with(|s| s.clone());
@@ -1288,6 +1713,12 @@ impl SettingsApp {
                 .spacing(18.0)
                 .children((View::keyed_fragment(content.into_iter().enumerate()),));
         }
+        content.push(self.toggle(
+            ToggleKey::BackgroundSpend,
+            "Keep token statistics warm in the background (five minutes, 30-second scan limit)",
+            settings.background_token_spend,
+            context,
+        ));
         let (snapshot, loading, running, failed, cancelled, progress, stopping) = {
             let state = self.shared.snapshot.lock().unwrap();
             (
@@ -1525,6 +1956,41 @@ impl SettingsApp {
                 .into(),
             );
         }
+        let hours = snapshot.hourly(
+            settings.spend_span,
+            self.spend_source.as_deref(),
+            self.spend_model.as_deref(),
+            chrono::Local::now().date_naive(),
+        );
+        let peak = hours.iter().copied().max().unwrap_or(1).max(1) as f64;
+        content.push(
+            TextBlock::new()
+                .text(t("Tokens by local hour (recorded time buckets only)"))
+                .into(),
+        );
+        content.push(
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(4.0)
+                .height(90.0)
+                .children((View::keyed_fragment(hours.iter().enumerate().map(
+                    |(hour, tokens)| {
+                        (
+                            hour,
+                            StackPanel::new()
+                                .vertical_alignment(VerticalAlignment::Bottom)
+                                .width(24.0)
+                                .children((
+                                    Border::new()
+                                        .height(*tokens as f64 / peak * 64.0)
+                                        .background(Color::argb(255, 0, 120, 212)),
+                                    TextBlock::new().text(hour.to_string()).font_size(10.0),
+                                )),
+                        )
+                    },
+                )),))
+                .into(),
+        );
         let columns = [
             "Name / date",
             "Input",
@@ -1645,7 +2111,17 @@ impl SettingsApp {
                             t(if !s.present {
                                 "Store not found"
                             } else if s.ledger.days.iter().any(|d| d.tokens > 0) {
-                                "Native token records"
+                                if s.location.contains("UsageImports") {
+                                    "Recorded tokens; native and imported coverage varies"
+                                } else {
+                                    "Native token records"
+                                }
+                            } else if quotascope_core::additional_spend::CATALOG
+                                .iter()
+                                .any(|(id, _, _)| *id == s.id)
+                                && !quotascope_core::additional_spend::native_supported(&s.id)
+                            {
+                                "Native format not yet supported; accepts explicit local imports"
                             } else {
                                 "No token counters found"
                             })
@@ -1748,6 +2224,7 @@ impl SettingsApp {
         let watcher = shared.clone();
         let seen = watcher.generation();
         context.spawn_background(move |cancel| {
+            let started = std::time::Instant::now();
             // Lifecycle requests must wake an idle window even when no
             // account statuses change. Cancelled tasks must also terminate.
             loop {
@@ -1757,6 +2234,9 @@ impl SettingsApp {
                     || watcher.show_requested.load(Ordering::SeqCst)
                     || watcher.shutdown_requested.load(Ordering::SeqCst)
                     || watcher.generation() != seen
+                    || (started.elapsed() >= Duration::from_secs(1)
+                        && watcher.alive.load(Ordering::SeqCst)
+                        && quotascope_core::settings::with(|s| s.animated_bots))
                 {
                     return Message::Tick;
                 }
@@ -1785,6 +2265,9 @@ impl SettingsApp {
             ToggleKey::FollowDisplay => s.follows_active_display = value,
             ToggleKey::HideTrayIcon => s.hides_tray_icon = value,
             ToggleKey::TokenSpend => s.reads_token_spend = value,
+            ToggleKey::BackgroundSpend => s.background_token_spend = value,
+            ToggleKey::GlobalShortcuts => s.global_shortcuts = value,
+            ToggleKey::AnimatedBots => s.animated_bots = value,
             ToggleKey::CodexResetCredits => s.shows_codex_reset_credits = value,
             ToggleKey::Alerts => s.wants_alerts = value,
             ToggleKey::AlertReset => s.alerts_on_reset = value,
@@ -1795,10 +2278,50 @@ impl SettingsApp {
         if key == ToggleKey::Startup {
             crate::autostart::set_enabled(value);
         }
+        if !value && matches!(key, ToggleKey::TokenSpend | ToggleKey::BackgroundSpend) {
+            quotascope_core::spend_warmer::clear();
+        }
     }
 
     fn apply_choice(key: ChoiceKey, selected: usize) {
         quotascope_core::settings::mutate(|s| match key {
+            ChoiceKey::ProxyMode => {
+                s.proxy_mode = match selected {
+                    1 => "disabled",
+                    2 => "manual",
+                    _ => "system",
+                }
+                .into()
+            }
+            ChoiceKey::Language => {
+                s.language = match selected {
+                    1 => "en",
+                    2 => "zh",
+                    3 => "zh-Hant",
+                    4 => "ja",
+                    5 => "ko",
+                    _ => "auto",
+                }
+                .into();
+                match selected {
+                    1 => quotascope_core::localization::set_language(
+                        quotascope_core::localization::Language::English,
+                    ),
+                    2 => quotascope_core::localization::set_language(
+                        quotascope_core::localization::Language::Chinese,
+                    ),
+                    3 => quotascope_core::localization::set_language(
+                        quotascope_core::localization::Language::TraditionalChinese,
+                    ),
+                    4 => quotascope_core::localization::set_language(
+                        quotascope_core::localization::Language::Japanese,
+                    ),
+                    5 => quotascope_core::localization::set_language(
+                        quotascope_core::localization::Language::Korean,
+                    ),
+                    _ => quotascope_core::localization::detect_from_system(),
+                }
+            }
             ChoiceKey::Dock => match selected {
                 0 => {
                     s.floating = false;
@@ -1810,6 +2333,18 @@ impl SettingsApp {
                 }
                 2 => {
                     s.floating = false;
+                    s.dock_side = "top".into();
+                }
+                3 => {
+                    s.floating = false;
+                    s.dock_side = "bottom".into();
+                }
+                4 => {
+                    s.floating = true;
+                    s.dock_side = "right".into();
+                }
+                5 => {
+                    s.floating = true;
                     s.dock_side = "top".into();
                 }
                 _ => {}
@@ -1930,10 +2465,19 @@ impl SettingsApp {
 
     fn general_view(&self, context: &ViewContext<Self>) -> View {
         let s = quotascope_core::settings::with(|s| s.clone());
-        let dock_selected = match s.dock_side.as_str() {
-            "left" => 1,
-            "top" => 2,
-            _ => 0,
+        let dock_selected = if s.floating {
+            if s.dock_side == "top" || s.dock_side == "bottom" {
+                5
+            } else {
+                4
+            }
+        } else {
+            match s.dock_side.as_str() {
+                "left" => 1,
+                "top" => 2,
+                "bottom" => 3,
+                _ => 0,
+            }
         };
         let size_selected = match s.panel_size.as_str() {
             "small" => 0,
@@ -1977,10 +2521,18 @@ impl SettingsApp {
                         self.choice(
                             ChoiceKey::Dock,
                             "Dock to",
-                            &["Right", "Left", "Top"],
+                            &["Right", "Left", "Top", "Bottom", "Free vertical", "Free horizontal"],
                             dock_selected,
                             context,
                         ),
+                        StackPanel::new().spacing(6.0).children((
+                            self.choice(ChoiceKey::ProxyMode,"Proxy mode",&["System proxy","No proxy","Manual proxy"],match s.proxy_mode.as_str(){"disabled"=>1,"manual"=>2,_=>0},context),
+                            self.aligned("HTTP proxy (empty uses system settings)",TextBox::new().text(self.addresses.get("__proxy").cloned().unwrap_or_else(||s.proxy_url.clone())).placeholder_text("http://127.0.0.1:7890").on_text_changed(context.callback(Message::ProxyEdit)).into()),
+                            Button::new().on_click(context.message(Message::SaveProxy)).content(quotascope_core::localization::t("Save proxy and refresh")),
+                            self.toggle(ToggleKey::GlobalShortcuts,"Global shortcuts: Ctrl+Shift+F10 panel, F11 dashboard, F12 refresh",s.global_shortcuts,context),
+                            self.toggle(ToggleKey::AnimatedBots,"Animated dashboard buddy",s.animated_bots,context),
+                            self.choice(ChoiceKey::Language,"Language",&["Automatic","English","简体中文","繁體中文","日本語","한국어"],match s.language.as_str(){"en"=>1,"zh"=>2,"zh-Hant"=>3,"ja"=>4,"ko"=>5,_=>0},context),
+                        )),
                         self.choice(
                             ChoiceKey::PanelSize,
                             "Panel size",
@@ -2164,14 +2716,32 @@ impl SettingsApp {
         }
 
         let body: View = match provider {
-            Provider::Kiro => self.muted(quotascope_core::localization::t(
-                "Uses kiro-cli's existing login. Sign in with kiro-cli login first, then enable Kiro and refresh. No credential needs to be pasted.",
+            Provider::ClaudeCode => StackPanel::new().spacing(6.0).children((
+                self.muted(quotascope_core::localization::t("Reads the login this tool already saved on this PC.")),
+                row((
+                    Button::new().on_click(context.message(Message::ImportClaudeSession)).content(quotascope_core::localization::t("Import Claude Desktop / browser fallback")),
+                    Button::new().on_click(context.message(Message::ForgetClaudeSession)).content(quotascope_core::localization::t("Forget fallback session")),
+                )),
+                self.muted(quotascope_core::localization::t("Configure quotascope --statusline in Claude to use reported rate limits as a 15-minute cached fallback.")),
+                self.muted(quotascope_core::localization::t("For an additional Claude account, paste exported .credentials.json. Local usage belongs to the primary account only.")),
+                self.credential_field(index, key_draft.clone().unwrap_or_default(), true, context),
             )).into(),
-            Provider::ClaudeCode | Provider::Codex | Provider::Grok => self
+            Provider::Codex | Provider::Grok => self
                 .muted(&quotascope_core::localization::t(
                     "Reads the login this tool already saved on this PC.",
                 ))
                 .into(),
+            Provider::Kiro => self.muted(quotascope_core::localization::t(
+                "Uses kiro-cli's existing login. Sign in with kiro-cli login first, then enable Kiro and refresh. No credential needs to be pasted.",
+            )).into(),
+            Provider::Devin | Provider::GrokBot | Provider::AlibabaTokenPlan | Provider::Gemini | Provider::JetBrainsAi | Provider::NousPortal => self.muted(quotascope_core::localization::t(match provider {
+                Provider::Devin => "Reads the plan Devin saved on this PC. Open Devin and sign in first.",
+                Provider::GrokBot => "Uses Cursor's existing login to read the Grok Bot allowance.",
+                Provider::AlibabaTokenPlan => "Uses Bailian CLI (bl)'s existing login, for international and mainland plans.",
+                Provider::Gemini => "Uses Gemini CLI's Google login; API key and Vertex AI modes do not report this allowance.",
+                Provider::JetBrainsAi => "Reads the quota JetBrains AI saved on this PC. Open the IDE to update it.",
+                _ => "Uses the Nous Portal login Hermes saved. Run Hermes to renew an expired login.",
+            })).into(),
             Provider::Antigravity => self
                 .muted(&quotascope_core::localization::t(
                     "Reads the language server Antigravity runs while it is open — figures exist only while it is running.",
@@ -2199,6 +2769,32 @@ impl SettingsApp {
                         )),
                     ))
                     .into()
+            }
+            Provider::Windsurf => {
+                StackPanel::new().spacing(6.0).children((
+                    self.muted(quotascope_core::localization::t("Import the Windsurf website's localStorage session, or paste its four-field JSON bundle.")),
+                    self.credential_field(index,key_draft.or_else(|| quotascope_core::secrets::key_for(raw)).unwrap_or_default(),true,context),
+                    row((
+                        Button::new().on_click(context.message(Message::ImportStorage(index))).content(quotascope_core::localization::t("Import from browser")),
+                        Button::new().on_click(context.message(Message::Save(index))).content(quotascope_core::localization::t("Save")),
+                        Button::new().on_click(context.message(Message::Refresh(index))).content(quotascope_core::localization::t("Refresh")),
+                    )),
+                )).into()
+            }
+            Provider::OpenCodeGo => {
+                StackPanel::new().spacing(6.0).children((
+                    TextBlock::new().text(quotascope_core::localization::t("API key")),
+                    self.credential_field(index, key_draft.or_else(|| quotascope_core::secrets::key_for(raw)).unwrap_or_default(), false, context),
+                    row((
+                        Button::new().on_click(context.message(Message::Save(index))).content(quotascope_core::localization::t("Save")),
+                        Button::new().on_click(context.message(Message::Refresh(index))).content(quotascope_core::localization::t("Refresh")),
+                    )),
+                    self.muted(quotascope_core::localization::t("Import the OpenCode console session to read Go quotas and actual request bills across machines. The API key remains separate.")),
+                    row((
+                        Button::new().on_click(context.message(Message::ImportOpenCodeConsole)).content(quotascope_core::localization::t("Import from browser")),
+                        Button::new().on_click(context.message(Message::ForgetOpenCodeConsole)).content(quotascope_core::localization::t("Forget console session")),
+                    )),
+                )).into()
             }
             _ if provider.needs_server_address() => {
                 let value = self
@@ -2286,14 +2882,26 @@ impl SettingsApp {
                         .height(1.0)
                         .background(Color::argb(20, 128, 128, 128)),
                     body,
+                    if quotascope_core::accounts::supports(provider) {
+                        StackPanel::new().spacing(6.0).children((
+                            self.muted(quotascope_core::localization::t("Paste a different account credential above, then add it. The primary credential stays unchanged.")),
+                            Button::new().on_click(context.message(Message::AddAccount(index))).content(quotascope_core::localization::t("Add account")),
+                        )).into()
+                    } else { View::empty() },
                     if matches!(
                         provider,
                         Provider::ClaudeCode
                             | Provider::Codex
-                            | Provider::Kiro
                             | Provider::Grok
                             | Provider::Antigravity
                             | Provider::Cursor
+                            | Provider::Kiro
+                            | Provider::Devin
+                            | Provider::GrokBot
+                            | Provider::AlibabaTokenPlan
+                            | Provider::Gemini
+                            | Provider::JetBrainsAi
+                            | Provider::NousPortal
                     ) {
                         Button::new()
                             .on_click(context.message(Message::Refresh(index)))
@@ -2316,8 +2924,116 @@ impl SettingsApp {
                     } else {
                         View::empty()
                     },
+                    self.account_details_view(index, provider, context),
                 ))
                 .into(),
+        )
+    }
+
+    fn account_details_view(
+        &self,
+        index: usize,
+        provider: Provider,
+        context: &ViewContext<Self>,
+    ) -> View {
+        use quotascope_core::localization::{t, t_fmt};
+        if !matches!(provider, Provider::ClaudeCode | Provider::Codex) {
+            return View::empty();
+        }
+        if !quotascope_core::settings::with(|s| s.reads_token_spend) {
+            return self
+                .muted(t(
+                    "Enable local reading to analyze records on this computer.",
+                ))
+                .into();
+        }
+        let (details, running) = {
+            let state = self.shared.snapshot.lock().unwrap();
+            (
+                state.account_details.get(&provider).cloned(),
+                state.account_detail_controls.contains_key(&provider),
+            )
+        };
+        let mut rows: Vec<View> = vec![
+            section("Usage by model (last 30 days)").into(),
+            Button::new()
+                .is_enabled(!running)
+                .on_click(context.message(Message::RefreshAccountDetails(index)))
+                .content(t("Refresh"))
+                .into(),
+        ];
+        if let Some(details) = details {
+            if details.partial {
+                rows.push(self.muted(t("Counts may be incomplete.")).into());
+            }
+            if details.models.is_empty() {
+                rows.push(self.muted(t("No local records.")).into());
+            }
+            for model in &details.models {
+                let hit = model
+                    .cache_hit
+                    .map(|v| format!("{:.1}%", v * 100.0))
+                    .unwrap_or_else(|| "—".into());
+                let speed = model
+                    .timing
+                    .speed()
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "—".into());
+                let first = model
+                    .timing
+                    .first_token()
+                    .map(|v| format!("{v:.2}"))
+                    .unwrap_or_else(|| "—".into());
+                let text = t_fmt("{model} · {share}% · {tokens} tokens · cache {hit}% · {speed} tokens/s · first token {first}s", &[&model.id, &format!("{:.1}", model.share * 100.0), &model.tokens.to_string(), &hit.trim_end_matches('%'), &speed, &first]);
+                rows.push(
+                    TextBlock::new()
+                        .text(text)
+                        .text_wrapping(TextWrapping::Wrap)
+                        .into(),
+                );
+            }
+            rows.push(self.muted(t("Speed covers the last 24 hours, includes request wait, and needs three measured replies.")).into());
+            rows.push(section("Prompt cache sessions").into());
+            let now = quotascope_core::timeutil::now_ms();
+            let sessions = details.cache.alive(now);
+            if sessions.is_empty() {
+                rows.push(self.muted(t("No active prompt cache.")).into());
+            }
+            for session in sessions {
+                let name = session
+                    .title
+                    .as_deref()
+                    .or(session.project.as_deref())
+                    .unwrap_or(t("Untitled conversation"));
+                let minutes =
+                    ((session.lapse.expires_at().saturating_sub(now) + 59_999) / 60_000).max(1);
+                rows.push(
+                    TextBlock::new()
+                        .text(t_fmt(
+                            "{session} · {minutes} min remaining",
+                            &[name, &minutes.to_string()],
+                        ))
+                        .text_wrapping(TextWrapping::Wrap)
+                        .into(),
+                );
+            }
+            if provider == Provider::Codex {
+                rows.push(self.muted(t("Documented cache eligibility is a minimum; routing can still cause a cache miss.")).into());
+            }
+        } else {
+            rows.push(
+                self.muted(t(if running {
+                    "Reading local records…"
+                } else {
+                    "Refresh to read account details."
+                }))
+                .into(),
+            );
+        }
+        StackPanel::new().spacing(8.0).keyed_children(
+            rows.into_iter()
+                .enumerate()
+                .map(|(index, view)| (index.to_string(), view)),
         )
     }
 

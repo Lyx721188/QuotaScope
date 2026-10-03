@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 const NOW: i64 = 1_791_024_000_000;
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/kiro-pro-plus-usage.json")).unwrap()
+    serde_json::from_str(include_str!("fixtures/upstream-kiro-pro-plus-usage.json")).unwrap()
 }
 
 fn reply(rows: Value) -> Value {

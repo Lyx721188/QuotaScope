@@ -381,6 +381,9 @@ impl Provider {
     /// The others stay in the model (settings, JSON, docs) but never fetch,
     /// and Settings says so in as many words.
     pub fn is_ported_to_windows(&self) -> bool {
+        if crate::providers::remaining::PROVIDERS.contains(self) {
+            return true;
+        }
         matches!(
             self,
             Provider::ClaudeCode
@@ -457,6 +460,9 @@ impl Provider {
 
     /// Why the provider is not available on Windows, when it is not.
     pub fn windows_gap(&self) -> Option<&'static str> {
+        if crate::providers::remaining::PROVIDERS.contains(self) {
+            return None;
+        }
         match self {
             Provider::OllamaCloud => {
                 Some("Reads a browser session cookie — browser access has not been ported yet.")
@@ -541,6 +547,7 @@ impl Provider {
                 | Provider::Antigravity
                 | Provider::Zai
                 | Provider::GlmCoding
+                | Provider::OpenCodeGo
         )
     }
 
@@ -609,6 +616,9 @@ impl Provider {
     /// Providers Settings offers a paste field for. Ollama's would be a
     /// session cookie, and it is not ported, so it is not listed.
     pub fn uses_api_key(&self) -> bool {
+        if matches!(self, Provider::OllamaCloud | Provider::Windsurf) {
+            return true;
+        }
         matches!(
             self,
             Provider::OpenCodeGo
@@ -1199,11 +1209,19 @@ pub enum Unavailability {
     /// The imported browser session no longer answers — the site's own
     /// refusal of a credential that used to work.
     SessionExpired,
+    LocalLoginMissing,
+    LocalLoginExpired,
+    LocalAppMissing,
 }
 
 impl Unavailability {
     pub fn message(&self) -> &'static str {
         crate::localization::t(match self {
+            Unavailability::LocalLoginMissing => "Sign in to the provider's CLI first.",
+            Unavailability::LocalLoginExpired => {
+                "The local login expired. Sign in to the provider's CLI again."
+            }
+            Unavailability::LocalAppMissing => "No saved quota found in the provider's local app.",
             Unavailability::Loading => "Loading…",
             Unavailability::NotConnected => "notConnected",
             Unavailability::AwaitingResponse => "awaitingResponse",

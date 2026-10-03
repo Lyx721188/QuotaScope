@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 pub enum Language {
     English,
     Chinese,
+    TraditionalChinese,
+    Japanese,
+    Korean,
 }
 
 static LANGUAGE: AtomicU8 = AtomicU8::new(0);
@@ -17,16 +20,21 @@ pub fn set_language(language: Language) {
         match language {
             Language::English => 0,
             Language::Chinese => 1,
+            Language::TraditionalChinese => 2,
+            Language::Japanese => 3,
+            Language::Korean => 4,
         },
         Ordering::Relaxed,
     );
 }
 
 pub fn current() -> Language {
-    if LANGUAGE.load(Ordering::Relaxed) == 1 {
-        Language::Chinese
-    } else {
-        Language::English
+    match LANGUAGE.load(Ordering::Relaxed) {
+        1 => Language::Chinese,
+        2 => Language::TraditionalChinese,
+        3 => Language::Japanese,
+        4 => Language::Korean,
+        _ => Language::English,
     }
 }
 
@@ -39,11 +47,13 @@ pub fn detect_from_system() {
     use windows::Win32::Globalization::GetUserDefaultUILanguage;
     // PRIMARYLANGID: the low 10 bits; 0x04 is Chinese. This machine's
     // answer covers zh-CN, zh-TW and every other variant.
-    let zh = unsafe { GetUserDefaultUILanguage() } & 0x3FF == 0x0004;
-    set_language(if zh {
-        Language::Chinese
-    } else {
-        Language::English
+    let id = unsafe { GetUserDefaultUILanguage() };
+    set_language(match id & 0x3FF {
+        0x04 if matches!(id, 0x0404 | 0x0c04 | 0x1404) => Language::TraditionalChinese,
+        0x04 => Language::Chinese,
+        0x11 => Language::Japanese,
+        0x12 => Language::Korean,
+        _ => Language::English,
     });
 }
 
@@ -65,6 +75,62 @@ struct Entry {
 }
 
 const TABLE: &[Entry] = &[
+    Entry { key: "Sign in to the provider's CLI first.", en: "Sign in to the provider's CLI first.", zh: "请先在服务商的 CLI 中登录。" },
+    Entry { key: "The local login expired. Sign in to the provider's CLI again.", en: "The local login expired. Sign in to the provider's CLI again.", zh: "本机登录已过期，请重新登录服务商的 CLI。" },
+    Entry { key: "No saved quota found in the provider's local app.", en: "No saved quota found in the provider's local app.", zh: "服务商的本机应用尚未保存额度读数。" },
+    Entry { key: "Provider request bills · all machines · actual recorded USD cost", en: "Provider request bills · all machines · actual recorded USD cost", zh: "服务商请求账单 · 所有设备 · 实际记录的美元费用" },
+    Entry { key: "The minimum cache window has ended; entries may remain cached.", en: "The minimum cache window has ended; entries may remain cached.", zh: "已超过最短缓存复用期，条目仍可能留在缓存中。" },
+    Entry { key: "Uses kiro-cli's existing login. Sign in with kiro-cli first.", en: "Uses kiro-cli's existing login. Sign in with kiro-cli first.", zh: "使用 kiro-cli 已保存的登录；请先在 kiro-cli 中登录。" },
+    Entry { key: "Reads the plan Devin saved on this PC. Open Devin and sign in first.", en: "Reads the plan Devin saved on this PC. Open Devin and sign in first.", zh: "读取 Devin 在本机保存的套餐。请先打开 Devin 并登录。" },
+    Entry { key: "Uses Cursor's existing login to read the Grok Bot allowance.", en: "Uses Cursor's existing login to read the Grok Bot allowance.", zh: "使用 Cursor 已保存的登录读取 Grok Bot 额度。" },
+    Entry { key: "Uses Bailian CLI (bl)'s existing login, for international and mainland plans.", en: "Uses Bailian CLI (bl)'s existing login, for international and mainland plans.", zh: "使用百炼 CLI（bl）的登录读取国际与大陆套餐。" },
+    Entry { key: "Uses Gemini CLI's Google login; API key and Vertex AI modes do not report this allowance.", en: "Uses Gemini CLI's Google login; API key and Vertex AI modes do not report this allowance.", zh: "使用 Gemini CLI 的 Google 登录；API key 和 Vertex AI 模式不报告此项额度。" },
+    Entry { key: "Reads the quota JetBrains AI saved on this PC. Open the IDE to update it.", en: "Reads the quota JetBrains AI saved on this PC. Open the IDE to update it.", zh: "读取 JetBrains AI 在本机保存的额度；打开 IDE 可更新读数。" },
+    Entry { key: "Uses the Nous Portal login Hermes saved. Run Hermes to renew an expired login.", en: "Uses the Nous Portal login Hermes saved. Run Hermes to renew an expired login.", zh: "使用 Hermes 保存的 Nous Portal 登录；登录过期后请运行 Hermes 更新。" },
+    Entry { key: "Dashboard", en: "Dashboard", zh: "用量概览" },
+    Entry { key: "Connection source", en: "Connection source", zh: "读取来源" },
+    Entry { key: "Cached reading", en: "Cached reading", zh: "缓存读数" },
+    Entry { key: "Reading age", en: "Reading age", zh: "读数距今" },
+    Entry { key: "Add account", en: "Add account", zh: "添加账户" },
+    Entry { key: "Remove account", en: "Remove account", zh: "移除账户" },
+    Entry { key: "Enter a valid credential for the additional account.", en: "Enter a valid credential for the additional account.", zh: "请为附加账户输入有效凭据。" },
+    Entry { key: "For an additional Claude account, paste exported .credentials.json. Local usage belongs to the primary account only.", en: "For an additional Claude account, paste exported .credentials.json. Local usage belongs to the primary account only.", zh: "添加 Claude 账户时粘贴导出的 .credentials.json。本机用量只归属主账户。" },
+    Entry { key: "Paste a different account credential above, then add it. The primary credential stays unchanged.", en: "Paste a different account credential above, then add it. The primary credential stays unchanged.", zh: "在上方粘贴另一个账户的凭据，再点击添加。主账户凭据会保留。" },
+    Entry { key: "Import Claude Desktop / browser fallback", en: "Import Claude Desktop / browser fallback", zh: "导入 Claude Desktop / 浏览器回退会话" },
+    Entry { key: "Forget fallback session", en: "Forget fallback session", zh: "清除回退会话" },
+    Entry { key: "Configure quotascope --statusline in Claude to use reported rate limits as a 15-minute cached fallback.", en: "Configure quotascope --statusline in Claude to use reported rate limits as a 15-minute cached fallback.", zh: "在 Claude 状态栏中配置 quotascope --statusline，可将报告的额度作为 15 分钟内有效的缓存回退。" },
+    Entry { key: "Import the OpenCode console session to read Go quotas and actual request bills across machines. The API key remains separate.", en: "Import the OpenCode console session to read Go quotas and actual request bills across machines. The API key remains separate.", zh: "导入 OpenCode 官网会话，可读取 Go 额度和各设备的实际请求账单；API key 独立保存。" },
+    Entry { key: "Forget console session", en: "Forget console session", zh: "清除官网会话" },
+    Entry { key: "Import the Windsurf website's localStorage session, or paste its four-field JSON bundle.", en: "Import the Windsurf website's localStorage session, or paste its four-field JSON bundle.", zh: "从浏览器导入 Windsurf 网站会话，或粘贴包含四项凭据的 JSON。" },
+    Entry { key: "Save proxy and refresh", en: "Save proxy and refresh", zh: "保存代理并刷新" },
+    Entry { key: "Proxy mode", en: "Proxy mode", zh: "代理模式" },
+    Entry { key: "System proxy", en: "System proxy", zh: "系统代理" },
+    Entry { key: "No proxy", en: "No proxy", zh: "不使用代理" },
+    Entry { key: "Manual proxy", en: "Manual proxy", zh: "手动代理" },
+    Entry { key: "HTTP proxy (empty uses system settings)", en: "HTTP proxy (empty uses system settings)", zh: "HTTP 代理（留空则使用系统设置）" },
+    Entry { key: "Global shortcuts: Ctrl+Shift+F10 panel, F11 dashboard, F12 refresh", en: "Global shortcuts: Ctrl+Shift+F10 panel, F11 dashboard, F12 refresh", zh: "全局快捷键：Ctrl+Shift+F10 面板，F11 用量概览，F12 刷新" },
+    Entry { key: "Animated dashboard buddy", en: "Animated dashboard buddy", zh: "用量概览中的动画伙伴" },
+    Entry { key: "Language", en: "Language", zh: "语言" },
+    Entry { key: "Automatic", en: "Automatic", zh: "自动" },
+    Entry { key: "Bottom", en: "Bottom", zh: "底部" },
+    Entry { key: "Free vertical", en: "Free vertical", zh: "自由摆放（竖向）" },
+    Entry { key: "Free horizontal", en: "Free horizontal", zh: "自由摆放（横向）" },
+    Entry { key: "Keep token statistics warm in the background (five minutes, 30-second scan limit)", en: "Keep token statistics warm in the background (five minutes, 30-second scan limit)", zh: "后台保留 Token 统计（5 分钟缓存，单次扫描最多 30 秒）" },
+    Entry { key: "Tokens by local hour (recorded time buckets only)", en: "Tokens by local hour (recorded time buckets only)", zh: "按本机小时统计 Token（仅使用已记录的时间桶）" },
+    Entry { key: "Native format not yet supported; accepts explicit local imports", en: "Native format not yet supported; accepts explicit local imports", zh: "暂不支持原生格式，可读取明确导出的本机记录" },
+    Entry { key: "Some records are incomplete; totals cover only readable records.", en: "Some records are incomplete; totals cover only readable records.", zh: "部分记录不完整，合计只包含可读取的记录。" },
+    Entry { key: "Usage by model (last 30 days)", en: "Usage by model (last 30 days)", zh: "按模型查看用量（最近 30 天）" },
+    Entry { key: "Prompt cache sessions", en: "Prompt cache sessions", zh: "各会话提示缓存" },
+    Entry { key: "No local records.", en: "No local records.", zh: "没有本机用量记录。" },
+    Entry { key: "Refresh to read account details.", en: "Refresh to read account details.", zh: "点击刷新读取账户详情。" },
+    Entry { key: "Counts may be incomplete.", en: "Counts may be incomplete.", zh: "计数可能不完整。" },
+    Entry { key: "Untitled conversation", en: "Untitled conversation", zh: "未命名会话" },
+    Entry { key: "{session} · {minutes} min remaining", en: "{session} · {minutes} min remaining", zh: "{session} · 至少还可复用 {minutes} 分钟" },
+    Entry { key: "{model} · {share}% · {tokens} tokens · cache {hit}% · {speed} tokens/s · first token {first}s", en: "{model} · {share}% · {tokens} tokens · cache {hit}% · {speed} tokens/s · first token {first}s", zh: "{model} · 占比 {share}% · {tokens} tokens · 缓存命中 {hit}% · {speed} tokens/秒 · 首字 {first} 秒" },
+    Entry { key: "Speed covers the last 24 hours, includes request wait, and needs three measured replies.", en: "Speed covers the last 24 hours, includes request wait, and needs three measured replies.", zh: "速度统计最近 24 小时，包含请求等待；至少有三次有效回复才显示。" },
+    Entry { key: "Documented cache eligibility is a minimum; routing can still cause a cache miss.", en: "Documented cache eligibility is a minimum; routing can still cause a cache miss.", zh: "显示官方说明的最短缓存复用期；请求路由仍可能造成缓存未命中。" },
+    Entry { key: "Cache eligible for at least {minutes} min; a hit is not guaranteed.", en: "Cache eligible for at least {minutes} min; a hit is not guaranteed.", zh: "缓存至少仍可复用 {minutes} 分钟，不保证请求命中。" },
+    Entry { key: "Usage outside this computer was detected; value estimate paused.", en: "Usage outside this computer was detected; value estimate paused.", zh: "检测到这台电脑以外的用量，本周期暂停价值估算。" },
     Entry { key: "Storage and diagnostics", en: "Storage and diagnostics", zh: "存储与诊断" },
     Entry { key: "Statistics cache", en: "Statistics cache", zh: "统计缓存" },
     Entry { key: "Disk cache budget", en: "Disk cache budget", zh: "磁盘缓存预算" },
@@ -1152,6 +1218,26 @@ const TABLE: &[Entry] = &[
 /// The localized string for a key. Unmatched keys return the key itself, the
 /// same way a missing translation falls through to English.
 pub fn t(key: &str) -> &'static str {
+    use std::sync::OnceLock;
+    type Strings = std::collections::HashMap<String, String>;
+    static TRADITIONAL: OnceLock<Strings> = OnceLock::new();
+    static JAPANESE: OnceLock<Strings> = OnceLock::new();
+    static KOREAN: OnceLock<Strings> = OnceLock::new();
+    let translations = match current() {
+        Language::TraditionalChinese => Some(TRADITIONAL.get_or_init(|| {
+            serde_json::from_str(include_str!("translations/zh-Hant.json")).unwrap_or_default()
+        })),
+        Language::Japanese => Some(JAPANESE.get_or_init(|| {
+            serde_json::from_str(include_str!("translations/ja.json")).unwrap_or_default()
+        })),
+        Language::Korean => Some(KOREAN.get_or_init(|| {
+            serde_json::from_str(include_str!("translations/ko.json")).unwrap_or_default()
+        })),
+        _ => None,
+    };
+    if let Some(value) = translations.and_then(|table| table.get(key)) {
+        return value.as_str();
+    }
     let zh = current() == Language::Chinese;
     for entry in TABLE {
         if entry.key == key {
