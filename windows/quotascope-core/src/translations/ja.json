@@ -819,5 +819,9 @@
   "Open official status page": "公式ステータスページを開く",
   "Checked every five minutes while this section is open. Enable service outage notifications to watch enabled providers in the background.": "このセクションを開いている間は5分ごとに確認します。障害通知を有効にすると、オンにしたプロバイダーをバックグラウンドで確認します。",
   "when a provider service goes down or recovers": "サービスの障害や復旧を通知",
-  "Service outage notifications use official public status pages and only watch enabled Codex, Claude Code and DeepSeek accounts. Quota alerts remain a separate switch.": "障害通知は公式の公開ステータスページを使用し、有効な Codex、Claude Code、DeepSeek のアカウントのみを確認します。利用枠の通知は別のスイッチで設定します。"
+  "Service outage notifications use official public status pages and only watch enabled Codex, Claude Code and DeepSeek accounts. Quota alerts remain a separate switch.": "障害通知は公式の公開ステータスページを使用し、有効な Codex、Claude Code、DeepSeek のアカウントのみを確認します。利用枠の通知は別のスイッチで設定します。",
+  "Some status history couldn't be read. Current component states are kept; no uptime is estimated.": "状態履歴の一部を読み込めませんでした。現在の状態は保持し、稼働率は推定しません。",
+  "No status history data.": "状態履歴のデータがありません。",
+  "Official uptime: {value}%": "公式の稼働率：{value}%",
+  "No data": "データなし"
 }

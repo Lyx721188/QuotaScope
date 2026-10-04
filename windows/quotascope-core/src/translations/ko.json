@@ -819,5 +819,9 @@
   "Open official status page": "공식 상태 페이지 열기",
   "Checked every five minutes while this section is open. Enable service outage notifications to watch enabled providers in the background.": "이 섹션이 열려 있는 동안 5분마다 확인합니다. 서비스 장애 알림을 켜면 활성화된 제공업체를 백그라운드에서 확인합니다.",
   "when a provider service goes down or recovers": "제공업체의 서비스 장애 또는 복구 시 알림",
-  "Service outage notifications use official public status pages and only watch enabled Codex, Claude Code and DeepSeek accounts. Quota alerts remain a separate switch.": "서비스 장애 알림은 공식 공개 상태 페이지를 사용하며 활성화된 Codex, Claude Code 및 DeepSeek 계정만 확인합니다. 사용 한도 알림은 별도의 스위치로 설정합니다."
+  "Service outage notifications use official public status pages and only watch enabled Codex, Claude Code and DeepSeek accounts. Quota alerts remain a separate switch.": "서비스 장애 알림은 공식 공개 상태 페이지를 사용하며 활성화된 Codex, Claude Code 및 DeepSeek 계정만 확인합니다. 사용 한도 알림은 별도의 스위치로 설정합니다.",
+  "Some status history couldn't be read. Current component states are kept; no uptime is estimated.": "일부 상태 기록을 읽을 수 없습니다. 확인된 현재 상태는 유지하며 가동률은 추정하지 않습니다.",
+  "No status history data.": "상태 기록 데이터가 없습니다.",
+  "Official uptime: {value}%": "공식 가동률: {value}%",
+  "No data": "데이터 없음"
 }

@@ -1,6 +1,6 @@
 # Isolated public-status failure handling and independent notification switch.
 # The loopback proxy closes connections: no official status or account request leaves the profile.
-param([Parameter(Mandatory=$true)][string]$Executable,[string]$OutputDirectory='target/service-status-ui-validation')
+param([Parameter(Mandatory=$true)][string]$Executable,[string]$OutputDirectory='target/service-status-ui-validation',[switch]$ProbePublicPages)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -20,6 +20,7 @@ New-Item -ItemType Directory -Force -Path $data,(Join-Path $profile 'home') | Ou
 $proxy=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
 $proxy.Start()
 $settings=@{hasRun=$true;enabledAccounts=@();language='zh';readsTokenSpend=$false;checksForUpdates=$false;wantsAlerts=$false;alertsOnOutage=$false;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
+if($ProbePublicPages){$settings.proxyMode='disabled';$settings.proxyUrl=''}
 [IO.File]::WriteAllText((Join-Path $data 'settings.json'),($settings|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 $info=[Diagnostics.ProcessStartInfo]::new([IO.Path]::GetFullPath($Executable))
 $info.ArgumentList.Add('--settings')
@@ -89,6 +90,8 @@ function Configure([string]$provider) {
     if($controls.Count -ne 1){throw 'Search did not isolate status provider'}
     if($controls[0].Current.Name -eq '配置'){$controls[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()}
     Wait-Text '服务状态'
+    $company=switch($provider){'Codex'{'OpenAI'};'Claude Code'{'Anthropic'};'DeepSeek'{'DeepSeek'}}
+    Wait-Text "由 $company 发布" -Contains
 }
 function Toggle([string]$name,[bool]$value) {
     Wait-Text $name
@@ -111,6 +114,40 @@ $failure='无法读取状态页。下方如有此前读数，它已经过时，�
 try {
     $phase='off-by-default'
     Window
+    if($ProbePublicPages) {
+        $current=@();$history=@();$uptimePages=@();$unreadable=@();$partialHistory=@()
+        foreach($provider in @('Codex','Claude Code','DeepSeek')) {
+            $phase='public-page-'+$provider
+            Configure $provider
+            $until=[DateTime]::UtcNow.AddSeconds(45)
+            do {
+                $names=@(Nodes|ForEach-Object {$_.Current.Name})
+                $busy=$names -contains '正在检查服务状态…'
+                $hasCurrent=@($names|Where-Object {$_ -like '状态检查时间：*'}).Count -gt 0
+                $failed=$names -contains $failure
+                $bars=@($names|Where-Object {$_ -match '^\d{4}-\d{2}-\d{2} · '})
+                $uptimes=@($names|Where-Object {$_ -match '官方可用率：'})
+                $historyGap=$names -contains '部分状态历史无法读取。保留可确认的当前状态，不估算可用率。'
+                $noHistory=$names -contains '暂无状态历史数据。'
+                if(-not $busy -and ($failed -or ($hasCurrent -and ($bars.Count -gt 0 -or $historyGap -or $noHistory)))){break}
+                Start-Sleep -Milliseconds 100
+            } while([DateTime]::UtcNow -lt $until)
+            if($busy -or (-not $hasCurrent -and -not $failed)){throw 'Public status request did not finish'}
+            if($hasCurrent -and -not $failed) {
+                $current+=$provider
+                if($bars.Count -gt 0){$history+=$provider}
+                elseif($historyGap -or $noHistory){$partialHistory+=$provider}
+                else{throw 'Readable public page displayed neither history nor an explicit history gap'}
+                if($uptimes.Count -gt 0){$uptimePages+=$provider}
+            } else {
+                $unreadable+=$provider
+                Wait-Text '运行正常' -Absent
+            }
+            Write-Output "Public page checked: $provider (current=$hasCurrent)"
+        }
+        [pscustomobject]@{Passed=$true;Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;CurrentReadablePages=$current;HistoryReadablePages=$history;OfficialUptimePages=$uptimePages;UnreadablePages=$unreadable;PartialHistoryPages=$partialHistory;LiveStatusVerified=($current.Count -eq 3);AllHistoryVerified=($history.Count -eq 3);RealAccountVerified=$false;ExternalRequestsBlocked=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $evidence 'service-status-public-ui-result.json')
+        return
+    }
     Start-Sleep -Milliseconds 600
     Reject-Connections
     if($connections -ne 0){throw 'Status pages requested with every feature switched off'}

@@ -75,6 +75,10 @@ struct Entry {
 }
 
 const TABLE: &[Entry] = &[
+    Entry { key: "Some status history couldn't be read. Current component states are kept; no uptime is estimated.", en: "Some status history couldn't be read. Current component states are kept; no uptime is estimated.", zh: "部分状态历史无法读取。保留可确认的当前状态，不估算可用率。" },
+    Entry { key: "No status history data.", en: "No status history data.", zh: "暂无状态历史数据。" },
+    Entry { key: "Official uptime: {value}%", en: "Official uptime: {value}%", zh: "官方可用率：{value}%" },
+    Entry { key: "No data", en: "No data", zh: "无数据" },
     Entry { key: "Service status", en: "Service status", zh: "服务状态" },
     Entry { key: "Operational", en: "Operational", zh: "运行正常" },
     Entry { key: "Degraded performance", en: "Degraded performance", zh: "性能下降" },

@@ -41,6 +41,7 @@ pub mod report;
 pub mod scan;
 pub mod secrets;
 pub mod service_status;
+mod service_status_history;
 pub mod settings;
 pub mod spend;
 pub mod spend_analysis;

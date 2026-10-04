@@ -265,9 +265,10 @@ impl Shared {
         };
         let shared = self.clone();
         std::thread::spawn(move || {
-            let result =
-                std::panic::catch_unwind(|| quotascope_core::service_status::read(page, force))
-                    .unwrap_or(Err(quotascope_core::service_status::ReadError::Unreadable));
+            let result = std::panic::catch_unwind(|| {
+                quotascope_core::service_status::read_details(page, force)
+            })
+            .unwrap_or(Err(quotascope_core::service_status::ReadError::Unreadable));
             let mut state = shared.snapshot.lock().unwrap();
             let status = state.service_status.entry(page).or_default();
             status.complete(generation, shared.alive.load(Ordering::SeqCst), result);
@@ -3608,13 +3609,16 @@ impl SettingsApp {
                 };
                 rows.push((
                     component.id.clone(),
-                    row((
-                        TextBlock::new()
-                            .text(&component.name)
-                            .text_wrapping(TextWrapping::Wrap),
-                        TextBlock::new()
-                            .text(component.state.title())
-                            .foreground(Brush::Solid(colour)),
+                    StackPanel::new().spacing(5.0).children((
+                        row((
+                            TextBlock::new()
+                                .text(&component.name)
+                                .text_wrapping(TextWrapping::Wrap),
+                            TextBlock::new()
+                                .text(component.state.title())
+                                .foreground(Brush::Solid(colour)),
+                        )),
+                        self.service_history_view(component),
                     )),
                 ));
             }
@@ -3632,6 +3636,9 @@ impl SettingsApp {
             heading("Service status"),
             self.muted(&t_fmt("Published by {company}; separate from your account allowance.", &[page.company()])),
             self.muted(feedback),
+            self.muted(if reading.as_ref().is_some_and(|r| r.history_failed) {
+                t("Some status history couldn't be read. Current component states are kept; no uptime is estimated.")
+            } else { "" }),
             StackPanel::new().spacing(6.0).keyed_children(rows),
             self.muted(&reading.as_ref().map(|r| t_fmt("Status checked: {time}",
                 &[&quotascope_core::timeutil::format_local_naive(r.checked_at)])).unwrap_or_default()),
@@ -3642,6 +3649,68 @@ impl SettingsApp {
                     .content(t("Open official status page")),
             )),
             self.muted(t("Checked every five minutes while this section is open. Enable service outage notifications to watch enabled providers in the background.")),
+        ))
+    }
+
+    fn service_history_view(&self, component: &quotascope_core::service_status::Component) -> View {
+        use quotascope_core::localization::{t, t_fmt};
+        use quotascope_core::service_status::State;
+        if component.days.is_empty() {
+            return self.muted(t("No status history data.")).into();
+        }
+        let bars: Vec<(String, View)> = component
+            .days
+            .iter()
+            .map(|day| {
+                let label = format!(
+                    "{} · {}",
+                    day.date,
+                    day.state.map(State::title).unwrap_or(t("No data"))
+                );
+                let colour = if let Some(rgb) = day.rgb {
+                    Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+                } else {
+                    match day.state {
+                        Some(State::Operational) => Color::rgb(46, 160, 97),
+                        Some(State::Degraded) => Color::rgb(235, 179, 41),
+                        Some(State::PartialOutage) => Color::rgb(234, 116, 63),
+                        Some(State::FullOutage) => Color::rgb(220, 67, 76),
+                        Some(State::Maintenance) => Color::rgb(91, 143, 213),
+                        Some(State::Unrecognised) => Color::rgb(128, 128, 128),
+                        None => Color::argb(50, 128, 128, 128),
+                    }
+                };
+                (
+                    day.date.to_string(),
+                    Border::new()
+                        .width(4.0)
+                        .height(18.0)
+                        .background(colour)
+                        .automation_name(&label)
+                        .tooltip(label),
+                )
+            })
+            .collect();
+        let range = format!(
+            "{} — {}",
+            component.days[0].date,
+            component.days[component.days.len() - 1].date
+        );
+        let caption = component
+            .uptime
+            .map(|u| {
+                format!(
+                    "{range} · {}",
+                    t_fmt("Official uptime: {value}%", &[&format!("{u:.2}")])
+                )
+            })
+            .unwrap_or(range);
+        StackPanel::new().spacing(4.0).children((
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(1.0)
+                .keyed_children(bars),
+            self.muted(&caption),
         ))
     }
 
@@ -4528,6 +4597,7 @@ mod tests {
                 page: Page::Codex,
                 checked_at: 1,
                 components: vec![],
+                history_failed: false,
             }),
         );
         assert!(!state.running);
@@ -4540,6 +4610,7 @@ mod tests {
                 page: Page::Codex,
                 checked_at: 2,
                 components: vec![],
+                history_failed: false,
             }),
         );
         assert!(state.reading.is_none());
@@ -4553,6 +4624,7 @@ mod tests {
             page: Page::Claude,
             checked_at: 11,
             components: vec![],
+            history_failed: false,
         };
         state.complete(0, true, Ok(reading.clone()));
         state.complete(0, true, Err(ReadError::Unreachable));
@@ -4565,6 +4637,7 @@ mod tests {
                 page: Page::Claude,
                 checked_at: 22,
                 components: vec![],
+                history_failed: false,
             }),
         );
         assert!(!state.failed);

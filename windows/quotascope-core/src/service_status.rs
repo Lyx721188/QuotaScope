@@ -137,6 +137,15 @@ pub struct Component {
     pub id: String,
     pub name: String,
     pub state: State,
+    pub days: Vec<Day>,
+    pub uptime: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Day {
+    pub date: chrono::NaiveDate,
+    pub state: Option<State>,
+    pub rgb: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -144,6 +153,8 @@ pub struct Reading {
     pub page: Page,
     pub checked_at: i64,
     pub components: Vec<Component>,
+    /// A failed or incomplete history leaves the current state standing.
+    pub history_failed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +190,8 @@ fn component(value: &Value, id: &str, state: State) -> Option<Component> {
         id: text(&value[id])?.into(),
         name: text(&value["name"])?.into(),
         state,
+        days: Vec::new(),
+        uptime: None,
     })
 }
 
@@ -265,7 +278,7 @@ pub fn statuspage(bytes: &[u8]) -> Result<Vec<Component>, ReadError> {
 
 /// Decode Next.js Flight string literals as JSON, never as JavaScript. The
 /// page distributes initialData over multiple chunks; join before reading.
-fn flashcat_data(bytes: &[u8]) -> Result<Value, ReadError> {
+pub(crate) fn flashcat_data(bytes: &[u8]) -> Result<Value, ReadError> {
     if bytes.len() > MAX_BYTES {
         return Err(ReadError::TooLarge);
     }
@@ -308,7 +321,12 @@ fn flashcat_data(bytes: &[u8]) -> Result<Value, ReadError> {
                 Value::Object(object) => {
                     if let Some(data) = object.get("initialData").and_then(Value::as_object) {
                         for (key, value) in data {
-                            merged.entry(key.clone()).or_insert_with(|| value.clone());
+                            if matches!(
+                                key.as_str(),
+                                "page" | "component_impacts" | "component_uptimes"
+                            ) {
+                                merged.entry(key.clone()).or_insert_with(|| value.clone());
+                            }
                         }
                     }
                     pending.extend(object.values().map(|v| (v, depth + 1)));
@@ -409,16 +427,21 @@ pub fn parse(page: Page, bytes: &[u8], now_ms: i64) -> Result<Reading, ReadError
         page,
         checked_at: now_ms,
         components,
+        history_failed: false,
     })
 }
 
-fn fetch(client: &reqwest::blocking::Client, page: Page) -> Result<Vec<u8>, ReadError> {
+fn fetch_url(
+    client: &reqwest::blocking::Client,
+    address: &str,
+    html: bool,
+) -> Result<Vec<u8>, ReadError> {
     let response = client
-        .get(page.endpoint())
+        .get(address)
         .timeout(Duration::from_secs(15))
         .header(
             "Accept",
-            if page == Page::DeepSeek {
+            if html {
                 "text/html"
             } else {
                 "application/json"
@@ -450,6 +473,8 @@ fn fetch(client: &reqwest::blocking::Client, page: Page) -> Result<Vec<u8>, Read
 struct Cached {
     attempt: Option<Instant>,
     result: Option<Result<Reading, ReadError>>,
+    raw: Option<Vec<u8>>,
+    history_attempt: Option<Instant>,
 }
 
 impl Cached {
@@ -478,6 +503,16 @@ impl Cached {
 /// Pane and monitor share each page's five-minute cache and single request.
 /// Failures also cool down; manual Refresh is the sole forced retry.
 pub fn read(page: Page, force: bool) -> Result<Reading, ReadError> {
+    read_cached(page, force, false)
+}
+
+/// Also asks for the history the official page draws. A current-only monitor
+/// and a pane share the summary; DeepSeek reuses the same already-read HTML.
+pub fn read_details(page: Page, force: bool) -> Result<Reading, ReadError> {
+    read_cached(page, force, true)
+}
+
+fn read_cached(page: Page, force: bool, details: bool) -> Result<Reading, ReadError> {
     static CACHE: OnceLock<[Mutex<Cached>; 3]> = OnceLock::new();
     let cache = CACHE.get_or_init(|| std::array::from_fn(|_| Mutex::default()));
     let index = Page::ALL
@@ -485,10 +520,39 @@ pub fn read(page: Page, force: bool) -> Result<Reading, ReadError> {
         .position(|p| *p == page)
         .expect("known page");
     let mut slot = cache[index].lock().unwrap_or_else(|e| e.into_inner());
-    slot.read_with(force, Instant::now(), || {
+    let mut fetched = None;
+    let result = slot.read_with(force, Instant::now(), || {
         let client = crate::http::HttpClient::new().client_for_login();
-        fetch(&client, page).and_then(|bytes| parse(page, &bytes, crate::timeutil::now_ms()))
-    })
+        let bytes = fetch_url(&client, page.endpoint(), page == Page::DeepSeek)?;
+        let result = parse(page, &bytes, crate::timeutil::now_ms());
+        fetched = Some(bytes);
+        result
+    });
+    if let Some(bytes) = fetched {
+        slot.raw = (page == Page::DeepSeek).then_some(bytes);
+        slot.history_attempt = None;
+    }
+    let mut reading = result?;
+    if details
+        && (force
+            || slot
+                .history_attempt
+                .is_none_or(|at| at.elapsed() >= CHECK_INTERVAL))
+    {
+        let history = if page == Page::DeepSeek {
+            slot.raw.clone().ok_or(ReadError::Unreadable)
+        } else {
+            let client = crate::http::HttpClient::new().client_for_login();
+            crate::service_status_history::endpoint(&reading)
+                .and_then(|url| fetch_url(&client, &url, false))
+        };
+        reading.history_failed = history
+            .and_then(|bytes| crate::service_status_history::apply(&mut reading, &bytes))
+            .is_err();
+        slot.history_attempt = Some(Instant::now());
+        slot.result = Some(Ok(reading.clone()));
+    }
+    Ok(reading)
 }
 
 /// Persisted notification transitions, separate from quota-alert memory.
@@ -621,6 +685,8 @@ mod tests {
             id: id.into(),
             name: id.into(),
             state,
+            days: vec![],
+            uptime: None,
         }
     }
     #[test]
@@ -631,6 +697,7 @@ mod tests {
             page: Page::Codex,
             checked_at: 10,
             components: vec![c("cli", State::Operational)],
+            history_failed: false,
         };
         assert_eq!(
             cache.read_with(false, now, || Ok(good.clone())),
@@ -656,6 +723,7 @@ mod tests {
             page: Page::Codex,
             checked_at: 20,
             components: vec![c("cli", State::Degraded)],
+            history_failed: false,
         };
         assert_eq!(
             cache.read_with(

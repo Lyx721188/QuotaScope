@@ -819,5 +819,9 @@
   "Open official status page": "開啟官方狀態頁",
   "Checked every five minutes while this section is open. Enable service outage notifications to watch enabled providers in the background.": "此區域展開時每五分鐘檢查一次。開啟服務故障通知可在背景檢查已啟用的服務商。",
   "when a provider service goes down or recovers": "服務商發生故障或恢復時通知",
-  "Service outage notifications use official public status pages and only watch enabled Codex, Claude Code and DeepSeek accounts. Quota alerts remain a separate switch.": "服務故障通知讀取官方公開狀態頁，僅檢查已啟用的 Codex、Claude Code 和 DeepSeek 帳戶。額度預警由獨立開關控制。"
+  "Service outage notifications use official public status pages and only watch enabled Codex, Claude Code and DeepSeek accounts. Quota alerts remain a separate switch.": "服務故障通知讀取官方公開狀態頁，僅檢查已啟用的 Codex、Claude Code 和 DeepSeek 帳戶。額度預警由獨立開關控制。",
+  "Some status history couldn't be read. Current component states are kept; no uptime is estimated.": "部分狀態歷史無法讀取。保留可確認的目前狀態，不估算可用率。",
+  "No status history data.": "暫無狀態歷史資料。",
+  "Official uptime: {value}%": "官方可用率：{value}%",
+  "No data": "無資料"
 }
