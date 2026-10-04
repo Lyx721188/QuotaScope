@@ -28,6 +28,7 @@ $info.UseShellExecute=$false
 $info.Environment['APPDATA']=Join-Path $profile 'appdata'
 $info.Environment['LOCALAPPDATA']=Join-Path $profile 'local'
 $info.Environment['USERPROFILE']=Join-Path $profile 'home'
+$info.Environment['HERMES_HOME']=Join-Path ($info.Environment['USERPROFILE']) '.hermes'
 $info.Environment['QUOTASCOPE_TEST_INSTANCE']=$id
 $testApp=[Diagnostics.Process]::Start($info)
 $script:connections=0

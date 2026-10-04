@@ -67,6 +67,7 @@ $info.ArgumentList.Add('--settings');$info.UseShellExecute=$false
 $info.Environment['APPDATA']=Join-Path $profile 'appdata'
 $info.Environment['LOCALAPPDATA']=Join-Path $profile 'local'
 $info.Environment['USERPROFILE']=$fixtureHome
+$info.Environment['HERMES_HOME']=Join-Path ($info.Environment['USERPROFILE']) '.hermes'
 $info.Environment['QUOTASCOPE_TEST_INSTANCE']=$id
 $testApp=[Diagnostics.Process]::Start($info)
 function Nodes {
@@ -254,7 +255,7 @@ try {
     Choose-Filter 2 '全部模型'
     Refresh
     Wait-Total 170
-    Wait-Text '未公开价格的 Token： 50'
+    Wait-Text '未能计价的 Token： 50'
     Choose-Filter 2 'unpublished-fixture-7142'
     Wait-Total 50
     Choose-Filter 2 '全部模型'
@@ -284,7 +285,7 @@ try {
     Refresh
     Wait-Total 150
     Wait-Text $warning
-    Wait-Text '未公开价格的 Token： 5'
+    Wait-Text '未能计价的 Token： 5'
     Write-Imports 'clear'
     Refresh
     Wait-Total 120

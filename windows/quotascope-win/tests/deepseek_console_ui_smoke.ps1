@@ -79,6 +79,7 @@ $info.UseShellExecute = $false
 $info.Environment['APPDATA'] = Join-Path $profile 'appdata'
 $info.Environment['LOCALAPPDATA'] = $local
 $info.Environment['USERPROFILE'] = Join-Path $profile 'home'
+$info.Environment['HERMES_HOME']=Join-Path ($info.Environment['USERPROFILE']) '.hermes'
 $info.Environment['QUOTASCOPE_TEST_INSTANCE'] = $testId
 $testApp = [Diagnostics.Process]::Start($info)
 function Get-Nodes {

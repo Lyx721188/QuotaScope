@@ -39,6 +39,7 @@ $info.UseShellExecute=$false
 $info.Environment['APPDATA']=Join-Path $fixtureProfile 'appdata'
 $info.Environment['LOCALAPPDATA']=Join-Path $fixtureProfile 'local'
 $info.Environment['USERPROFILE']=$fixtureHome
+$info.Environment['HERMES_HOME']=Join-Path ($info.Environment['USERPROFILE']) '.hermes'
 $info.Environment['QUOTASCOPE_TEST_INSTANCE']=$testId
 foreach($key in @('GEMINI_CLI_HOME','JCODE_HOME','XDG_DATA_HOME','REASONIX_STATE_HOME','REASONIX_HOME','LM_STUDIO_HOME','SENPI_CODING_AGENT_DIR','SENPI_CODING_AGENT_SESSION_DIR','KIMCHI_CODING_AGENT_DIR','GJC_CODING_AGENT_DIR','GJC_CONFIG_DIR','PI_CONFIG_DIR','CODEBUFF_DATA_DIR')) { [void]$info.Environment.Remove($key) }
 $testApp=[Diagnostics.Process]::Start($info)

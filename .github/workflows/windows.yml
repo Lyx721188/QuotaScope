@@ -164,6 +164,7 @@ jobs:
           $evidence = 'target/token-ui-validation'
           ./quotascope-win/tests/dsh_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
           ./quotascope-win/tests/zcode_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
+          ./quotascope-win/tests/hermes_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
           ./quotascope-win/tests/codex_signals_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
           ./quotascope-win/tests/service_status_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
 

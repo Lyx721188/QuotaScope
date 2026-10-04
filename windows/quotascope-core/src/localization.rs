@@ -242,7 +242,7 @@ const TABLE: &[Entry] = &[
     Entry { key: "Order", en: "Order", zh: "排序方向" },
     Entry { key: "Descending", en: "Descending", zh: "降序" },
     Entry { key: "Ascending", en: "Ascending", zh: "升序" },
-    Entry { key: "Tokens without public prices:", en: "Tokens without public prices:", zh: "未公开价格的 Token：" },
+    Entry { key: "Tokens without public prices:", en: "Unpriced tokens:", zh: "未能计价的 Token：" },
     Entry { key: "Tokens without a kind breakdown:", en: "Tokens without a kind breakdown:", zh: "缺少类型明细的 Token：" },
     Entry { key: "Cache hit rate", en: "Cache hit rate", zh: "缓存命中率" },
     Entry { key: "No measured token records in this range.", en: "No measured token records in this range.", zh: "此范围内没有实测 Token 记录。" },

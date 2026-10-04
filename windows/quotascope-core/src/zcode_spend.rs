@@ -2,20 +2,17 @@
 //! Input includes cache and output includes reasoning. Database defaults alone
 //! do not prove that a provider reported a count.
 use crate::ledger::{TokenTally, UsageLedger};
+use crate::sqlite_snapshot::{wal_index_head, Stamp};
 use rusqlite::{limits::Limit, Connection, OpenFlags};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 const MAX_COUNTER: i64 = 1_000_000_000_000;
 const MAX_ROWS: usize = 100_000;
 const MAX_BUCKET_BYTES: usize = 8 * 1024 * 1024;
-const MAX_DATABASE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_WAL_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_USAGE_BYTES: usize = 4096;
 const MAX_SECONDS: u64 = 4;
 const ALGORITHM: &str = "zcode-sqlite-v1";
@@ -134,128 +131,6 @@ fn parse(record: Record) -> Option<Parsed> {
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileStamp {
-    size: u64,
-    modified: SystemTime,
-    created: Option<SystemTime>,
-    identity: Option<(u64, u64)>,
-    signature: [u8; 32],
-}
-
-impl FileStamp {
-    fn of<const HEADER_BYTES: usize>(path: &Path) -> Option<Self> {
-        let meta = std::fs::symlink_metadata(path).ok()?;
-        if !meta.is_file() || meta.file_type().is_symlink() {
-            return None;
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            if meta.file_attributes() & 0x400 != 0 {
-                return None;
-            }
-        }
-        let mut file = std::fs::File::open(path).ok()?;
-        let meta = file.metadata().ok()?;
-        // Only SQLite's fixed header belongs in this cache signature. Never
-        // sample arbitrary database pages or WAL frame payloads at the tail.
-        let mut header = [0; HEADER_BYTES];
-        let length = meta.len().min(HEADER_BYTES as u64) as usize;
-        file.read_exact(&mut header[..length]).ok()?;
-        let mut hash = Sha256::new();
-        hash.update(&header[..length]);
-        Some(Self {
-            size: meta.len(),
-            modified: meta.modified().ok()?,
-            created: meta.created().ok(),
-            identity: file_identity(&file, &meta),
-            signature: hash.finalize().into(),
-        })
-    }
-}
-
-fn file_identity(_file: &std::fs::File, _metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::Storage::FileSystem::{
-            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-        };
-        let mut info = BY_HANDLE_FILE_INFORMATION::default();
-        unsafe { GetFileInformationByHandle(HANDLE(_file.as_raw_handle()), &mut info) }.ok()?;
-        Some((
-            u64::from(info.dwVolumeSerialNumber),
-            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
-        ))
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some((_metadata.dev(), _metadata.ino()))
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        None
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Stamp {
-    database: FileStamp,
-    wal: Option<FileStamp>,
-}
-
-impl Stamp {
-    fn of(path: &Path) -> Option<Self> {
-        let database = FileStamp::of::<100>(path)?;
-        let wal_path = path.with_file_name(format!("{}-wal", path.file_name()?.to_str()?));
-        let wal = if wal_path.try_exists().ok()? {
-            // A read-only SQLite connection may create an empty WAL sidecar.
-            // It carries no frames; treat it as absent so that merely opening
-            // a WAL-mode database does not manufacture a data-change gap.
-            Some(FileStamp::of::<32>(&wal_path)?).filter(|wal| wal.size != 0)
-        } else {
-            None
-        };
-        if database.size > MAX_DATABASE_BYTES || wal.is_some_and(|m| m.size > MAX_WAL_BYTES) {
-            return None;
-        }
-        Some(Self { database, wal })
-    }
-}
-
-/// The first two 48-byte copies in SQLite's standard WAL index contain the
-/// commit counter and last committed frame checksum. The following read marks
-/// and locks are volatile reader state and must not invalidate cached counts.
-fn wal_index_head(path: &Path) -> Option<[u8; 48]> {
-    let path = path.with_file_name(format!("{}-shm", path.file_name()?.to_str()?));
-    let meta = std::fs::symlink_metadata(&path).ok()?;
-    if !meta.is_file() || meta.file_type().is_symlink() {
-        return None;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if meta.file_attributes() & 0x400 != 0 {
-            return None;
-        }
-    }
-    let mut header = [0_u8; 96];
-    std::fs::File::open(path)
-        .ok()?
-        .read_exact(&mut header)
-        .ok()?;
-    if header[..48] != header[48..]
-        || header[12] != 1
-        || u32::from_ne_bytes(header[..4].try_into().ok()?) != 3_007_000
-    {
-        return None;
-    }
-    header[..48].try_into().ok()
-}
-
 struct Kept {
     path: PathBuf,
     stamp: Stamp,
@@ -318,11 +193,11 @@ impl Reader {
         let stamp = Stamp::of(path);
         let wal_head = stamp
             .as_ref()
-            .filter(|s| s.wal.is_some())
+            .filter(|s| s.has_wal())
             .and_then(|_| wal_index_head(path));
         let can_cache = stamp
             .as_ref()
-            .is_some_and(|s| s.wal.is_none() || wal_head.is_some());
+            .is_some_and(|s| !s.has_wal() || wal_head.is_some());
         let offset = chrono::Local::now().offset().local_minus_utc();
         let generation = {
             let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
@@ -353,7 +228,7 @@ impl Reader {
             && Stamp::of(path) == stamp
             && (wal_head.is_none() || wal_index_head(path) == wal_head)
         {
-            if let Some(stamp) = stamp.filter(|s| s.database.identity.is_some()) {
+            if let Some(stamp) = stamp.filter(|s| s.has_identity()) {
                 let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
                 if memory.generation == generation && crate::scan::checkpoint() {
                     memory.kept = Some(Kept {
@@ -415,7 +290,7 @@ fn read_limited(path: &Path, maximum_rows: usize) -> Report {
         report.partial = path.try_exists().unwrap_or(true);
         return report;
     };
-    let wal_before = before.wal.as_ref().and_then(|_| wal_index_head(path));
+    let wal_before = before.has_wal().then(|| wal_index_head(path)).flatten();
     if !crate::scan::checkpoint() {
         report.partial = true;
         return report;

@@ -349,7 +349,10 @@ impl Snapshot {
                 };
                 if span.contains(at.date_naive(), today) {
                     let tokens = model
-                        .map(|m| slot.models.get(m).map(TokenTally::total).unwrap_or(0))
+                        .map(|m| {
+                            slot.models.get(m).map(TokenTally::total).unwrap_or(0)
+                                + slot.unclassified_models.get(m).copied().unwrap_or(0)
+                        })
                         .unwrap_or(slot.tokens);
                     let hour = at.hour() as usize;
                     hours[hour] = hours[hour].saturating_add(tokens);
@@ -421,7 +424,11 @@ impl Snapshot {
                         tally,
                         costs: costs.unwrap_or_default(),
                         cost: costs.map(|c| c.total()).unwrap_or_default(),
-                        unpriced: if costs.is_none() { *tokens } else { 0 },
+                        unpriced: if costs.is_none() {
+                            *tokens
+                        } else {
+                            (*tokens - tally.total()).max(0)
+                        },
                         unclassified: (*tokens - tally.total()).max(0),
                     };
                     if model.is_some() {

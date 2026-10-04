@@ -292,6 +292,7 @@ mod tests {
             cost: total,
             unpriced_tokens: 0,
             models: tallies,
+            unclassified_models: BTreeMap::new(),
             costs,
         }
     }

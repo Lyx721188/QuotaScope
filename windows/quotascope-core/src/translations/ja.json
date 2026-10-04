@@ -823,5 +823,6 @@
   "Some status history couldn't be read. Current component states are kept; no uptime is estimated.": "状態履歴の一部を読み込めませんでした。現在の状態は保持し、稼働率は推定しません。",
   "No status history data.": "状態履歴のデータがありません。",
   "Official uptime: {value}%": "公式の稼働率：{value}%",
-  "No data": "データなし"
+  "No data": "データなし",
+  "Tokens without public prices:": "価格を計算できないトークン："
 }

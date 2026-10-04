@@ -40,6 +40,7 @@ $info.UseShellExecute = $false
 $info.Environment['APPDATA'] = Join-Path $profile 'appdata'
 $info.Environment['LOCALAPPDATA'] = Join-Path $profile 'local'
 $info.Environment['USERPROFILE'] = $fixtureHome
+$info.Environment['HERMES_HOME']=Join-Path ($info.Environment['USERPROFILE']) '.hermes'
 $info.Environment['QUOTASCOPE_TEST_INSTANCE'] = $testId
 # Remove inherited source-directory overrides so this run stays isolated.
 foreach ($key in @('GEMINI_CLI_HOME','JCODE_HOME','XDG_DATA_HOME','REASONIX_STATE_HOME','REASONIX_HOME','LM_STUDIO_HOME','SENPI_CODING_AGENT_DIR','SENPI_CODING_AGENT_SESSION_DIR','KIMCHI_CODING_AGENT_DIR','GJC_CODING_AGENT_DIR','GJC_CONFIG_DIR','PI_CONFIG_DIR','CODEBUFF_DATA_DIR')) { [void]$info.Environment.Remove($key) }

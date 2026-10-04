@@ -146,6 +146,8 @@ pub struct Slot {
     /// The quarter-hour's tokens split by raw model id, where the reader kept
     /// them.
     pub models: BTreeMap<String, TokenTally>,
+    /// Measured tokens whose billing kind is unknown, retaining their model.
+    pub unclassified_models: BTreeMap<String, i64>,
     /// The same split in money: what each model contributed to `cost`. These
     /// sum to `cost`, and a model with no published rate is absent from it
     /// exactly as its tokens are absent from `cost`. A window scoped to one
@@ -1627,12 +1629,52 @@ pub fn priced(
     price_buckets(buckets, prices, vendor, crate::scan::checkpoint)
 }
 
+/// Price only classified token kinds while retaining independently known
+/// totals by their actual model. Unknown token kinds never become fresh input.
+pub(crate) fn priced_with_unclassified(
+    buckets: &BTreeMap<String, BTreeMap<String, TokenTally>>,
+    unclassified: &BTreeMap<String, BTreeMap<String, i64>>,
+    prices: &BTreeMap<String, ModelPrice>,
+) -> UsageLedger {
+    let mut all = buckets.clone();
+    for (slot, models) in unclassified {
+        if !crate::scan::checkpoint() {
+            return UsageLedger::empty();
+        }
+        for (model, count) in models {
+            if *count > 0 {
+                all.entry(slot.clone())
+                    .or_default()
+                    .entry(model.clone())
+                    .or_default();
+            }
+        }
+    }
+    price_buckets_extended(
+        &all,
+        prices,
+        None,
+        Some(unclassified),
+        crate::scan::checkpoint,
+    )
+}
+
 // The callback lets regression tests cancel during date expansion without
 // timing a background thread or depending on the machine's speed.
 fn price_buckets(
     buckets: &BTreeMap<String, BTreeMap<String, TokenTally>>,
     prices: &BTreeMap<String, ModelPrice>,
     vendor: Option<&str>,
+    keep_reading: impl FnMut() -> bool,
+) -> UsageLedger {
+    price_buckets_extended(buckets, prices, vendor, None, keep_reading)
+}
+
+fn price_buckets_extended(
+    buckets: &BTreeMap<String, BTreeMap<String, TokenTally>>,
+    prices: &BTreeMap<String, ModelPrice>,
+    vendor: Option<&str>,
+    unclassified: Option<&BTreeMap<String, BTreeMap<String, i64>>>,
     mut keep_reading: impl FnMut() -> bool,
 ) -> UsageLedger {
     if !keep_reading() || buckets.is_empty() {
@@ -1672,12 +1714,20 @@ fn price_buckets(
             if !keep_reading() {
                 return UsageLedger::empty();
             }
-            tokens += tally.total();
+            let unknown = unclassified
+                .and_then(|slots| slots.get(key))
+                .and_then(|models| models.get(model))
+                .copied()
+                .unwrap_or(0)
+                .max(0);
+            let measured = tally.total() + unknown;
+            tokens += measured;
+            unpriced_tokens += unknown;
             *day_models
                 .entry(day)
                 .or_default()
                 .entry(model.clone())
-                .or_insert(0) += tally.total();
+                .or_insert(0) += measured;
             *day_model_tallies
                 .entry(day)
                 .or_default()
@@ -1710,6 +1760,10 @@ fn price_buckets(
             cost,
             unpriced_tokens,
             models: models.clone(),
+            unclassified_models: unclassified
+                .and_then(|s| s.get(key))
+                .cloned()
+                .unwrap_or_default(),
             costs,
         });
 
@@ -1815,6 +1869,7 @@ pub fn release_expired_memory(enabled: bool) {
         expire_memory(&mut cache, Instant::now(), enabled);
     }
     crate::zcode_spend::release_memory(enabled);
+    crate::hermes_spend::release_memory(enabled);
 }
 
 /// Manual refresh runs this on the scan worker, never on the UI thread.
@@ -1831,6 +1886,7 @@ pub fn clear_statistics_cache() -> crate::statistics_cache::Cleanup {
     let mut cache = MEMORY.lock().unwrap_or_else(|e| e.into_inner());
     *cache = None;
     crate::zcode_spend::clear_memory();
+    crate::hermes_spend::clear_memory();
     crate::statistics_cache::clear_disk()
 }
 
@@ -7120,6 +7176,74 @@ mod tests {
         assert_eq!(
             marker.get("turn").and_then(serde_json::Value::as_bool),
             Some(true)
+        );
+    }
+    #[test]
+    fn unclassified_counts_retain_model_and_calendar_without_inventing_price_or_cache() {
+        let at = crate::timeutil::now_ms();
+        let key = slot_key_from_ms(at);
+        let buckets = BTreeMap::from([(
+            key.clone(),
+            BTreeMap::from([(
+                "known".into(),
+                TokenTally {
+                    output: 20,
+                    ..TokenTally::default()
+                },
+            )]),
+        )]);
+        let unknown = BTreeMap::from([(
+            key,
+            BTreeMap::from([("known".into(), 100), ("input-only".into(), 30)]),
+        )]);
+        let prices = BTreeMap::from([(
+            "known".into(),
+            ModelPrice {
+                input: 1.0,
+                output: 2.0,
+                cache_read: None,
+                cache_write: None,
+                name: None,
+            },
+        )]);
+        let ledger = priced_with_unclassified(&buckets, &unknown, &prices);
+        let day = ledger.days.iter().find(|d| d.tokens > 0).unwrap();
+        assert_eq!(day.tokens, 150);
+        assert_eq!(day.models["known"], 120);
+        assert_eq!(day.models["input-only"], 30);
+        assert_eq!(day.tally.total(), 20);
+        assert_eq!(day.unpriced_tokens, 130);
+        assert!((day.cost - 0.00004).abs() < 1e-12);
+        assert_eq!(ledger.slots[0].tokens, 150);
+        assert_eq!(ledger.cache_hit_rate_calendar(1, day.date), None);
+        let date = day.date;
+        let snapshot = crate::spend::Snapshot {
+            sources: vec![crate::spend::Source {
+                id: "hermes".into(),
+                title: "Hermes".into(),
+                location: String::new(),
+                present: true,
+                ledger,
+            }],
+        };
+        let summary = snapshot.analyze(
+            crate::spend::Span::All,
+            date,
+            Some("hermes"),
+            Some("known"),
+            crate::spend::Group::Models,
+            crate::spend::Sort::Tokens,
+            true,
+        );
+        assert_eq!(summary.total.tokens, 120);
+        assert_eq!(summary.total.unclassified, 100);
+        assert_eq!(summary.total.unpriced, 100);
+        assert_eq!(
+            snapshot
+                .hourly(crate::spend::Span::All, Some("hermes"), Some("known"), date)
+                .iter()
+                .sum::<i64>(),
+            120
         );
     }
 }

@@ -8,6 +8,11 @@ fixtures preserve only public page data from Pulse's 2026-10-04 captures.
 Source: <https://github.com/qunqin24/Pulse>. Windows adds bounded reads,
 shared request cooldown and an independent tray-notification setting.
 
+The Hermes cumulative-session reader adapts `Sources/Pulse/Usage/Readers/HermesReader.swift`
+from the same Pulse 1.7.2 commit, Copyright (c) 2026 qunqin24, Apache-2.0.
+Windows adds bounded read-only SQLite snapshots, strict counters, named-profile
+discovery and memory-only cache invalidation.
+
 The Kiro Windows provider and ACP handshake are adapted from Pulse by
 qunqin24, Copyright (c) 2026 qunqin24, under Apache License 2.0:
 `Sources/Pulse/Providers/KiroUsageService.swift` and `KiroACPClient.swift` at

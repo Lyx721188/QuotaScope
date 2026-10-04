@@ -34,7 +34,7 @@ OpenAI 按本机自然日展示含今天的 91 天，DeepSeek 展示 90 天；�
 
 ## 验证
 
-历史批次本地整仓 807 passed / 6 ignored，fmt 与普通 Clippy 通过（233 项已有诊断，无新增）。隔离 Debug UI 的独立开关、禁用服务商不请求、失败不显示正常、三家区域、手动重试、离页和关闭重开已通过。先前当前状态批次的 [3f96e89 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37210111588) 成功，服务状态与 DSH、ZCode、账户 UI 均使用同一 portable Release 程序；历史批次的 Release CI 仍待独立核对。
+历史批次本地整仓 807 passed / 6 ignored，fmt 与普通 Clippy 通过（233 项已有诊断，无新增）。隔离 Debug UI 的独立开关、禁用服务商不请求、失败不显示正常、三家区域、手动重试、离页和关闭重开已通过。先前当前状态批次的 [3f96e89 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37210111588) 成功，服务状态与 DSH、ZCode、账户 UI 均使用同一 portable Release 程序；[历史批次 edae9e6 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37212105208) 已通过，四份 UI 验收使用同一实际 portable Release 程序。
 
 纯解析与通知回归覆盖公开冻结页面、Codex 分组、组件顺序和隐藏规则、Flight 跨块拼接、未知状态、超限与重复 ID、故障／恶化／改善／恢复、关闭开关、组件移除、独立账户去重和磁盘重启去重。合成 UI 脚本使用隔离 profile 与拒绝外连的回环代理，覆盖失败提示、手动重试、独立开关、离页和关闭重开。
 

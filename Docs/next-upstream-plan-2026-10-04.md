@@ -2,13 +2,15 @@
 
 更新日期：2026-10-04（Asia/Shanghai）。本页记录公开开发计划、已实现行为和验收边界。功能状态见[移植进度](upstream-implementation-status.md)，具体任务见[发布验收与下一轮实施任务](release-acceptance-2026-10-04.md)。
 
-第二轮已重新拉取上游，新增参考为 Pulse 1.7.2 `b570dd7`。优先补用户可直接使用的上游功能：三家官方服务状态与独立故障通知、官网历史状态条、原生 Token 来源，再继续账户与 Windows 体验；缓存字段缺省的完整性契约仍保留为数据正确性任务。当前状态和通知的实现范围见[说明](providers/windows-service-status.md)，历史条与官网可用率已通过本地验证，Release CI 待核对。
+第二轮已重新拉取上游，新增参考为 Pulse 1.7.2 `b570dd7`。优先补用户可直接使用的上游功能：三家官方服务状态与独立故障通知、官网历史状态条、原生 Token 来源，再继续账户与 Windows 体验；缓存字段缺省的完整性契约仍保留为数据正确性任务。当前状态和通知的实现范围见[说明](providers/windows-service-status.md)，历史条与官网可用率已通过本地验证及 [edae9e6 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37212105208)。
 
 上一轮收尾已核对：main `bd1f19d` 的整仓 780 passed / 6 ignored；[对应 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37200397474) 成功，同一 portable Release 程序的 DSH、ZCode 和账户 UI 均通过。公开版本仍为 1.3.1。
 
 代码基线：N1/N2/N3/N4a 已随 `3c69d2f` 汇总到 main；R1 自动化和文档改动位于 `ef9292d`。已发布版本仍为 `windows-v1.3.1`，main 的新增功能列在 CHANGELOG 的 Unreleased 中。早期任务参考 Pulse `3696a65`，当前新增移植参考上方 Pulse 1.7.2；后续上游变化需另行比较。
 
 原生会话发现已增加 64 层、10 万目录项、1 万 JSONL 和 8 MiB 估计路径容量上限，缺口每次重新核对。新增 7 项定向与整仓 773 passed / 6 ignored、fmt/普通 Clippy（无新增告警）通过；账户深层目录提示/修复与 40 万行（68,800,061 字节）的流式、续读、暖缓存、筛选及取消 Debug UI 通过。三个脚本使用相同程序；[34a454d 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37199456283) 已通过，三份 UI 使用同一 Release 程序。Claude 原生整数/文件容量/原子回复状态及缓存 6 已实现，新增 7 项回归、整仓 780 passed / 6 ignored、fmt/普通 Clippy（无新增告警）、扩展 Token Debug UI 的 150 Token 保留/提示/修复/筛选/新缓存/重开通过；[bd1f19d 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37200397474) 已通过。规则见 [Claude 本机计数](providers/windows-claude-local-counts.md)。缓存字段缺省的完整性仍需独立设计。规则见[原生会话发现](providers/windows-native-transcript-discovery.md)。
+
+Hermes 已从仅标准导入升级为原生 SQLite 会话／模型／profile 读取，计数、覆盖与缓存规则见[说明](providers/windows-hermes-local-usage.md)。本地整仓 821 passed / 6 ignored、普通 Clippy 无新增及隔离 Debug Token 页通过，Release CI 待核对。
 
 ## 1. 已完成的功能
 
@@ -21,7 +23,7 @@
 | N4b ZCode | 固定 SQLite `model_usage` 的归一化计数、只读 WAL 快照、有界扫描与内存缓存 | 18 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；[格式与边界](providers/windows-zcode-local-usage.md) |
 | R1 自动验收 | ZIP 携带许可证；CI 使用同一 Release payload 执行独立身份安装、托盘/设置生命周期和卸载 | [ef9292d 的 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671) 成功；[dcaa37c 的 CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37184221991) 另通过 DSH/ZCode Release Token 页；不覆盖原 AppId 升级、真实账户或多 DPI 人工验收 |
 
-Windows 路由表有 77 项。Token 目录有 54 项，其中 35 项读取已知格式（含导出缓存），19 项只支持标准导入；ZCode 现在读取原生 SQLite 用量。目录注册不代表原生格式支持，Kiro 额度 ACP 支持也不代表其本地 Token 格式已支持。
+Windows 路由表有 77 项。Token 目录有 54 项，其中 36 项读取已知格式（含导出缓存），18 项只支持标准导入；ZCode 现在读取原生 SQLite 用量。目录注册不代表原生格式支持，Kiro 额度 ACP 支持也不代表其本地 Token 格式已支持。
 
 ## 2. 必须保留的行为
 

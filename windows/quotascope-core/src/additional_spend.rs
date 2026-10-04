@@ -199,6 +199,7 @@ pub fn native_supported(id: &str) -> bool {
             | "cline"
             | "dsh"
             | "zcode"
+            | "hermes"
             | "antigravity"
             | "hindsight"
             | "cursor"
@@ -206,8 +207,16 @@ pub fn native_supported(id: &str) -> bool {
 }
 
 pub fn roots(id: &str, relative: &str) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if !relative.is_empty() {
+    let mut paths = if id == "hermes" {
+        crate::hermes_spend::roots(
+            &crate::home_dir(),
+            std::env::var_os("HERMES_HOME").map(PathBuf::from),
+            std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+        )
+    } else {
+        Vec::new()
+    };
+    if id != "hermes" && !relative.is_empty() {
         paths.push(crate::home_dir().join(relative));
     }
     let roaming = std::env::var_os("APPDATA")
@@ -258,6 +267,7 @@ pub fn roots(id: &str, relative: &str) -> Vec<PathBuf> {
 struct Reader {
     buckets: BTreeMap<String, BTreeMap<String, TokenTally>>,
     ids: HashMap<String, (String, String, TokenTally)>,
+    unclassified: BTreeMap<String, BTreeMap<String, i64>>,
     partial: bool,
 }
 impl Reader {
@@ -314,13 +324,23 @@ fn price_source(
     reader: Reader,
     prices: &BTreeMap<String, crate::model_prices::ModelPrice>,
 ) -> UsageLedger {
-    let mut ledger = crate::ledger::priced(&reader.buckets, prices, None);
+    let mut ledger = if reader.unclassified.is_empty() {
+        crate::ledger::priced(&reader.buckets, prices, None)
+    } else {
+        crate::ledger::priced_with_unclassified(&reader.buckets, &reader.unclassified, prices)
+    };
     ledger.has_partial_records = reader.partial;
     ledger
 }
 
 fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
     let mut reader = Reader::default();
+    if id == "hermes" {
+        let report = crate::hermes_spend::read_paths(paths);
+        reader.buckets = report.buckets;
+        reader.unclassified = report.unclassified;
+        reader.partial = report.partial;
+    }
     let mut files = Vec::new();
     let mut seen_paths = HashSet::new();
     let mut import_files = Vec::new();
@@ -368,6 +388,9 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
                     reader.partial = true;
                 }
             }
+            continue;
+        }
+        if id == "hermes" {
             continue;
         }
         if !native_supported(id) {

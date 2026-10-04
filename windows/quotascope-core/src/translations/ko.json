@@ -823,5 +823,6 @@
   "Some status history couldn't be read. Current component states are kept; no uptime is estimated.": "일부 상태 기록을 읽을 수 없습니다. 확인된 현재 상태는 유지하며 가동률은 추정하지 않습니다.",
   "No status history data.": "상태 기록 데이터가 없습니다.",
   "Official uptime: {value}%": "공식 가동률: {value}%",
-  "No data": "데이터 없음"
+  "No data": "데이터 없음",
+  "Tokens without public prices:": "가격을 계산할 수 없는 토큰:"
 }

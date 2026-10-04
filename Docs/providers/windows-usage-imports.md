@@ -18,7 +18,7 @@ main 支持 `quotascope.usage.v1`，供尚无原生读取器的来源或独立�
 | `commandcode` | Command Code |
 | `opencodereview` | OpenCodeReview |
 | `zcode` | ZCode |
-| `hermes` | Hermes |
+| `hermes` | Hermes；另有[原生 SQLite 读取](windows-hermes-local-usage.md) |
 | `goose` | Goose |
 | `zed` | Zed |
 | `kiro` | Kiro |
