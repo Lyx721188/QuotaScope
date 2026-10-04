@@ -1,4 +1,4 @@
-# Isolated Token page: native SQLite, retries, missing usage, replacement and reopen.
+# Isolated Token page: SQLite/imports and Claude counter repair, replacement and reopen.
 param([Parameter(Mandatory=$true)][string]$Executable,[string]$Python='python',[string]$OutputDirectory='target/release-acceptance-20261004')
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -312,6 +312,26 @@ try {
     Write-Imports 'clear'
     Refresh
     Wait-Total 120
+    $claudePath=Join-Path $fixtureHome '.claude/projects/fixture/session.jsonl'
+    New-Item -ItemType Directory -Path (Split-Path $claudePath) -Force | Out-Null
+    $claudeGood=@{type='assistant';timestamp=[DateTime]::UtcNow.ToString('o');message=@{id='one';model='fixture-zcode';usage=@{input_tokens=100;output_tokens=50;cache_creation_input_tokens=0;cache_read_input_tokens=0}}}|ConvertTo-Json -Depth 5 -Compress
+    $claudeBad=@{type='assistant';timestamp=[DateTime]::UtcNow.ToString('o');message=@{id='one';model='fixture-zcode';usage=@{input_tokens=-1;output_tokens=1000}}}|ConvertTo-Json -Depth 5 -Compress
+    [IO.File]::WriteAllText($claudePath,$claudeGood+"`n"+$claudeBad+"`n",[Text.UTF8Encoding]::new($false))
+    Refresh
+    Wait-Total 120
+    Wait-Text $warning -Absent
+    Agent 'Claude Code'
+    Wait-Total 150
+    $claudeWarning='这些来源的本机记录不完整：Claude Code。总量只覆盖可读取的计数。'
+    Wait-Text $claudeWarning
+    $claudeCache=Join-Path $data 'ledger-6-claudeCode.json'
+    if(-not (Test-Path -LiteralPath $claudeCache -PathType Leaf)){throw 'New Claude counter cache missing'}
+    [IO.File]::WriteAllText($claudePath,$claudeGood+"`n",[Text.UTF8Encoding]::new($false))
+    Refresh
+    Wait-Total 150
+    Wait-Text $claudeWarning -Absent
+    Agent 'ZCode'
+    Wait-Total 120
     $window.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
     Start-Sleep -Milliseconds 200
     if($testApp.HasExited){throw 'App exited on Settings close'}
@@ -329,7 +349,7 @@ try {
     Agent 'ZCode'
     Wait-Total 120
     Wait-Text $warning -Absent
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;StandardImportCounters=$true;ZeroSnapshotReplacesUsage=$true;UnknownImportModelUnpriced=$true;StreamedJsonArrayAndRepair=$true;WideCalendarAndFutureFiltering=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;StandardImportCounters=$true;ZeroSnapshotReplacesUsage=$true;UnknownImportModelUnpriced=$true;StreamedJsonArrayAndRepair=$true;WideCalendarAndFutureFiltering=$true;ClaudeNativeCounterWarningAndRepair=$true;ClaudeCacheName='ledger-6-claudeCode.json';SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
 } catch {
     $originalError=$_
     try {if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $OutputDirectory 'zcode-ui-failure.json')}}catch{}

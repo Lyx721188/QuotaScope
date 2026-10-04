@@ -470,23 +470,39 @@ fn text_in(message: Option<&serde_json::Value>) -> Option<String> {
     None
 }
 
-/// JSON numbers arrive as integers or floats depending on what the CLI wrote;
-/// both are the same count. Truncation towards zero matches the Swift port.
-fn int(value: Option<&serde_json::Value>) -> i64 {
-    match value {
-        Some(v) => v
-            .as_i64()
-            .or_else(|| v.as_u64().map(|u| u as i64))
-            .or_else(|| v.as_f64().map(|f| f as i64))
-            .unwrap_or(0),
-        None => 0,
-    }
-}
-
 /// Cheap substring test, so only the handful of lines that can carry counts
 /// are handed to the JSON parser.
 fn contains(line: &str, needle: &str) -> bool {
     line.contains(needle)
+}
+
+// Per-message and per-file field capacity, not a provider allowance.
+const MAX_CLAUDE_COUNTER: i64 = 1_000_000_000_000;
+
+fn claude_tally(usage: &serde_json::Value) -> Option<TokenTally> {
+    let usage = usage.as_object()?;
+    let counter = |name: &str, optional| match usage.get(name) {
+        None if optional => Some(0),
+        value => value
+            .and_then(serde_json::Value::as_i64)
+            .filter(|n| (0..=MAX_CLAUDE_COUNTER).contains(n)),
+    };
+    Some(TokenTally {
+        input: counter("input_tokens", false)?,
+        cache_write: counter("cache_creation_input_tokens", true)?,
+        cache_read: counter("cache_read_input_tokens", true)?,
+        output: counter("output_tokens", false)?,
+    })
+}
+
+fn claude_file_sum(total: TokenTally, delta: TokenTally) -> Option<TokenTally> {
+    let add = |a: i64, b: i64| a.checked_add(b).filter(|n| *n <= MAX_CLAUDE_COUNTER);
+    Some(TokenTally {
+        input: add(total.input, delta.input)?,
+        cache_write: add(total.cache_write, delta.cache_write)?,
+        cache_read: add(total.cache_read, delta.cache_read)?,
+        output: add(total.output, delta.output)?,
+    })
 }
 
 /// Claude Code writes one JSON object per message, each assistant reply
@@ -498,6 +514,7 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
     // Keep field-wise maxima within this file. Cross-file deduplication is
     // deliberately not part of this parser.
     let mut replies: HashMap<String, (String, String, TokenTally)> = HashMap::new();
+    let mut total = TokenTally::default();
 
     for line in lines {
         if !crate::scan::checkpoint() {
@@ -547,6 +564,7 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
             continue;
         }
         let Ok(root) = serde_json::from_str::<serde_json::Value>(&line) else {
+            scanned.partial = true;
             continue;
         };
         let Some(message) = root.get("message") else {
@@ -570,11 +588,9 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
             continue;
         };
 
-        let mut tally = TokenTally {
-            input: int(usage.get("input_tokens")).max(0),
-            cache_write: int(usage.get("cache_creation_input_tokens")).max(0),
-            cache_read: int(usage.get("cache_read_input_tokens")).max(0),
-            output: int(usage.get("output_tokens")).max(0),
+        let Some(mut tally) = claude_tally(usage) else {
+            scanned.partial = true;
+            continue;
         };
         if tally.total() <= 0 {
             continue;
@@ -582,17 +598,20 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
 
         let mut key = slot_key_from_ms(at_ms);
         let mut model = model.to_string();
+        let mut updated_reply = None;
         if let Some(id) = message
             .get("id")
             .and_then(|i| i.as_str())
             .filter(|id| !id.is_empty())
         {
-            let reply = replies
-                .entry(id.to_string())
-                .or_insert_with(|| (key.clone(), model.clone(), TokenTally::default()));
-            key = reply.0.clone();
-            model = reply.1.clone();
-            let previous = reply.2;
+            let previous = match replies.get(id) {
+                Some(reply) => {
+                    key = reply.0.clone();
+                    model = reply.1.clone();
+                    reply.2
+                }
+                None => TokenTally::default(),
+            };
             let merged = TokenTally {
                 input: previous.input.max(tally.input),
                 cache_write: previous.cache_write.max(tally.cache_write),
@@ -605,8 +624,18 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
                 cache_read: merged.cache_read - previous.cache_read,
                 output: merged.output - previous.output,
             };
-            reply.2 = merged;
+            updated_reply = Some((id.to_owned(), merged));
         }
+        let Some(next_total) = claude_file_sum(total, tally) else {
+            scanned.partial = true;
+            continue;
+        };
+        // Commit the reply maxima only after its increment fits. A rejected
+        // snapshot must not poison the baseline for a later valid record.
+        if let Some((id, merged)) = updated_reply {
+            replies.insert(id, (key.clone(), model.clone(), merged));
+        }
+        total = next_total;
         *days.entry(key).or_default().entry(model).or_default() += tally;
     }
 
@@ -851,7 +880,11 @@ impl FileCache {
 }
 
 fn ledger_cache_name(provider: Provider) -> String {
-    let version = 5;
+    let version = if provider == Provider::ClaudeCode {
+        6
+    } else {
+        5
+    };
     format!("ledger-{version}-{}.json", provider.raw())
 }
 
@@ -5849,6 +5882,189 @@ mod tests {
         format!(
             r#"{{"type":"assistant","timestamp":"{at}","message":{{"id":"{id}","model":"{model}","usage":{{"input_tokens":{input},"cache_creation_input_tokens":{cache_write},"cache_read_input_tokens":{cache_read},"output_tokens":{output}}}}}}}"#
         )
+    }
+
+    #[test]
+    fn claude_native_extreme_counters_are_partial_without_panicking() {
+        let line = claude_line(
+            "fixture",
+            i64::MAX,
+            i64::MAX,
+            i64::MAX,
+            i64::MAX,
+            "2026-10-04T09:00:00Z",
+            "bad",
+        );
+        let scan = parse_claude_code(std::iter::once(line));
+        assert!(scan.days.is_empty() && scan.partial);
+    }
+
+    #[test]
+    fn claude_native_invalid_counters_preserve_valid_reply_maxima() {
+        let first = claude_line("fixture", 100, 0, 0, 50, "2026-10-04T09:00:00Z", "one");
+        let last = claude_line("fixture", 200, 0, 0, 100, "2026-10-04T09:01:00Z", "one");
+        for field in [
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ] {
+            for value in [
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("10"),
+                serde_json::Value::Null,
+                serde_json::json!(1_000_000_000_001i64),
+                serde_json::json!(u64::MAX),
+            ] {
+                let mut row: serde_json::Value = serde_json::from_str(&claude_line(
+                    "fixture",
+                    150,
+                    0,
+                    0,
+                    1000,
+                    "2026-10-04T09:00:30Z",
+                    "one",
+                ))
+                .unwrap();
+                row["message"]["usage"][field] = value;
+                let scan =
+                    parse_claude_code([first.clone(), row.to_string(), last.clone()].into_iter());
+                assert!(scan.partial, "{field}");
+                assert_eq!(
+                    scan.days
+                        .values()
+                        .flat_map(|m| m.values())
+                        .map(TokenTally::total)
+                        .sum::<i64>(),
+                    300,
+                    "{field}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn claude_native_file_capacity_rejection_does_not_poison_reply_state() {
+        let a = claude_line(
+            "fixture",
+            1_000_000_000_000,
+            0,
+            0,
+            0,
+            "2026-10-04T09:00:00Z",
+            "a",
+        );
+        let b = claude_line("fixture", 1, 0, 0, 100, "2026-10-04T09:00:00Z", "b");
+        let repaired = claude_line("fixture", 0, 0, 0, 50, "2026-10-04T09:00:00Z", "b");
+        let scan = parse_claude_code([a, b, repaired].into_iter());
+        assert!(scan.partial);
+        let tally = scan.days.values().flat_map(|m| m.values()).next().unwrap();
+        assert_eq!((tally.input, tally.output), (1_000_000_000_000, 50));
+    }
+
+    #[test]
+    fn claude_native_requires_input_and_output_but_keeps_legacy_cache_defaults() {
+        let row: serde_json::Value = serde_json::from_str(&claude_line(
+            "fixture",
+            100,
+            0,
+            0,
+            50,
+            "2026-10-04T09:00:00Z",
+            "one",
+        ))
+        .unwrap();
+        for field in ["input_tokens", "output_tokens"] {
+            let mut missing = row.clone();
+            missing["message"]["usage"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            let scan = parse_claude_code(std::iter::once(missing.to_string()));
+            assert!(scan.partial && scan.days.is_empty());
+        }
+        let mut legacy = row;
+        let usage = legacy["message"]["usage"].as_object_mut().unwrap();
+        usage.remove("cache_creation_input_tokens");
+        usage.remove("cache_read_input_tokens");
+        let scan = parse_claude_code(std::iter::once(legacy.to_string()));
+        assert!(!scan.partial);
+        assert_eq!(
+            scan.days
+                .values()
+                .flat_map(|m| m.values())
+                .map(TokenTally::total)
+                .sum::<i64>(),
+            150
+        );
+    }
+
+    #[test]
+    fn claude_native_independent_cache_fields_and_exact_capacity_remain_valid() {
+        for (input, written, cached, output) in [
+            (0, 200, 100, 0),
+            (
+                MAX_CLAUDE_COUNTER,
+                MAX_CLAUDE_COUNTER,
+                MAX_CLAUDE_COUNTER,
+                MAX_CLAUDE_COUNTER,
+            ),
+            (0, 0, 0, 0),
+        ] {
+            let scan = parse_claude_code(std::iter::once(claude_line(
+                "fixture",
+                input,
+                written,
+                cached,
+                output,
+                "2026-10-04T09:00:00Z",
+                "one",
+            )));
+            assert!(!scan.partial);
+            assert_eq!(
+                scan.days
+                    .values()
+                    .flat_map(|m| m.values())
+                    .map(TokenTally::total)
+                    .sum::<i64>(),
+                input + written + cached + output
+            );
+        }
+        let scan = parse_claude_code(std::iter::once(claude_line(
+            "<synthetic>",
+            i64::MAX,
+            0,
+            0,
+            i64::MAX,
+            "2026-10-04T09:00:00Z",
+            "error",
+        )));
+        assert!(!scan.partial && scan.days.is_empty());
+    }
+
+    #[test]
+    fn claude_native_gaps_survive_cache_reload_and_clear_after_repair() {
+        let good = claude_line("fixture", 100, 0, 0, 50, "2026-10-04T09:00:00Z", "one");
+        let bad = claude_line("fixture", -1, 0, 0, 1000, "2026-10-04T09:00:30Z", "one");
+        let file = TranscriptFixture::new(&(good.clone() + "\n" + &bad + "\n"));
+        let root = file.0.parent().unwrap();
+        let initial = scan_cached(Provider::ClaudeCode, root, FileCache::default());
+        assert!(initial.partial && initial.changed);
+        assert_eq!(discovered_total(&initial), 150);
+        let cache = serde_json::from_slice(&serde_json::to_vec(&initial.cache).unwrap()).unwrap();
+        let warm = scan_cached(Provider::ClaudeCode, root, cache);
+        assert!(warm.partial && !warm.changed);
+        assert_eq!(discovered_total(&warm), 150);
+        std::fs::write(&file.0, good + "\n").unwrap();
+        let repaired = scan_cached(Provider::ClaudeCode, root, warm.cache);
+        assert!(!repaired.partial && repaired.changed);
+        assert_eq!(discovered_total(&repaired), 150);
+        assert_eq!(
+            ledger_cache_name(Provider::ClaudeCode),
+            "ledger-6-claudeCode.json"
+        );
+        assert_eq!(ledger_cache_name(Provider::Codex), "ledger-5-codex.json");
     }
 
     #[test]

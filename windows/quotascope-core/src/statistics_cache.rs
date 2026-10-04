@@ -5,9 +5,10 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-const FILES: [&str; 5] = [
+const FILES: [&str; 6] = [
     "ledger-4-claudeCode.json",
     "ledger-5-claudeCode.json",
+    "ledger-6-claudeCode.json",
     "ledger-4-codex.json",
     "ledger-5-codex.json",
     "token-spend-2.json",
@@ -304,6 +305,15 @@ mod tests {
         assert_eq!(settings.statistics_cache_limit_mb, 64);
         assert_eq!(limit_mb(123), 64);
         assert_eq!(limit_mb(0), 0);
+    }
+    #[test]
+    fn old_and_new_claude_caches_share_the_rebuildable_budget() {
+        let dir = Fixture::new();
+        dir.put("ledger-5-claudeCode.json", b"old");
+        dir.put("ledger-6-claudeCode.json", b"new");
+        assert_eq!(inspect_at(&dir.0).bytes, 6);
+        assert_eq!(prune_at(&dir.0, 0).removed_files, 2);
+        assert!(inspect_at(&dir.0).files.is_empty());
     }
     #[cfg(windows)]
     #[test]
