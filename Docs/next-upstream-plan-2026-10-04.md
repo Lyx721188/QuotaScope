@@ -1,11 +1,11 @@
 # 下一轮上游跟进计划
 
-核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1/N2/N3 本地已验证，N4a 为当前下一项；Release 桌面与真实账户仍有外部验收缺口**。
+核对日期：2026-10-04（Asia/Shanghai）。状态：**N0/N1/N2/N3/N4a 本地已验证，改动已合入本地 main；下一项为 R1 发布前验收**。
 
 建议顺序：对齐执行基线 → 性能与现有功能验收 → DeepSeek 官网历史 → Codex 本地异常线索 → 按样本补齐原生来源与登录。
-当前唯一下一项是 **N4a：DSH 实际 Zstandard 流式解压**。N3 的 696 项工作区测试、fmt/普通 Clippy、Debug/Release 与中文隔离 UI 已通过；完整 Debug 独立安装/托盘/卸载通过，Release 包仅构建。本机 Codex facts 有只读聚合 smoke，但没有据此判断服务端模型。真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级单列保留，不把它们写成已通过。版本号为建议，实施时再确认。
+当前唯一下一项是 **R1：main 的发布前验收**，任务与退出条件见[第 9 节](#9-main-合并后的下一阶段)。N4a 后重新检查得到 706 passed / 6 ignored，fmt、普通 Clippy、Release 构建与 JSON CLI 通过；DSH 真实压缩样本独立复算、Debug 隔离 UI/安装记录与当前二进制哈希一致。真实账号、多 DPI 人工交互、Release 桌面、最终 CI/发布及用户安装版升级分别保留验收边界。版本号在准备发布时确定。
 
-执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
+原执行分支：`codex/upstream-followthrough-20261004`，由 `db92d3e` 创建；2026-10-04 按用户要求，将其 14 个已有提交及 N4a 提交 `40a5b5f` 快进合入 `main`。所有本地命名分支的提交均已被 main 包含，旧 worktree 保留。主目录是 `D:/Projects/QuotaScope`，Cargo 工作目录是其 `windows/` 子目录。
 2026-10-04 用户要求设置目标并持续推进到 5h 额度限制；已设置持续工作目标，优先 N0/N1，每批保存当前状态与证据。不要将消耗额度本身作为产物。
 
 后续 agent 先读本页、`Docs/upstream-implementation-status.md`、`Docs/windows-resource-update-verification.md`，然后查看实际 `git status` 与最近提交。本页记录固定基线，不把后来的远端变化自动算作已验收。
@@ -29,7 +29,7 @@
 1. Windows 1.3.0 已接入此前缺少的十个额度路由、附加账户、底部及横向停靠、长卡滚动、托盘概览、快捷键、代理、CLI/CSV/深链接等。1.3.1 又以专用 ACP 读取器完善 Kiro；这些不能再列为从零开发。
 2. 用量估算已经实现，包含 5% 下限、额度读取时刻截止、边界桶比例和外部消耗保护。新一轮应做回归与差异核对，不重写另一套估算。
 3. 已有流式读取、Codex 追加读取、可取消扫描、磁盘预算、五分钟快照和可选后台统计；性能工作应补足现有链路。
-4. 54 个 Token 来源是目录规模，不等于全部原生支持。当前状态文档记录 34 项已知格式读取（含导出），20 项仅标准导入；真正压缩的 DSH Zstandard 仍缺解压。
+4. 54 个 Token 来源是目录规模，不等于全部原生支持。当前状态文档记录 34 项已知格式读取（含导出），20 项仅标准导入；N4a 已补齐 DSH Zstandard 解压，不增加来源目录数量。
 5. Kiro 真实账户、其他新路由的逐账号验证，以及部分多 DPI 拖拽、快捷键冲突、真实代理、实际安装后的协议注册仍有验收缺口。
 6. 保留现有排除：**不新增 Claude Code 跨文件回复去重**。这是当前项目状态文档明确记录的范围决定。macOS 原生外观和更新机制继续用 Windows 对应实现。
 
@@ -256,7 +256,7 @@ N2 parser 的每个空值、负数、NaN/Inf、超界值、币种分支、错误
 
 实际执行到此阶段时，按可取得的样本重排 1–3 的内部次序，并记录唯一下一项。
 
-N4a DSH 的实际入口是 `additional_spend.rs::read`：读到 magic `28 B5 2F FD` 时直接 partial + skip；`.zstd` 扩展名本身不证明压缩。实现时按 magic 选择 streaming decoder，送入已有 `scan::LineReader`，同时覆盖实际压缩、伪扩展名纯文本、损坏/截断/拼接 frame、超大行和取消。保留 source partial 标记，解码错误不能将前半文件保存成完整缓存。新增依赖时同步 Cargo.lock，使用 `--locked` 重新核验。
+N4a DSH 已完成：`additional_spend.rs::read` 按 magic `28 B5 2F FD` 选择有界 streaming decoder，再送入 `scan::LineReader`；`.zstd` 扩展名本身不证明压缩。回归覆盖实际压缩、伪扩展名纯文本、损坏/截断/拼接 frame、超大行和取消。source partial 贯穿聚合与 UI，依赖和 Cargo.lock 同步；细节与证据见第 8.8 节。
 
 N4b reader 的注册通常涉及 `additional_spend.rs` 的 CATALOG、`native_supported`、roots/collect/parse、`spend.rs` 与来源文档。catalog 行存在不能当支持完成；必须验证 Windows 路径、文件锁/WAL（数据库来源）、模型归属、重放去重、来源空/失败状态及缓存失效。无格式样本时只补研究记录，保留标准导入能力。
 
@@ -309,7 +309,9 @@ before / after 性能样本、构建 profile 与程序哈希：
 | N3a 纯解析 | 本地定向已验证 | 9 项合成误报/边界测试与普通 core Clippy 通过；没有文件扫描、后台或 UI 接线 |
 | N3b 缓存与后台 | 定向已验证，UI 未接入 | 15 项 parser/reader、2 项 worker 状态测试；单个 worker、关闭/离页失效、文件与模型容量上限 |
 | N3c 中文 UI 与验收 | 本地已验证 | 696 passed / 6 ignored、fmt/Clippy/Debug/Release；中文隔离切时段/取消/关闭重开、Debug 独立安装生命周期与卸载通过；Release 包仅构建 |
-| N4a / N4b | 待实现，N4a 当前下一项 | 真正的 DSH 压缩及真实样本独立复算，再进入有样本的原生来源 |
+| N4a DSH 压缩 | 本地已验证，commit `40a5b5f` | 有界解压、缺口展示、706 passed / 6 ignored；12 份真实压缩样本独立复算，隔离 UI/Debug 安装通过 |
+| R1 发布前验收 | 当前下一项 | 核对 main CI、正式 Release 包桌面、文档与版本；见第 9 节 |
+| N4b 原生来源 | 待实施，R1 后进入 | 优先 ZCode 可复现样本，完成一项再进入下一项 |
 
 当前产品改动状态以此表和源码为准。主仓库同步与本地构建均不会自动更新正在运行的用户安装版。
 
@@ -391,4 +393,51 @@ N3 当前检查：n3c-workspace-tests.log 为 696 passed / 6 ignored；最后 UI
 
 冻结 N3 Debug SHA-256 3E4806BB23DB4928D65C02EB139AC60EBECACEE04E982FF9137559B545D0D0EE；Release 656D78175E54A1467E11D2A8DC3A7BB992D50C249320BCED13B3095FD331ACCF。完整 n3-debug-payload 的独立安装/托盘/关闭重开/二次启动/隐藏退出/卸载全部通过，target/installer-validation-9faa78c28a2b499d9891218bb44acb23/，用户安装版保留。n3-release-installer/QuotaScope-1.3.1-windows-x64-Setup.exe SHA-256 E24EE140D47FD0C909A11646B9F3254E00318B1F90109EE91B046C12AF93AD02 仅构建，无 Release 桌面、真实账户、升级或发布验证。
 
-唯一下一项 N4a：已有本机 DSH session.jsonl.zstd 的真实 28B52FFD magic，并用 Python 3.14 compression.zstd 只读检查了三份实际文件的事件/usage 键形状。实现需同步 Cargo.lock，采用有界 streaming decoder 与 LineReader，覆盖伪扩展名、拼接帧、损坏/截断、解码量/行/窗口上限和取消。保存来源 partial，保留 assistant/message 的计数边界及 fork seed/replay 规则，再用同一份临时冻结字节做独立解码/计数核对。真实对话不能进入 Git 或日志。N3 的二进制和包不包含后续 N4。
+当时的下一项 N4a：已有本机 DSH session.jsonl.zstd 的真实 28B52FFD magic，并用 Python 3.14 compression.zstd 只读检查了三份实际文件的事件/usage 键形状。实现需同步 Cargo.lock，采用有界 streaming decoder 与 LineReader，覆盖伪扩展名、拼接帧、损坏/截断、解码量/行/窗口上限和取消。保存来源 partial，保留 assistant/message 的计数边界及 fork seed/replay 规则，再用同一份临时冻结字节做独立解码/计数核对。真实对话不能进入 Git 或日志。N3 的二进制和包不包含后续 N4。
+
+### 8.8 N4a 完成与 main 合并检查
+
+2026-10-04，N4a 及工作区已有改动提交为 `40a5b5f`，与前面 14 个提交一起快进到本地 main，无合并冲突。其余本地命名分支已全部包含在 main；没有删除分支或 worktree。一个旧 detached worktree 仍有历史未提交改动，保持原状，不作为本次活动分支的待合并提交。
+
+DSH 读取保留 assistant/message、fork seed、重放去重和 reasoning 不重复计数的边界，严格区分缺计数与零计数。原始/解码量各 64 MiB、单行 4 MiB、history window 8 MiB；取消、截断、损坏、超限、文件变化及非法计数都有回归。Token 页和来源覆盖区显示 partial，筛选与排序保留，修复后刷新消除已解决的缺口。依赖 zstd 已锁定并附带分发许可。
+
+合并前在当前源码重新执行的检查，日志位于 `windows/target/main-integration-20261004/`：
+
+| 检查 | 结果 |
+|---|---|
+| `cargo fmt --all -- --check` | exit 0 |
+| `cargo test --workspace --locked` | exit 0；706 passed / 6 ignored |
+| `cargo clippy --workspace --all-targets --locked` | exit 0；仍有告警，没有启用 `-D warnings` |
+| `cargo build --release --locked` | exit 0 |
+| Release `quotascope.exe --json` | exit 0；含 generatedAt/accounts，输出未记录账户内容 |
+
+现有 N4a 定向验证记录位于 `windows/target/upstream-followthrough-20261004/`，本次核对其程序哈希与当前构建一致，没有把这些记录标成新一轮桌面运行：
+
+- `n4a-live-compare-current.log` 与 `n4a-live-release-compare.log`：12 份真实压缩文件、183 条去重记录，独立 Python 与 Debug/Release Rust 均得到 10,170,898 Token；1 条缺 usage，双方均保留 partial。仅保存聚合和 corpus digest，不提交真实记录。
+- `n4a-ui-result.json`：真实压缩、追加、来源筛选、缺口展示、修复重读通过，使用隔离合成 profile。
+- `n4a-debug-installer.log`：独立身份 Debug 安装、托盘生命周期、卸载通过，用户原安装版保留。
+- Debug `quotascope.exe` SHA-256：`67784BA2F573CDBEF1A8B75F76DEBE3223B6CB6BFA65F34A83B636BCAB786119`。
+- Release `quotascope.exe` SHA-256：`E55E341AAD1B98769842EAB49B1E02729E2A6FF87EF7EAE13DB934358906D2ED`。
+- `n4a-release-installer/` 中的安装包构建通过，SHA-256：`B086270B83D5E1687355926C669E4C32350F6F9AE260464DDD47D6A05F93563E`；Release 桌面/用户升级尚未验证。
+
+本次合并保持版本号 1.3.1，不创建发布标签。GitHub Actions 必须以推送后 main 的实际 SHA 对应运行判断；历史成功不能替代本次运行。
+
+## 9. main 合并后的下一阶段
+
+本节是后续执行顺序；前文各阶段的“下一项”和测试数字作为历史记录保留。当前只推进 **R1 发布前验收**，先形成可交付基线，再扩充来源。
+
+| 顺序 | 工作 | 完成标准与产物 |
+|---|---|---|
+| R1 发布前验收 | 核对 main Windows Actions；用该提交的完整 Release payload 在不争用现有安装版的桌面完成安装、托盘、设置重开、Token 页和卸载；核对版本、CHANGELOG、README 的旧路由数量和 Windows README 旧支持表 | 最终提交对应 CI 成功；Release 程序与包 SHA、桌面/安装结果及遗留问题齐全；发布说明明确账户验证边界。需要用户安装版升级或正式发布时再落实对应操作范围 |
+| N4b ZCode 原生来源 | 先定位可复现 Windows 样本和格式版本，再实现只读 reader；按源计数，缺模型/Token 保持未知，覆盖追加、改写、分叉/重放、锁文件、损坏和取消 | 固定脱敏 fixture；真实冻结样本独立聚合一致；来源筛选、partial、刷新与缓存失效通过。没有可信计数样本时保留标准导入并记录缺口，不从金额反推 Token |
+| R2 常用服务商实账验证 | 优先 DeepSeek 官网历史和 Kiro ACP，再按实际使用选择其他已注册路由；逐个核对同账号、同日期、同币种的官网结果，覆盖过期/空态及主附加账户隔离 | 每个 provider 单独记录代码状态、真实账户结果和问题复现；无法登录的条目保留待验收，不阻塞其他可验证条目 |
+| R3 多账户登录与体验收尾 | 在上述基线稳定后补交互式 OAuth/续期、Codex 独立登录进程隔离；随后处理快捷键冲突、多 DPI 交互和 Windows 专有翻译，完整 BotMark 排在最后 | 登录/刷新/撤销/移除后凭据、缓存和子进程隔离可复现；真实交互验收和文案覆盖分别有记录 |
+
+R1 的具体执行拆分：
+
+1. 核对 main Actions 的 fmt、Clippy、测试、Release、JSON、安装包与包内生命周期结果；若失败，先修复主线，不开启新来源开发。
+2. 清理发布文档口径：以现有 Windows 路由表的 77 个注册路由为准；54 个 Token 来源仍拆分为 34 个已知格式与 20 个标准导入。明确 N1/N2/N3/N4a 的新增行为及真实账户限制。
+3. 为正式 Release 安排独立桌面或明确的升级窗口，避免其单实例锁与运行中的安装版争用；保留旧版本和数据，验证启动、重开、统计、退出及卸载。Debug 隔离安装的结果仅用于 Debug 验收。
+4. 根据最终变更确定版本号、更新说明和发布包；形成可审查的发布记录后结束 R1。当前请求只完成合并与规划，后续发版、安装升级及新功能按新的执行请求开展。
+
+新一轮实现从更新后的 main 创建 `codex/` 分支，每个 reader 或账户链路单独提交。延续不猜百分比、不从金额反推 Token、不把 fixture 成功当实账通过，以及不新增 Claude 跨文件回复去重的既有范围。

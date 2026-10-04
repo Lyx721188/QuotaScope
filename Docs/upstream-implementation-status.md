@@ -30,7 +30,13 @@ N3c 已接入 Codex 主账户展开页：中文自然日时段、刷新/取消�
 把记录参数差异和格点启发式分开。696 passed / 6 ignored、fmt/普通 Clippy/Debug/Release 与隔离 UI 通过；
 完整 Debug 独立安装/托盘/卸载通过，Release 包仅构建。本机 30/90 天只读 facts smoke 完成，未判断服务端模型。
 配置见 [Windows Codex 本地线索](providers/windows-codex-signals.md)。
-当前唯一下一项为 N4a DSH 实际 Zstandard；真实账户与 Release 桌面未验证，没有发布或升级安装版。
+N4a 已完成并随 `40a5b5f` 合入本地 main：DSH 按 magic 流式解压真实 Zstandard，支持拼接帧，
+原始/解码字节、单行与窗口均有上限；损坏、缺计数和文件变动保留不完整状态，筛选后仍可见。
+706 passed / 6 ignored、fmt/普通 Clippy/Release/JSON CLI 通过；现有 Debug 隔离 UI/安装证据的程序哈希与当前构建一致。
+12 份真实本机压缩文件的独立 Python 与 Debug/Release Rust 聚合一致，含一项缺失 usage，不能据此宣称历史完整。
+配置见 [Windows DSH 本机 Token 读取](providers/windows-dsh-local-usage.md)。
+当前唯一下一项为 **R1：main 的发布前验收**，之后进入 N4b ZCode 原生来源，详见
+[下一阶段任务卡](next-upstream-plan-2026-10-04.md#9-main-合并后的下一阶段)。真实账户与 Release 桌面仍有缺口，没有发布新版本或升级安装版。
 
 基线：Windows 1.2.4 `d9a1644`；Pulse `b396306`（1.7.0 发布后的 main）。
 本轮要求：除第一项 Claude 跨文件回复去重外，其余尝试实现。
