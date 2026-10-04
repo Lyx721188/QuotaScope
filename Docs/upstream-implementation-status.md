@@ -1,51 +1,28 @@
 # 上游功能移植进度
 
-2026-10-04 后续跟进见 [执行计划与交接](next-upstream-plan-2026-10-04.md)：
-主目录已同步 Windows 1.3.1 `db92d3e`，本地基线通过（644 passed、6 ignored，正式构建通过）；下一轮按性能、
-DeepSeek 控制台、Codex 本地异常线索、原生来源顺序推进。
-下表保留 1.3.0/1.3.1 的既有能力与验收边界，新改动的状态以执行计划的记录为准。
+更新日期：2026-10-04。当前公开路线图见[下一轮计划](next-upstream-plan-2026-10-04.md)，依赖和验收标准见[实施任务](release-acceptance-2026-10-04.md)。
 
-后续分支 N1a-1 已在本地验证：批量查价复用单份价格表的惰性索引与 model/vendor 命中、未命中缓存；
-保留第一方/厂商优先级和未计价语义。尚未发布，原始测试与合成性能结果见执行计划。
-N1a-2 已验证原始日志未变时解析缓存不重写；隔离进程重启后读取的真实缓存 mtime/哈希保持，
-追加、重启续读、改写与删除回归通过；N2 整仓检查又发现浮点时间戳 JSON 精度漂移，已改用整数纳秒并通过回归。
-N1b 已验证：Token 页的聚合、小时与模型列表移到单个可取消后台 worker，同一原始快照最多缓存四个筛选结果；
-仅排序复用聚合，换筛选与关闭后拒绝旧完成结果。真实隔离窗口的筛选、缓存保持和取消/关闭/重开通过。
-N1c 本地回归完成：655 passed / 6 ignored、fmt/普通 Clippy/Release/CLI、三轮流式 UI；
-完整 Debug payload 的独立安装、托盘生命周期与卸载通过，Release 安装包构建成功。
-Release 桌面与真实账户、多 DPI 等仍未验证，也没有替换用户安装版或发布。
-N2a 历史表达已通过定向回归：实际费用携带币种，人民币不再走美元格式，缺少币种不显示金额，本机 API 估值保持。
-N2b 控制台纯解析已通过 9 项合成测试，含 envelope、币种/缺失金额、时区、DST 和钱包；尚未读取控制台账户。
-N2c-1 的固定 transport、401/403 分类、一次续读及 console 存储槽/KeyRing 账户隔离已通过定向检查；
-N2c-2 的有界缓存、账户历史与余额 fallback 已完成定向验证，尚未调用真实浏览器/账号。
-N2d 本地已验证：异步官网导入/清除、主/附加账户隔离、真实 Windows DPAPI 和合成 HTTP/WinUI；
-679 passed / 6 ignored、fmt/普通 Clippy/Release 通过，完整 Debug 独立安装/托盘/卸载通过，Release 包构建成功。
-手动刷新绕过官网历史缓存，余额每次取得本账户当前加密 token，避免续期后继续使用旧 KeyRing 会话。
-N3a 本地纯解析已通过 9 项合成测试和普通 core Clippy；只比较 task_started 时已生效的用户设置，
-旧版本、无可比较 applied 记录、helpers/reviewer、fork 回放和未知 effort 保守处理。
-N3b 已通过 15 项 parser/reader 与 2 项 worker 状态测试；内存 facts 按路径/size/精确 mtime/算法版本复用，
-最多 1,024 文件、8 MiB 保守记账预算，聚合最多 1,024 模型，超出时标记部分记录。
-单个 worker 可取消，关闭/离页释放 reader 并拒绝旧结果。
-N3c 已接入 Codex 主账户展开页：中文自然日时段、刷新/取消、规则版本、样本分母、不可判断与记录缺口，
-把记录参数差异和格点启发式分开。696 passed / 6 ignored、fmt/普通 Clippy/Debug/Release 与隔离 UI 通过；
-完整 Debug 独立安装/托盘/卸载通过，Release 包仅构建。本机 30/90 天只读 facts smoke 完成，未判断服务端模型。
-配置见 [Windows Codex 本地线索](providers/windows-codex-signals.md)。
-N4a 已完成并随 `40a5b5f` 合入本地 main：DSH 按 magic 流式解压真实 Zstandard，支持拼接帧，
-原始/解码字节、单行与窗口均有上限；损坏、缺计数和文件变动保留不完整状态，筛选后仍可见。
-706 passed / 6 ignored、fmt/普通 Clippy/Release/JSON CLI 通过；现有 Debug 隔离 UI/安装证据的程序哈希与当前构建一致。
-12 份真实本机压缩文件的独立 Python 与 Debug/Release Rust 聚合一致，含一项缺失 usage，不能据此宣称历史完整。
-配置见 [Windows DSH 本机 Token 读取](providers/windows-dsh-local-usage.md)。
-当前唯一下一项为 **R1：main 的发布前验收**，之后进入 N4b ZCode 原生来源，详见
-[下一阶段任务卡](next-upstream-plan-2026-10-04.md#9-main-合并后的下一阶段)。真实账户与 Release 桌面仍有缺口，没有发布新版本或升级安装版。
+## main 新增能力（尚未发布）
 
-R1 自动验收与文档收尾：README 已统一 77 个路由及 34/20 个 Token 来源的口径；CHANGELOG 增加 Unreleased。
-CI 新增 Release payload 的独立身份安装、运行、卸载和许可证哈希检查，ZIP 同步携带许可证，失败日志作为 artifact 保留。
-每次执行结果以相应 commit 的 Windows Actions 为准；该自动化不代替用户安装版升级、真实账户或多 DPI 交互。
-细化的 R1、ZCode、实账核对和多账户任务见[发布验收与下一轮实施任务](release-acceptance-2026-10-04.md)。
+| 阶段 | 状态与行为 | 验证边界 |
+|---|---|---|
+| N1 性能 | 价格索引及命中/未命中缓存；未变日志不重写解析缓存，整数纳秒时间戳；单个可取消聚合 worker，最多四个筛选结果 | 追加、改写、删除、重启、筛选、取消与关闭重开回归通过；保持价格优先级和未计价语义 |
+| N2 DeepSeek | 实际费用携带币种；有界官网历史缓存、余额回退、异步浏览器导入/清除；凭据、续读和缓存按账户隔离 | 合成协议、HTTP、Windows DPAPI 与隔离 UI 通过；真实账户未验证，见[说明](providers/windows-deepseek-console.md) |
+| N3 Codex | 保守比较设置/请求参数；有界、可取消 facts reader；主账户展开页显示时段、规则、分母、不可判断与缺口 | parser/worker/隔离 UI 通过；不证明服务端实际运行模型，见[说明](providers/windows-codex-signals.md) |
+| N4a DSH | 按 magic 流式解压 Zstandard 与拼接帧；原始/解码字节、单行和窗口有界；损坏、缺计数、变动保留 partial | 纯解析、取消、隔离 UI、冻结样本独立复算通过；不代表全部历史完整，见[说明](providers/windows-dsh-local-usage.md) |
+| R1 自动化 | ZIP 许可证与哈希；相同 Release payload 的独立身份安装、托盘/设置生命周期、卸载；失败日志保留 | [ef9292d 的 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671) 成功；原 AppId 升级、Release Token 页、真实账户、多 DPI 人工验收仍分别待完成 |
+
+新增功能的源码基线回归为 706 passed / 6 ignored，fmt、普通 Clippy、Release 和 JSON CLI 完成；已有 Clippy 告警仍存在。每次后续改动以对应 commit 的检查为准。
+
+当前目录为 77 个 Windows 路由、54 个 Token 来源（34 个已知格式读取，含导出缓存；20 个标准导入）。下一项开发为 **N4b-1：ZCode 格式取证**；ZCode 目前仍仅支持标准导入，完成 reader、缓存、独立复算和 UI 验收后才更新支持状态。
+
+## 已发布的 1.3.0 / 1.3.1 基线
+
+以下表格与验证记录保留相应发布阶段的范围；DSH 压缩等后续变化以上方 main 状态为准。
 
 基线：Windows 1.2.4 `d9a1644`；Pulse `b396306`（1.7.0 发布后的 main）。
-本轮要求：除第一项 Claude 跨文件回复去重外，其余尝试实现。
-发布：Windows 1.3.0（`windows-v1.3.0`）。本机安装版没有替换。
+范围：保留 Claude 单文件回复合并；不新增跨文件回复去重。
+发布：Windows 1.3.0（`windows-v1.3.0`）。
 Windows 1.3.1 将 Kiro 替换为专用 ACP 读取器，补齐严格解析、稳定池 ID、错误分类与有界子进程回收；
 保留其余 1.3.0 路由和能力。Kiro 真实账号验证仍未完成，见 [配置与验证边界](providers/windows-kiro.md)。
 
@@ -78,7 +55,7 @@ Windows 1.3.1 将 Kiro 替换为专用 ACP 读取器，补齐严格解析、稳�
 
 - 附加账户的交互式 OAuth 登录/续期；Codex 附加账户独立 app-server 登录。
 - 20 项来源的原生格式：CodeBuddy、WorkBuddy、Cherry Studio、Command Code、OpenCodeReview、ZCode、Hermes、Goose、Zed、Kiro、Crush、Unsloth、Antigravity CLI、MiMo Code、Devin Desktop、Freebuff、Trae、Warp、MiniMax Code、GitHub Copilot。仅接受标准导入；缺少 Token 的来源保持未知。
-- 真正压缩的 DSH Zstandard 文件未解压，会标记不完整；可读取纯文本 JSONL。
+- 1.3.0/1.3.1 的 DSH 仅读取纯文本 JSONL；main 已补入有界 Zstandard 解压，详见上方 N4a。
 - Devin 仅本机缓存套餐，未覆盖全部在线/跨账户路线；JetBrains 不推算 ISO duration 周期；Alibaba 不展开任意字符串嵌套的 JSON 包装。
 - 完整 BotMark 动画、所有 Windows 专有文字的繁中/日/韩翻译。
 - App-Bound 解密、Firefox localStorage。缺口保持未登录/未知，不伪造数据。
@@ -98,19 +75,19 @@ OpenCode 官网会话在 OpenCode 设置中导入，API key 独立保存；Winds
 Claude 状态栏：将 Claude 的 statusLine.command 配置为 `"完整路径\quotascope.exe" --statusline`。应用不会自动覆盖现有 Claude 设置/状态栏命令。只保存 rate_limits 的额度百分比、重置时间和读取时刻。
 `quotascope.exe --dashboard` 打开概览，--refresh 刷新，`--url quotascope://dashboard` 处理导航。URL 接受 settings/dashboard/refresh，并兼容报告中的 account 链接打开设置；不接受参数、凭据或命令。
 CSV 脚本：[Export-QuotaScope.ps1](../windows/scripts/Export-QuotaScope.ps1)，指定 -Executable 与可选 -OutputPath；仅导出缓存额度，保留时间/来源，缺失不写成 0。
-下次安装可选择注册 quotascope://，卸载仅移除仍指向该安装路径的注册；本轮未改当前注册表。
+安装时可选择注册 quotascope://，卸载仅移除仍指向该安装路径的注册。
 
 ## 验证
 
 - cargo test --workspace --locked：通过，631 项测试通过，5 项需特定环境的测试默认忽略；桌面生命周期另行运行通过。
-- cargo build --release --workspace --locked：通过；生成 `windows/target/release/quotascope.exe`（约 8.3 MiB），没有安装到本机。
+- cargo build --release --workspace --locked：通过；生成 `windows/target/release/quotascope.exe`（约 8.3 MiB）；构建验证与安装验证分别记录。
 - cargo fmt --all -- --check 与 CI 的 cargo clippy --workspace --all-targets --locked：通过。Clippy 有风格告警，严格 -D warnings 不是通过状态。
 - settings_lifecycle --ignored：隔离空账户 profile，底部自由横排和动画开启；真实托盘左键概览、设置关闭重开、重复打开、第二次启动、隐藏退出通过，最终重跑 37.24 秒。
 - 隔离 CLI profile：--json/CSV 导出保留 25% 样本与来源/时间，不改写缓存；两次 --statusline 更新额度并丢弃输入中的路径/会话标识。
 - Inno Setup 临时占位 payload 语法编译通过；不等于当前应用已打包/安装。
 - 上游 fixtures 来自 b396306，只证明解析，不能代替真实账号请求。
 
-本机验证日志：`work/upstream-parity-validation-20261003/verification-{tests,clippy,lifecycle,cli,installer-syntax}.log`。该目录不纳入 Git。
+原始验证日志仅保留本地：`work/upstream-parity-validation-20261003/verification-{tests,clippy,lifecycle,cli,installer-syntax}.log`。该目录不纳入 Git。
 
 ## 排除
 

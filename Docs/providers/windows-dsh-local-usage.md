@@ -20,8 +20,8 @@ cargo test -p quotascope-core additional_spend --locked
 cargo test -p quotascope-core scan::tests --locked
 cargo test -p quotascope-core spend_analysis --locked
 cargo build -p quotascope-core --example dsh-read --locked
-& C:/Python314/python.exe quotascope-win/tests/dsh_live_compare.py --reader target/debug/examples/dsh-read.exe
+python quotascope-win/tests/dsh_live_compare.py --reader target/debug/examples/dsh-read.exe
 pwsh -NoProfile -File quotascope-win/tests/dsh_ui_smoke.ps1 -Executable target/debug/quotascope.exe
 ```
 
-真实比对需要 Python 3.14 的标准库 `compression.zstd`。脚本最多选择 12 份近期、至少一分钟未变化的文件（可设置 1–32），冻结字节到经过路径检查的临时目录，用独立解码/计数与 Rust 比较；输出只有聚合数字、缺口类别和 corpus/hash，临时真实对话在退出时删除，不进入 Git 或证据日志。这个小样本比对不证明所有历史文件完整。具体检查结果、二进制与包哈希见 [执行计划](../next-upstream-plan-2026-10-04.md)。
+真实比对需要 Python 3.14 的标准库 `compression.zstd`。脚本最多选择 12 份近期、至少一分钟未变化的文件（可设置 1–32），冻结字节到经过路径检查的临时目录，用独立解码/计数与 Rust 比较；输出只有聚合数字、缺口类别和 corpus/hash，临时真实对话在退出时删除，不进入 Git 或证据日志。这个小样本比对不证明所有历史文件完整。公开功能状态见[开发计划](../next-upstream-plan-2026-10-04.md)，CI 与验收边界见[发布验收](../release-acceptance-2026-10-04.md)。真实样本的聚合数字、corpus digest 和原始日志只保留在本地忽略目录。

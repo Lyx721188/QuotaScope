@@ -21,4 +21,4 @@ cargo run -p quotascope-core --example codex-signals-read --locked
 pwsh -NoProfile -File quotascope-win/tests/codex_signals_ui_smoke.ps1 -Executable target/debug/quotascope.exe
 ```
 
-示例只输出聚合数字，30 秒后取消；不会输出对话、路径、凭据或模型名。UI 脚本使用独立 profile 和合成日志，不修改现有安装版，不接触真实账户。最新执行证据与包哈希在 [执行计划](../next-upstream-plan-2026-10-04.md)；源码、Debug 窗口、Release 桌面和发布验收分别记录。
+示例只输出聚合数字，30 秒后取消；不会输出对话、路径、凭据或模型名。UI 脚本使用独立 profile 和合成日志，不修改现有安装版，不接触真实账户。公开功能状态见[开发计划](../next-upstream-plan-2026-10-04.md)，CI 与验收边界见[发布验收](../release-acceptance-2026-10-04.md)。原始日志和个人样本留在本地忽略目录；源码、Debug 窗口、Release 桌面和发布验收分别记录。
