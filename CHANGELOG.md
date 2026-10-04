@@ -5,6 +5,14 @@ What each release changed, written for somebody deciding whether to install it.
 Windows releases use their own version sequence. Entries below 1.1.1 include
 inherited macOS history and do not establish Windows feature availability.
 
+## Unreleased (Windows)
+
+- **Faster local Token views.** Price lookups reuse an indexed snapshot, unchanged transcript caches keep their files untouched, and filtering runs in a cancellable background worker. Cache timestamps retain exact nanoseconds across restarts.
+- **DeepSeek console history.** Explicitly imported console sessions provide account history and a balance fallback without an API key. Console credentials and caches are isolated per account; actual charges retain their reported currency, while missing amounts remain unknown.
+- **Codex local clues.** The account details show recorded request-setting differences separately from an empirical distribution clue, with sample counts, rule version, cancellation and incomplete-record indicators. These records do not establish which model the server actually ran.
+- **Compressed DeepSeek Harness sessions.** The Token page reads real Zstandard frames, including appended frames, with bounded decoding and cancellation. Fork prefixes and duplicate replies are excluded, reasoning is not counted twice, and damaged or incomplete records stay visible through filtering and refresh.
+- **Validation and limits.** Windows CI checks both the portable Release lifecycle and an independently identified installation of the Release payload, including uninstall cleanup. Real DeepSeek/Kiro account verification, upgrading an existing user installation, multi-DPI interaction and interactive login for added accounts remain separate acceptance work. See [the current plan](Docs/release-acceptance-2026-10-04.md).
+
 ## 1.3.1 (Windows, 2026-10-03)
 
 - Kiro uses a dedicated native CLI ACP reader with strict, upstream-grounded decoding of credit pools, provider-specific login/version errors, stable pool IDs and deterministic parsing fixtures. Missing limits remain unknown; date-only monthly resets do not imply a fixed duration or a value estimate.

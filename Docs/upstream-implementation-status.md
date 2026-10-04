@@ -38,6 +38,11 @@ N4a 已完成并随 `40a5b5f` 合入本地 main：DSH 按 magic 流式解压真�
 当前唯一下一项为 **R1：main 的发布前验收**，之后进入 N4b ZCode 原生来源，详见
 [下一阶段任务卡](next-upstream-plan-2026-10-04.md#9-main-合并后的下一阶段)。真实账户与 Release 桌面仍有缺口，没有发布新版本或升级安装版。
 
+R1 自动验收与文档收尾：README 已统一 77 个路由及 34/20 个 Token 来源的口径；CHANGELOG 增加 Unreleased。
+CI 新增 Release payload 的独立身份安装、运行、卸载和许可证哈希检查，ZIP 同步携带许可证，失败日志作为 artifact 保留。
+每次执行结果以相应 commit 的 Windows Actions 为准；该自动化不代替用户安装版升级、真实账户或多 DPI 交互。
+细化的 R1、ZCode、实账核对和多账户任务见[发布验收与下一轮实施任务](release-acceptance-2026-10-04.md)。
+
 基线：Windows 1.2.4 `d9a1644`；Pulse `b396306`（1.7.0 发布后的 main）。
 本轮要求：除第一项 Claude 跨文件回复去重外，其余尝试实现。
 发布：Windows 1.3.0（`windows-v1.3.0`）。本机安装版没有替换。

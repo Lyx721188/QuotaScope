@@ -88,6 +88,7 @@ jobs:
           Get-ChildItem $release -Directory |
             Where-Object { $_.Name -notin ".fingerprint", "build", "deps", "examples", "incremental" } |
             Copy-Item -Destination $staging -Recurse
+          Copy-Item -LiteralPath '../LICENSE', '../THIRD_PARTY_NOTICES.md' -Destination $staging
 
           $archive = Join-Path $release "quotascope-windows-x64.zip"
           Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $archive -Force
@@ -96,7 +97,9 @@ jobs:
       - name: Build installer and stage release assets
         shell: pwsh
         run: |
-          ./installer/build-installer.ps1 -SkipBuild
+          $installerOutput = Join-Path $env:RUNNER_TEMP "quotascope-installer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          ./installer/build-installer.ps1 -SkipBuild -OutputDirectory $installerOutput
+          "QUOTASCOPE_INSTALLER_DIRECTORY=$installerOutput" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $manifest = Get-Content Cargo.toml -Raw
           $version = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^\"]+)"').Groups[1].Value
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "windows-v$version") {
@@ -105,7 +108,7 @@ jobs:
           $assets = Join-Path (Get-Location) 'target/release-assets'
           New-Item -ItemType Directory -Path $assets -Force | Out-Null
           Copy-Item -LiteralPath 'target/release/quotascope-windows-x64.zip' -Destination $assets
-          Copy-Item -LiteralPath "target/installer/QuotaScope-$version-windows-x64-Setup.exe", "target/installer/QuotaScope-$version-windows-x64-Setup.exe.sha256" -Destination $assets
+          Copy-Item -LiteralPath (Join-Path $installerOutput "QuotaScope-$version-windows-x64-Setup.exe"), (Join-Path $installerOutput "QuotaScope-$version-windows-x64-Setup.exe.sha256") -Destination $assets
           $zip = Join-Path $assets 'quotascope-windows-x64.zip'
           $digest = Get-FileHash -LiteralPath $zip -Algorithm SHA256
           "$($digest.Hash)  quotascope-windows-x64.zip" | Set-Content -LiteralPath "$zip.sha256" -Encoding ascii
@@ -118,10 +121,44 @@ jobs:
           $package = Join-Path $env:RUNNER_TEMP "quotascope-package-smoke"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Expand-Archive target/release/quotascope-windows-x64.zip -DestinationPath $package -Force
+          foreach ($notice in @('LICENSE', 'THIRD_PARTY_NOTICES.md')) {
+            $sourceHash = (Get-FileHash -LiteralPath (Join-Path '..' $notice)).Hash
+            if ((Get-FileHash -LiteralPath (Join-Path $package $notice)).Hash -ne $sourceHash) {
+              throw "Portable package notice missing or stale: $notice"
+            }
+          }
 
           $env:QUOTASCOPE_TEST_EXE = Join-Path $package "quotascope.exe"
           cargo test -p quotascope-win --test settings_lifecycle --locked -- --ignored --nocapture --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw "Packaged Settings lifecycle regression failed" }
+
+      # Validate installation and cleanup with the same Release payload as
+      # the download. The independent identity preserves any existing install.
+      - name: Installed release lifecycle and uninstall regression
+        shell: pwsh
+        run: |
+          $payloads = @(Get-ChildItem -LiteralPath $env:QUOTASCOPE_INSTALLER_DIRECTORY -Directory -Filter 'payload-*')
+          if ($payloads.Count -ne 1) { throw 'Expected exactly one freshly staged installer payload' }
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $compilerPath = if ($compiler) { $compiler.Source } else {
+            @(
+              (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe'),
+              (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'),
+              (Join-Path $env:ProgramFiles 'Inno Setup 6/ISCC.exe')
+            ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          }
+          if (-not $compilerPath) { throw 'Inno Setup compiler missing after installer build' }
+          ./installer/test-installer.ps1 -PayloadDirectory $payloads[0].FullName -CompilerPath $compilerPath
+
+      - name: Upload installer validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quotascope-installer-validation
+          path: |
+            windows/target/installer-validation-*/*.log
+            windows/target/installer-validation-*/result.json
+          if-no-files-found: ignore
 
       - name: Upload quotascope-windows-x64
         uses: actions/upload-artifact@v4

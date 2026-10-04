@@ -41,6 +41,10 @@ try{
     $expectedHash=(Get-FileHash -LiteralPath (Join-Path $PayloadDirectory 'quotascope.exe')).Hash
     if((Get-FileHash -LiteralPath $testExe).Hash -ne $expectedHash){throw 'Installed executable differs from payload'}
     foreach($required in @('Microsoft.UI.Xaml.dll','resources.pri','Fonts/HarmonyOS_Sans_SC_Regular.ttf')){if(-not(Test-Path -LiteralPath (Join-Path $installDirectory $required))){throw "Missing installed resource: $required"}}
+    foreach($notice in @('LICENSE','THIRD_PARTY_NOTICES.md')){
+        $sourceHash=(Get-FileHash -LiteralPath (Join-Path $repo $notice)).Hash
+        if((Get-FileHash -LiteralPath (Join-Path $installDirectory $notice)).Hash -ne $sourceHash){throw "Installed notice missing or stale: $notice"}
+    }
     $env:QUOTASCOPE_TEST_EXE=$testExe
     $env:QUOTASCOPE_TEST_IDLE_SECONDS=$IdleSeconds.ToString()
     Push-Location (Join-Path $repo 'windows')
@@ -54,7 +58,7 @@ try{
     $key="HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\${appId}_is1"
     if(Test-Path -LiteralPath $key){throw 'Uninstaller retained its registry entry'}
     if($realHash -and (Get-FileHash -LiteralPath $realExe).Hash -ne $realHash){throw 'Existing installation was modified'}
-    $result=[pscustomobject]@{Passed=$true;Version=$version;InstalledExecutableSHA256=$expectedHash;IndependentIdentity=$true;TrayLifecycle=$true;Uninstalled=$true;ExistingInstallationPreserved=$true;IdleSeconds=$IdleSeconds}
+    $result=[pscustomobject]@{Passed=$true;Version=$version;InstalledExecutableSHA256=$expectedHash;IndependentIdentity=$true;TrayLifecycle=$true;LicenseNoticesVerified=$true;Uninstalled=$true;ExistingInstallationPreserved=$true;IdleSeconds=$IdleSeconds}
     $result|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $validationRoot 'result.json') -Encoding utf8
     $result|ConvertTo-Json
     Write-Output "Validation logs: $validationRoot"

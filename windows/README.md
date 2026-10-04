@@ -1,11 +1,12 @@
 # QuotaScope for Windows
 
-Windows 1.3.0 的新增能力与未完成部分见 [上游移植状态](../Docs/upstream-implementation-status.md)。
+当前主线的能力与验收边界见 [上游移植状态](../Docs/upstream-implementation-status.md)，
+发布前任务与后续顺序见 [验收计划](../Docs/release-acceptance-2026-10-04.md)。
 
 Current Windows implementation and limitations:
 [usage guide](../Docs/windows-1.2.md), [all 77 provider routes](../Docs/providers/windows-ports.md),
-and [extension contract](../Docs/extensions.md). The inherited provider table
-below predates the expanded catalog; use the linked Windows table for support.
+and [extension contract](../Docs/extensions.md). The main branch can contain
+unreleased changes; consult [CHANGELOG](../CHANGELOG.md) for release availability.
 
 A native Windows application for [QuotaScope](../README.md) — the screen-edge monitor
 for your AI coding allowances — written in Rust against the Win32 / Direct2D
@@ -21,14 +22,17 @@ inferred (and labelled `estimated`) or the ring is not drawn at all.
 
 ## Build
 
-Any machine with a Rust toolchain can type-check; the release build runs on
+Build the full workspace on Windows with Rust stable and the MSVC toolchain.
+The platform-independent core can be checked separately. The release build runs on
 GitHub Actions ([`.github/workflows/windows.yml`](../.github/workflows/windows.yml))
 and uploads `quotascope.exe` as an artifact on every push.
 
 ```bash
 cd windows
-cargo build --release        # target/release/quotascope.exe
-cargo test                   # core and application tests
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked
+cargo test --workspace --locked
+cargo build --release --locked # target/release/quotascope.exe
 ```
 
 ## Run
@@ -53,39 +57,34 @@ quotascope.exe --json | jq -r '.accounts[] | "\(.name) \(.headline.usedPercent /
 
 ## What is ported
 
-Reading logic, window selection, caching and reporting are implemented for 14
-of the 17 providers; the ring, card, berth and settings UI are complete. The
-three gaps below depend on mechanisms that are not implemented yet, and are
-listed in Settings with the reason rather than shown as broken.
+All 77 catalog providers have registered Windows routes. Depending on the
+provider, a route uses an API key, an explicitly imported browser session,
+a local client or a logged-in CLI. Implementation and parser fixtures do
+not imply that every provider has been verified with a real account.
+The [Windows route table](../Docs/providers/windows-ports.md) is the support reference.
 
-| Provider | Route | Status |
-| --- | --- | --- |
-| Claude Code | Usage endpoint + OAuth token | ✅ Ported |
-| Codex | Usage endpoint + ChatGPT account | ✅ Ported |
-| Copilot | Premium requests API | ✅ Ported |
-| Grok | Credits API + `x-xai-token-auth` | ✅ Ported |
-| OpenCode | Zen API + stored key | ✅ Ported |
-| Kimi (Command) | Kimi API + stored key | ✅ Ported |
-| z.ai | GLM Coding Plan quota | ✅ Ported |
-| Zhipu (GLM) | GLM Coding Plan quota, mainland host | ✅ Ported |
-| MiniMax | Coding Plan API, overseas + mainland | ✅ Ported |
-| Command Code | Subscriptions + credits + plan table | ✅ Ported |
-| DeepSeek | Balance + basis (since top-up / your budget) | ✅ Ported |
-| Antigravity | Language server while the editor is open (process table, PEB command line, owned-TCP ports) | ✅ Ported |
-| Cursor | Cursor's own login database (read-only SQLite) + usage summary API | ✅ Ported |
-| Ollama Cloud | Browser session cookie | ⬜ Not ported |
-| Grok Bot (in Cursor) | Cursor's saved login | ⬜ Not ported |
-| Volcengine | Signed usage API (HMAC access keys) | ⬜ Not ported |
+The Token page catalogs 54 sources: 34 read a known native or export-cache
+format, and 20 currently accept only the documented JSONL import format.
+DSH supports real, bounded Zstandard decoding; its incomplete-record flag
+remains visible in the source list and filtered totals.
+
+Main also includes cancellable background Token aggregation,
+[DeepSeek console history](../Docs/providers/windows-deepseek-console.md),
+and [conservative Codex local clues](../Docs/providers/windows-codex-signals.md).
+The remaining native formats, interactive login for added accounts,
+full BotMark animation and some Windows-specific translations are tracked
+in the [implementation status](../Docs/upstream-implementation-status.md).
 
 ## Architecture
 
 Two crates:
 
 - **`quotascope-core`** — everything without a window: the provider model, the
-  13 service implementations, DPAPI-encrypted key storage (the Keychain's
+  provider routes, DPAPI-encrypted key storage (the Keychain's
   counterpart here), the reading cache with its reconcile rules, adaptive
-  refresh pacing, alerts, localization (English + 简体中文) and the `--json`
-  report. Compiles anywhere.
+  refresh pacing, alerts, local Token readers, localization and the `--json`
+  report. English, 简体中文, 繁體中文, Japanese and Korean dictionaries are
+  included; some Windows-specific strings still fall back to English.
 - **`quotascope-win`** — the Win32 surface. The dock and the detail flyout are
   two `WS_EX_NOREDIRECTIONBITMAP` windows whose frames are composed by DWM:
   **real Mica** (`DWMWA_SYSTEMBACKDROP_TYPE`), Windows' own corner radius and

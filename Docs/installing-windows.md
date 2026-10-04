@@ -41,3 +41,13 @@
 
 此命令生成本地产物。`windows-v*` 标签的 GitHub Actions 同时生成安装包和免安装 ZIP，
 执行打包后的设置窗口生命周期回归，并发布两种包及各自的 SHA-256 文件。
+
+## 分发包自动验收
+
+Windows CI 分别验证便携 ZIP 和安装后的 Release payload：
+
+- ZIP 解压后核对 LICENSE、THIRD_PARTY_NOTICES.md 与源码中的哈希，再运行设置窗口生命周期。
+- 使用同一 Release payload 和 Inno 脚本生成独立 AppId/目录的验收安装器；核对安装后 EXE 的版本与哈希、WinUI 资源、字体和许可证，运行托盘/设置回归，再卸载。
+- 卸载后检查程序和独立卸载注册项已清理，原有安装文件未修改。CI 的 `quotascope-installer-validation` artifact 保存已有日志和成功时的 result.json。
+
+独立身份安装验证相同程序与安装脚本，不能替代用户原安装身份的升级/回退、真实账户、多 DPI 交互和可选协议注册验收。当前状态与后续任务见[发布验收计划](release-acceptance-2026-10-04.md)。

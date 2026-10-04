@@ -23,17 +23,22 @@ Win32、Direct2D 和 WinUI 3 之上。它直接读取各服务商自己的客户
 - Provider 图标和本地化资源随 Windows 应用一起发布
 - 托盘逐账户用量摘要和用量页入口；设置页支持账户搜索、订阅/API 分组和凭据明文切换
 - 每账户余额口径、预算与低余额提醒；扩展程序可报告自己的用量
-- 可选的 Claude Code/Codex/Antigravity 本机 token 消耗分析，以及 z.ai/智谱近 30 天用量历史
+- 可选的本机 Token 消耗分析：54 个来源目录，其中 34 个可读取已知格式（含导出缓存），20 个支持标准导入
+- DeepSeek 官网历史与独立会话、Codex 本地请求参数线索、DSH 压缩会话读取；缺失或不完整记录会明确提示
+- Claude Code/Codex/Antigravity 账户详细卡，以及 z.ai/智谱近 30 天用量历史
 
 ## 支持的服务商
 
-内置目录包含 77 个 provider，其中 67 个已实现 Windows 读取路由。API key、  
-自建网关和 18 个浏览器会话路由均可在账户设置中配置。路由实现和解析测试  
-不代表所有服务商都经过真实账号验证；未实现的 10 个路由仍在设置中明确标注。
+内置目录包含 77 个 provider，均已注册 Windows 读取路由。API key、
+自建网关和受支持的浏览器会话可在账户设置中配置。部分路由依赖已登录的本机 CLI 或客户端；
+路由实现和解析测试不代表所有服务商都经过真实账号验证。
 
 Windows 完整清单见 [`Docs/providers/windows-ports.md`](Docs/providers/windows-ports.md)，  
 新功能操作说明见 [`Docs/windows-1.2.md`](Docs/windows-1.2.md)，  
 扩展契约见 [`Docs/extensions.md`](Docs/extensions.md)。
+
+当前主线包含尚未发布的改动；已发布版本及差异见 [CHANGELOG](CHANGELOG.md)。
+各项真实账户、桌面与安装验收边界见 [移植进度](Docs/upstream-implementation-status.md)。
 
 ## 下载与构建
 
@@ -62,12 +67,9 @@ cargo build --release
 
 - QuotaScope 不提供自有服务器、账号或遥测服务。
 - 应用请求已配置服务商的用量接口，或读取本机已登录工具的状态。
-- 启用“Token spend”后会在本机扫描已支持的 Claude Code、Codex、Qwen Code、Gemini CLI、  
-  Pi、Oh My Pi、OmO Native、Kimchi、Amp、Droid、Prime Agent、OpenClaw、Mux、  
-  Junie、Augment、JCode、Gajae Code、Codebuff、FX、Reasonix、LM Studio  
-  会话或日志文件，  
-  只解析 token 计数、  
-  模型和时间；不会上传会话正文。开启账户详细卡后，Antigravity 还会读取本机  
+- 启用“Token spend”后会在本机读取已支持工具的会话、数据库或日志，提取 Token 计数、
+  模型与时间；DSH 支持有界解压本机 Zstandard 会话，损坏或超限保留不完整提示。
+  不会上传会话正文。开启账户详细卡后，Antigravity 还会读取本机
   `~/.gemini/antigravity/conversations` 会话数据库中的用量元数据，同样不读取正文。  
   定价功能会下载 models.dev 的公开价目表，超过 24 小时后在下次读取时自动更新，  
   离线时使用本地缓存；models.dev 没有公开价目的模型单独标记，不会用相近模型的价格代替。
