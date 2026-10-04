@@ -6,6 +6,138 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::{cell::Cell, rc::Rc};
+
+const MAX_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_IMPORT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_IMPORT_RECORDS: usize = 100_000;
+const MAX_IMPORT_RECORD_BYTES: usize = 8 * 1024 * 1024;
+
+struct ImportInput<R> {
+    inner: R,
+    bytes: Rc<Cell<u64>>,
+    maximum: u64,
+}
+impl<R: Read> Read for ImportInput<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let used = self.bytes.get();
+        if used > self.maximum {
+            return Err(std::io::Error::other("usage import byte budget exhausted"));
+        }
+        let remaining = self.maximum - used;
+        if remaining == 0 {
+            let count = self.inner.read(&mut [0u8; 1])?;
+            self.bytes.set(used + count as u64);
+            return if count == 0 {
+                Ok(0)
+            } else {
+                Err(std::io::Error::other("usage import byte budget exhausted"))
+            };
+        }
+        let maximum = remaining.min(buffer.len() as u64) as usize;
+        let count = self.inner.read(&mut buffer[..maximum])?;
+        self.bytes.set(used + count as u64);
+        Ok(count)
+    }
+}
+
+#[derive(Default)]
+struct ImportBudget {
+    records: usize,
+    estimated_bytes: usize,
+    exhausted: bool,
+}
+impl ImportBudget {
+    fn allows(&mut self, row: &Value) -> bool {
+        let identity = row["id"].as_str().map_or(0, str::len);
+        let model = row["model"].as_str().map_or(0, str::len);
+        let charge = identity
+            .saturating_add(model.saturating_mul(2))
+            .saturating_add(224);
+        self.records += 1;
+        self.estimated_bytes = self.estimated_bytes.saturating_add(charge);
+        self.exhausted |= self.records > MAX_IMPORT_RECORDS
+            || self.estimated_bytes > MAX_IMPORT_RECORD_BYTES
+            || !crate::scan::checkpoint();
+        !self.exhausted
+    }
+}
+
+struct ImportVisitor<'a> {
+    source: &'a str,
+    file: &'a Path,
+    reader: &'a mut Reader,
+    budget: &'a mut ImportBudget,
+}
+impl ImportVisitor<'_> {
+    fn consume<E: serde::de::Error>(&mut self, row: Value) -> Result<(), E> {
+        if !self.budget.allows(&row) {
+            return Err(E::custom("usage import record budget exhausted"));
+        }
+        parse(
+            self.source,
+            &row,
+            true,
+            self.file,
+            self.reader,
+            &mut (0, None),
+        );
+        Ok(())
+    }
+}
+impl<'de> serde::de::Visitor<'de> for ImportVisitor<'_> {
+    type Value = ();
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a usage object or an array of usage objects")
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(mut self, mut sequence: A) -> Result<(), A::Error> {
+        loop {
+            if !crate::scan::checkpoint() {
+                return Err(serde::de::Error::custom("scan cancelled"));
+            }
+            let Some(row) = sequence.next_element::<Value>()? else {
+                return Ok(());
+            };
+            self.consume(row)?;
+        }
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(mut self, map: A) -> Result<(), A::Error> {
+        let row =
+            serde::Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+        self.consume(row)
+    }
+}
+
+fn read_import_json(
+    source: &str,
+    file: &Path,
+    input: impl Read + 'static,
+    reader: &mut Reader,
+    budget: &mut ImportBudget,
+) {
+    let buffered = std::io::BufReader::with_capacity(
+        64 * 1024,
+        crate::zstd_stream::plain_limit(input, MAX_IMPORT_FILE_BYTES),
+    );
+    let mut decoder = serde_json::Deserializer::from_reader(buffered);
+    let result = serde::Deserializer::deserialize_any(
+        &mut decoder,
+        ImportVisitor {
+            source,
+            file,
+            reader,
+            budget,
+        },
+    )
+    .and_then(|_| decoder.end());
+    if result.is_err() {
+        reader.partial = true;
+    }
+    crate::scan::file_read();
+}
 
 pub const CATALOG: &[(&str, &str, &str)] = &[
     ("grok", "Grok Build", ".grok/sessions"),
@@ -191,7 +323,10 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
     let mut reader = Reader::default();
     let mut files = Vec::new();
     let mut seen_paths = HashSet::new();
-    let mut zcode_listed = 0;
+    let mut import_files = Vec::new();
+    let mut import_seen = HashSet::new();
+    let mut import_listed = 0;
+    let mut import_roots = 0;
     if id == "zcode" && paths.len() > 16 {
         reader.partial = true;
     }
@@ -199,52 +334,64 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
         .iter()
         .take(if id == "zcode" { 16 } else { paths.len() })
     {
+        if path.components().any(|p| p.as_os_str() == "UsageImports") {
+            import_roots += 1;
+            if import_roots > 16 {
+                reader.partial = true;
+                continue;
+            }
+            collect_imports(
+                path,
+                0,
+                &mut import_files,
+                &mut import_seen,
+                &mut import_listed,
+                &mut reader.partial,
+            );
+            continue;
+        }
         if id == "zcode" {
-            if path.components().any(|p| p.as_os_str() == "UsageImports") {
-                collect_zcode_imports(
-                    path,
-                    0,
-                    &mut files,
-                    &mut seen_paths,
-                    &mut zcode_listed,
-                    &mut reader.partial,
-                );
+            let candidates = if path.is_dir() {
+                vec![path.join("db.sqlite"), path.join("cli/db/db.sqlite")]
             } else {
-                let candidates = if path.is_dir() {
-                    vec![path.join("db.sqlite"), path.join("cli/db/db.sqlite")]
-                } else {
-                    vec![path.clone()]
-                };
-                for candidate in candidates {
-                    if candidate.file_name().is_none_or(|name| name != "db.sqlite") {
-                        continue;
+                vec![path.clone()]
+            };
+            for candidate in candidates {
+                if candidate.file_name().is_none_or(|name| name != "db.sqlite") {
+                    continue;
+                }
+                if let Ok(canonical) = candidate.canonicalize() {
+                    if seen_paths.insert(canonical) {
+                        files.push(candidate);
                     }
-                    if let Ok(canonical) = candidate.canonicalize() {
-                        if seen_paths.insert(canonical) {
-                            files.push(candidate);
-                        }
-                    } else if candidate.try_exists().unwrap_or(true) {
-                        reader.partial = true;
-                    }
+                } else if candidate.try_exists().unwrap_or(true) {
+                    reader.partial = true;
                 }
             }
             continue;
         }
-        if !native_supported(id) && !path.components().any(|p| p.as_os_str() == "UsageImports") {
+        if !native_supported(id) {
             continue;
         }
         collect(path, &mut files, &mut seen_paths);
     }
+    files.extend(import_files);
     // Snapshot replacement must not depend on filesystem enumeration order.
     files.sort();
+    files.dedup();
     let mut zcode_database = false;
-    let mut zcode_import_bytes = 0_u64;
+    let mut import_bytes = 0_u64;
+    let mut import_budget = ImportBudget::default();
+    let import_read_bytes = Rc::new(Cell::new(0));
     for file in files {
         if !crate::scan::checkpoint() {
             reader.partial = true;
             break;
         }
         let import = file.components().any(|p| p.as_os_str() == "UsageImports");
+        if import && import_budget.exhausted {
+            continue;
+        }
         let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if id == "zcode" && !import {
             // One official database owns all ZCode attempts. Never add a second
@@ -304,8 +451,8 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
             .metadata()
             .ok()
             .and_then(|m| Some((m.len(), m.modified().ok()?)));
-        let maximum = if id == "zcode" {
-            8 * 1024 * 1024
+        let maximum = if import {
+            MAX_IMPORT_FILE_BYTES
         } else if dsh {
             crate::zstd_stream::MAX_BYTES
         } else {
@@ -315,12 +462,11 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
             reader.partial = true;
             continue;
         }
-        if id == "zcode" {
-            zcode_import_bytes =
-                zcode_import_bytes.saturating_add(stamp.map(|s| s.0).unwrap_or(maximum));
-            if zcode_import_bytes > 64 * 1024 * 1024 {
+        if import {
+            import_bytes = import_bytes.saturating_add(stamp.map(|s| s.0).unwrap_or(maximum));
+            if import_bytes > MAX_IMPORT_TOTAL_BYTES {
                 reader.partial = true;
-                break;
+                continue;
             }
         }
         let Ok(mut input) = std::fs::File::open(&file) else {
@@ -335,16 +481,26 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
             continue;
         }
         if file.extension().is_some_and(|s| s == "json") {
-            if let Ok(value) = std::fs::read(&file).and_then(|bytes| {
+            if import {
+                if input.seek(SeekFrom::Start(0)).is_err() {
+                    reader.partial = true;
+                } else {
+                    let input = ImportInput {
+                        inner: input,
+                        bytes: import_read_bytes.clone(),
+                        maximum: MAX_IMPORT_TOTAL_BYTES,
+                    };
+                    read_import_json(id, &file, input, &mut reader, &mut import_budget);
+                }
+            } else if let Ok(value) = std::fs::read(&file).and_then(|bytes| {
                 serde_json::from_slice::<Value>(&bytes).map_err(std::io::Error::other)
             }) {
                 if let Some(rows) = value.as_array() {
                     for row in rows {
                         parse(id, row, import, &file, &mut reader, &mut (0, None));
                     }
-                } else if import {
-                    parse(id, &value, true, &file, &mut reader, &mut (0, None));
                 }
+                crate::scan::file_read();
             } else {
                 reader.partial = true;
             }
@@ -361,13 +517,22 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
                         continue;
                     }
                 }
+            } else if import {
+                crate::zstd_stream::plain_limit(
+                    ImportInput {
+                        inner: input,
+                        bytes: import_read_bytes.clone(),
+                        maximum: MAX_IMPORT_TOTAL_BYTES,
+                    },
+                    maximum,
+                )
             } else if dsh {
                 crate::zstd_stream::plain(input)
             } else {
                 Box::new(input)
             };
             let hash = std::collections::hash_map::DefaultHasher::new();
-            let mut lines = if dsh || id == "zcode" {
+            let mut lines = if dsh || import {
                 crate::scan::LineReader::with_line_limit(input, crate::zstd_stream::MAX_LINE_BYTES)
             } else {
                 crate::scan::LineReader::new(input, hash, 0)
@@ -375,6 +540,10 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
             let mut context = (0, None);
             for line in lines.by_ref() {
                 if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                    if import && !import_budget.allows(&value) {
+                        reader.partial = true;
+                        break;
+                    }
                     parse(id, &value, import, &file, &mut reader, &mut context);
                 } else {
                     reader.partial = true;
@@ -384,7 +553,7 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
                 reader.partial = true;
             }
         }
-        if (dsh || id == "zcode")
+        if (dsh || import)
             && (stamp.is_none()
                 || file
                     .metadata()
@@ -405,7 +574,7 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
     reader
 }
 
-fn collect_zcode_imports(
+fn collect_imports(
     path: &Path,
     depth: usize,
     out: &mut Vec<PathBuf>,
@@ -456,7 +625,7 @@ fn collect_zcode_imports(
                 *partial = true;
                 continue;
             };
-            collect_zcode_imports(&entry.path(), depth + 1, out, seen, listed, partial);
+            collect_imports(&entry.path(), depth + 1, out, seen, listed, partial);
             if *listed >= 10_000 || out.len() >= 1024 || !crate::scan::checkpoint() {
                 *partial = true;
                 break;
@@ -1318,5 +1487,35 @@ mod tests {
             assert_eq!(models.len(), 1);
             assert!(models.contains_key("replacement"));
         }
+    }
+
+    #[test]
+    fn import_stream_byte_limit_is_shared_and_exact_eof_remains_complete() {
+        let bytes = Rc::new(Cell::new(0));
+        let mut first = ImportInput {
+            inner: &b"abc"[..],
+            bytes: bytes.clone(),
+            maximum: 5,
+        };
+        let mut output = String::new();
+        first.read_to_string(&mut output).unwrap();
+        assert_eq!(output, "abc");
+        let mut second = ImportInput {
+            inner: &b"de"[..],
+            bytes: bytes.clone(),
+            maximum: 5,
+        };
+        second.read_to_string(&mut output).unwrap();
+        assert_eq!(output, "abcde");
+        let mut excessive = ImportInput {
+            inner: &b"ignored"[..],
+            bytes: bytes.clone(),
+            maximum: 5,
+        };
+        assert!(excessive.read_to_string(&mut output).is_err());
+        assert_eq!(output, "abcde");
+        assert_eq!(bytes.get(), 6, "one byte probes beyond the exact budget");
+        assert!(excessive.read_to_string(&mut output).is_err());
+        assert_eq!(bytes.get(), 6, "exhausted streams stop reading");
     }
 }

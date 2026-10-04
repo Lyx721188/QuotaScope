@@ -47,7 +47,7 @@ cargo build --release --workspace --locked
 
 ## 9. main 合并后的下一阶段
 
-N4b-1 至 N4b-4 的格式、解析、缓存、冻结样本与 Debug UI 已完成。**R1d 已完成**：dcaa37c 的 CI 使用实际 ZIP 内同一份 Release 程序，通过 DSH/ZCode Token 页面、刷新、修复及关闭重开验收。R2 前提检查尚未找到受支持的 Kiro 原生 CLI；DeepSeek 实账对照仍未完成。当前下一项是修复标准导入的严格计数与零值覆盖，并验证读入后的 partial/未计价状态；升级与发布任务继续单独保留验收状态，详见[任务卡](release-acceptance-2026-10-04.md)。
+N4b-1 至 N4b-4 的格式、解析、缓存、冻结样本与 Debug UI 已完成。**R1d 已完成**：dcaa37c 的 CI 使用实际 ZIP 内同一份 Release 程序，通过 DSH/ZCode Token 页面、刷新、修复及关闭重开验收。R2 前提检查尚未找到受支持的 Kiro 原生 CLI；DeepSeek 实账对照仍未完成。标准导入的严格计数、零值覆盖、partial/未计价 UI 已随 `53bd960` 完成，[对应 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37186053767) 成功。各来源的有界遍历、读取流、记录预算和流式 JSON 数组已实现；734 passed /6 ignored、隔离 Debug UI 通过。当前下一项是核对该批最终 Release CI，之后修复浏览器回退副本的路径隔离与清理；升级与发布任务继续单独保留验收状态，详见[任务卡](release-acceptance-2026-10-04.md)。
 
 | 顺序 | 范围与依赖 | 验收标准 | 退出产物 |
 |---|---|---|---|

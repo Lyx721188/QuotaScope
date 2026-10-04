@@ -2,6 +2,41 @@
 
 main 支持 `quotascope.usage.v1`，供尚无原生读取器的来源或独立导出记录使用。文件放在 `%APPDATA%\QuotaScope\UsageImports\<source-id>\`，使用 `.jsonl`（每行一个对象）；也接受 `.json` 对象或对象数组。来源 ID 见 [移植状态与导入入口](../upstream-implementation-status.md)。应用仍需启用本机 Token 读取。
 
+本导入入口的来源 ID：
+
+| ID | 来源 |
+|---|---|
+| `grok` | Grok Build |
+| `kimi` | Kimi CLI |
+| `devin-cli` | Devin |
+| `roocode` | Roo Code |
+| `kilocode` | Kilo Code |
+| `cline` | Cline |
+| `codebuddy` | CodeBuddy |
+| `workbuddy` | WorkBuddy |
+| `cherrystudio` | Cherry Studio |
+| `commandcode` | Command Code |
+| `opencodereview` | OpenCodeReview |
+| `zcode` | ZCode |
+| `hermes` | Hermes |
+| `goose` | Goose |
+| `zed` | Zed |
+| `kiro` | Kiro |
+| `crush` | Crush |
+| `unsloth` | Unsloth |
+| `antigravity-cli` | Antigravity CLI |
+| `micode` | MiMo Code |
+| `devin-desktop` | Devin Desktop |
+| `freebuff` | Freebuff |
+| `dsh` | DeepSeek Harness |
+| `cursor` | Cursor (export) |
+| `antigravity` | Antigravity (export) |
+| `trae` | Trae (export) |
+| `warp` | Warp (export) |
+| `hindsight` | Hindsight (export) |
+| `mcode` | MiniMax Code (export) |
+| `copilot` | GitHub Copilot |
+
 ```json
 {"schema":"quotascope.usage.v1","source":"zed","id":"request-1","timestamp":"2026-10-01T14:00:00+08:00","model":"example-model","usage":{"inputTokens":10,"outputTokens":7,"cacheReadTokens":5,"cacheWriteTokens":3,"reasoningTokens":4,"totalTokens":25}}
 ```
@@ -24,6 +59,10 @@ main 支持 `quotascope.usage.v1`，供尚无原生读取器的来源或独立�
 同来源、同 ID 的后续可读记录覆盖旧快照，包含明确的全零记录；模型或时段变化时旧桶也随之移除。这个顺序由扫描顺序决定：文件路径按排序读取、同一文件按行读取。建议在单个文件追加快照，避免多个文件包含相互冲突的版本。导入身份与原生记录身份分别处理；不要把已由原生读取器统计的同一批请求再次导入，否则可能重复计数。
 
 缺少公开价格的模型仍显示 Token 和“未计价”，不套用邻近模型价格。导入校验和估算不能证明上游账单完整，也不能覆盖其他设备或已删除的历史。
+
+每个来源的导入扫描最多接受 16 个根路径，目录深度 8、10,000 个目录项、1,024 个 JSON/JSONL 文件。单文件最多 8 MiB、JSONL 单行最多 4 MiB、累计文件字节最多 64 MiB；实际读取流也共享字节预算，不仅检查读取前的文件大小；边界额外探测最多 1 字节，以区分恰好 EOF 与超限。符号链接与 Windows reparse point 不遍历。
+
+JSON 数组逐条读取，并在记录间检查取消。累计最多 100,000 条可解析记录，另有 8 MiB 的保守记录预算（身份、模型和固定开销）；重复快照也消耗该预算，因此可能更早停止。该预算用于限制保留的派生状态，不是整个进程的内存上限。达到限制或文件读取中变化时显示“不完整”，不清空已读计数或顺带跳过原生记录。损坏的 JSON 数组尾部保留已读的有效前缀，修复后可重新扫描。
 
 回归覆盖 malformed counters、缺失时间/身份、同 ID 重复与零值覆盖、reasoning 包含关系，以及文件读取后的 partial/未计价传播。在 `windows/` 执行：
 

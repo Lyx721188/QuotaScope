@@ -175,10 +175,22 @@ function Agent([string]$name) { Choose-Filter 1 $name }
 function Write-Imports([string]$mode) {
     $folder=Join-Path $data 'UsageImports/zcode'
     $path=Join-Path $folder 'usage.jsonl'
-    if($mode -eq 'clear') { Remove-Item -LiteralPath $path; return }
+    $jsonPath=Join-Path $folder 'usage.json'
+    if($mode -eq 'clear') { Remove-Item -LiteralPath $path,$jsonPath -ErrorAction SilentlyContinue; return }
     New-Item -ItemType Directory -Path $folder -Force | Out-Null
     $row=@{schema='quotascope.usage.v1';source='zcode';id='import-fixture';timestamp=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();model='fixture-zcode';usage=@{inputTokens=10;outputTokens=7;cacheReadTokens=5;cacheWriteTokens=3;reasoningTokens=4;totalTokens=25}}
     $lines=@($row|ConvertTo-Json -Depth 4 -Compress)
+    if($mode -in @('array','torn-array')) {
+        if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path}
+        $text='['+$lines[0]+',{'
+        if($mode -eq 'array') {
+            $row.usage=@{inputTokens=2;outputTokens=3}
+            $text='['+$lines[0]+','+($row|ConvertTo-Json -Depth 4 -Compress)+']'
+        }
+        [IO.File]::WriteAllText($jsonPath,$text,[Text.UTF8Encoding]::new($false))
+        return
+    }
+    if(Test-Path -LiteralPath $jsonPath){Remove-Item -LiteralPath $jsonPath}
     if($mode -eq 'invalid') {
         $row.id='missing-output';$row.usage=@{inputTokens=999}
         $lines+=($row|ConvertTo-Json -Depth 4 -Compress)
@@ -272,6 +284,18 @@ try {
     Refresh
     Wait-Total 120
     Wait-Text $warning -Absent
+    Write-Imports 'torn-array'
+    Refresh
+    Wait-Total 145
+    Wait-Text $warning
+    Write-Imports 'array'
+    Refresh
+    Wait-Total 125
+    Wait-Text $warning -Absent
+    Write-Imports 'clear'
+    Refresh
+    Wait-Total 120
+    Wait-Text $warning -Absent
     $window.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
     Start-Sleep -Milliseconds 200
     if($testApp.HasExited){throw 'App exited on Settings close'}
@@ -289,7 +313,7 @@ try {
     Agent 'ZCode'
     Wait-Total 120
     Wait-Text $warning -Absent
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;StandardImportCounters=$true;ZeroSnapshotReplacesUsage=$true;UnknownImportModelUnpriced=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;StandardImportCounters=$true;ZeroSnapshotReplacesUsage=$true;UnknownImportModelUnpriced=$true;StreamedJsonArrayAndRepair=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
 } catch {
     $originalError=$_
     try {if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $OutputDirectory 'zcode-ui-failure.json')}}catch{}

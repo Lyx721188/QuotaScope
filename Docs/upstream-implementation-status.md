@@ -15,7 +15,7 @@
 
 N1–N4a 的源码基线回归为 706 passed / 6 ignored；含 ZCode 的 dcaa37c 为 724 passed / 6 ignored，fmt、普通 Clippy、Release 和 JSON CLI 完成；已有 Clippy 告警仍存在。每次后续改动以对应 commit 的检查为准。
 
-当前目录为 77 个 Windows 路由、54 个 Token 来源（35 个已知格式读取，含导出缓存；19 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。R1d 已由 dcaa37c 的 Release CI 验收。标准导入新增严格计数、零值覆盖和确定的文件顺序，源码回归 729 passed / 6 ignored；本批隔离 Debug UI 也通过，Release UI 随 main 的 CI 单独核对，真实账户与升级仍分别保留验收状态。
+当前目录为 77 个 Windows 路由、54 个 Token 来源（35 个已知格式读取，含导出缓存；19 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。R1d 已由 dcaa37c 的 Release CI 验收。标准导入新增严格计数、零值覆盖和确定的文件顺序，源码回归 729 passed / 6 ignored；隔离 Debug UI 及 [53bd960 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37186053767) 通过，各来源的标准导入另有统一的遍历/读取/记录预算和可取消 JSON 数组流；整仓 734 passed /6 ignored、隔离 Debug UI 通过，Release UI 随提交的 CI 单独核对。真实账户与升级仍分别保留验收状态。
 
 ## 已发布的 1.3.0 / 1.3.1 基线
 

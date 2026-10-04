@@ -23,7 +23,7 @@ impl<R: Read> Read for Limited<R> {
             } else {
                 Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Zstandard stream exceeds the read limit",
+                    "usage stream exceeds the read limit",
                 ))
             };
         }
@@ -37,9 +37,12 @@ pub(crate) fn decode(reader: impl Read + 'static) -> io::Result<Box<dyn Read>> {
     decode_limits(reader, MAX_BYTES, MAX_BYTES)
 }
 pub(crate) fn plain(reader: impl Read + 'static) -> Box<dyn Read> {
+    plain_limit(reader, MAX_BYTES)
+}
+pub(crate) fn plain_limit(reader: impl Read + 'static, maximum: u64) -> Box<dyn Read> {
     Box::new(Limited {
         inner: reader,
-        remaining: MAX_BYTES,
+        remaining: maximum,
     })
 }
 fn decode_limits(reader: impl Read + 'static, raw: u64, decoded: u64) -> io::Result<Box<dyn Read>> {
