@@ -82,6 +82,7 @@ struct AccountDetails {
     models: Vec<quotascope_core::model_details::Model>,
     cache: quotascope_core::prompt_cache::CacheReading,
     partial: bool,
+    timings_partial: bool,
 }
 
 #[derive(Default)]
@@ -350,13 +351,18 @@ impl Shared {
                             })
                             .unwrap_or_default();
                         AccountDetails {
-                            models: quotascope_core::model_details::models(&ledger, &timings, 30),
+                            models: quotascope_core::model_details::models(
+                                &ledger,
+                                &timings.models,
+                                30,
+                            ),
                             cache: quotascope_core::prompt_cache::read_for(
                                 provider,
                                 &quotascope_core::home_dir(),
                                 now,
                             ),
                             partial: ledger.has_partial_records,
+                            timings_partial: timings.partial,
                         }
                     },
                 )
@@ -3468,6 +3474,9 @@ impl SettingsApp {
         if let Some(details) = details {
             if details.partial {
                 rows.push(self.muted(t("Counts may be incomplete.")).into());
+            }
+            if details.timings_partial {
+                rows.push(self.muted(t("Some local timing records couldn't be read; speed covers readable replies only.")).into());
             }
             if details.models.is_empty() {
                 rows.push(self.muted(t("No local records.")).into());

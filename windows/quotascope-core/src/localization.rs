@@ -201,6 +201,7 @@ const TABLE: &[Entry] = &[
     Entry { key: "Last 30 days", en: "Last 30 days", zh: "最近 30 天" },
     Entry { key: "Last 90 days", en: "Last 90 days", zh: "最近 90 天" },
     Entry { key: "All time", en: "All time", zh: "全部时间" },
+    Entry { key: "Some local timing records couldn't be read; speed covers readable replies only.", en: "Some local timing records couldn't be read; speed covers readable replies only.", zh: "部分本机时序记录无法读取；速度只覆盖可读取的回复。" },
     Entry { key: "Agent", en: "Agent", zh: "工具" },
     Entry { key: "Model", en: "Model", zh: "模型" },
     Entry { key: "Group by", en: "Group by", zh: "分组方式" },

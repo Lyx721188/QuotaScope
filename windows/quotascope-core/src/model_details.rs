@@ -3,8 +3,11 @@
 use crate::ledger::{TokenTally, UsageLedger};
 use crate::model::Provider;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, Default)]
 pub struct Timing {
@@ -91,52 +94,206 @@ pub fn models(ledger: &UsageLedger, timings: &BTreeMap<String, Timing>, days: i6
     models
 }
 
-pub fn read_timings(provider: Provider, root: &Path, now: i64) -> BTreeMap<String, Timing> {
-    fn visit(provider: Provider, root: &Path, cutoff: i64, out: &mut BTreeMap<String, Timing>) {
-        let Ok(entries) = std::fs::read_dir(root) else {
+#[derive(Debug, Default)]
+pub struct TimingReport {
+    pub models: BTreeMap<String, Timing>,
+    /// Timing coverage only; this does not change ledger token counts.
+    pub partial: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TimingLimits {
+    depth: usize,
+    entries: usize,
+    files: usize,
+    file_bytes: u64,
+    total_bytes: u64,
+    line_bytes: usize,
+}
+impl Default for TimingLimits {
+    fn default() -> Self {
+        Self {
+            depth: 64,
+            entries: 10_000,
+            files: 1024,
+            file_bytes: 8 * 1024 * 1024,
+            total_bytes: 64 * 1024 * 1024,
+            line_bytes: 4 * 1024 * 1024,
+        }
+    }
+}
+
+struct CountedFile {
+    file: std::fs::File,
+    used: Rc<Cell<u64>>,
+}
+impl Read for CountedFile {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.file.read(buffer)?;
+        self.used.set(self.used.get().saturating_add(count as u64));
+        Ok(count)
+    }
+}
+
+pub fn read_timings(provider: Provider, root: &Path, now: i64) -> TimingReport {
+    read_timings_with_limits(provider, root, now, TimingLimits::default())
+}
+
+fn read_timings_with_limits(
+    provider: Provider,
+    root: &Path,
+    now: i64,
+    limits: TimingLimits,
+) -> TimingReport {
+    fn collect(
+        root: &Path,
+        depth: usize,
+        limits: TimingLimits,
+        listed: &mut usize,
+        paths: &mut BTreeSet<PathBuf>,
+        partial: &mut bool,
+    ) {
+        if !crate::scan::checkpoint() || depth > limits.depth {
+            *partial = true;
             return;
-        };
-        for entry in entries.flatten() {
-            if !crate::scan::checkpoint() {
+        }
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) => {
+                *partial |= error.kind() != std::io::ErrorKind::NotFound;
                 return;
             }
+        };
+        for entry in entries {
+            if !crate::scan::checkpoint() || *listed >= limits.entries {
+                *partial = true;
+                return;
+            }
+            *listed += 1;
+            let Ok(entry) = entry else {
+                *partial = true;
+                continue;
+            };
             let Ok(kind) = entry.file_type() else {
+                *partial = true;
                 continue;
             };
             if kind.is_dir() {
-                visit(provider, &entry.path(), cutoff, out);
+                collect(&entry.path(), depth + 1, limits, listed, paths, partial);
             } else if kind.is_file()
                 && entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl")
             {
-                let modified = entry
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|t| t.as_millis() as i64);
-                if !modified.is_some_and(|at| at >= cutoff) {
-                    continue;
+                if paths.len() >= limits.files {
+                    *partial = true;
+                    return;
                 }
-                if let Ok(file) = std::fs::File::open(entry.path()) {
-                    let mut reader = crate::scan::LineReader::new(file, Default::default(), 0);
-                    let scanned = parse(provider, reader.by_ref(), cutoff);
-                    if reader.finish().is_ok() {
-                        for (model, timing) in scanned {
-                            out.entry(model).or_default().merge(&timing);
-                        }
-                    }
-                }
+                paths.insert(entry.path());
             }
         }
     }
-    let mut out = BTreeMap::new();
-    visit(provider, root, now.saturating_sub(86_400_000), &mut out);
-    out
+
+    let cutoff = now.saturating_sub(86_400_000);
+    let mut report = TimingReport::default();
+    let mut paths = BTreeSet::new();
+    collect(root, 0, limits, &mut 0, &mut paths, &mut report.partial);
+    let used = Rc::new(Cell::new(0_u64));
+    for path in paths {
+        if !crate::scan::checkpoint() {
+            report.partial = true;
+            break;
+        }
+        let Some(before) = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| Some((m.len(), m.modified().ok()?, m.created().ok())))
+        else {
+            report.partial = true;
+            continue;
+        };
+        let modified: chrono::DateTime<chrono::Utc> = before.1.into();
+        if modified.timestamp_millis() < cutoff {
+            continue;
+        }
+        let allowed = limits
+            .file_bytes
+            .min(limits.total_bytes.saturating_sub(used.get()));
+        if before.0 > allowed {
+            report.partial = true;
+            continue;
+        }
+        let Ok(file) = std::fs::File::open(&path) else {
+            report.partial = true;
+            continue;
+        };
+        let mut reader = crate::scan::LineReader::with_line_limit(
+            crate::zstd_stream::plain_limit(
+                CountedFile {
+                    file,
+                    used: used.clone(),
+                },
+                allowed,
+            ),
+            limits.line_bytes,
+        );
+        let scanned = parse_checked(provider, reader.by_ref(), cutoff);
+        let after = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| Some((m.len(), m.modified().ok()?, m.created().ok())));
+        if reader.finish().is_err()
+            || scanned.partial
+            || after != Some(before)
+            || !crate::scan::checkpoint()
+        {
+            report.partial = true;
+            continue;
+        }
+        report.partial |= scanned.partial;
+        for (model, timing) in scanned.models {
+            if report.models.len() >= 1024 && !report.models.contains_key(&model) {
+                report.partial = true;
+                continue;
+            }
+            report.models.entry(model).or_default().merge(&timing);
+        }
+    }
+    report
 }
 
 pub fn parse(
     provider: Provider,
     lines: impl Iterator<Item = String>,
+    cutoff: i64,
+) -> BTreeMap<String, Timing> {
+    parse_checked(provider, lines, cutoff).models
+}
+
+fn parse_checked(
+    provider: Provider,
+    lines: impl Iterator<Item = String>,
+    cutoff: i64,
+) -> TimingReport {
+    let mut partial = false;
+    let mut rows = 0;
+    let decoded = lines.take(100_001).filter_map(|line| {
+        rows += 1;
+        if rows > 100_000 {
+            partial = true;
+            return None;
+        }
+        match serde_json::from_str::<Value>(&line) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                partial |= !line.trim().is_empty();
+                None
+            }
+        }
+    });
+    let models = parse_values(provider, decoded, cutoff);
+    TimingReport { models, partial }
+}
+
+fn parse_values(
+    provider: Provider,
+    values: impl Iterator<Item = Value>,
     cutoff: i64,
 ) -> BTreeMap<String, Timing> {
     let mut out: BTreeMap<String, Timing> = BTreeMap::new();
@@ -155,13 +312,10 @@ pub fn parse(
             }
         }
     };
-    for line in lines {
+    for root in values {
         if !crate::scan::checkpoint() {
             break;
         }
-        let Ok(root) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
         let at = root
             .get("timestamp")
             .and_then(Value::as_str)
@@ -309,6 +463,186 @@ pub fn parse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TimingFixture {
+        root: PathBuf,
+        temp: PathBuf,
+    }
+    impl TimingFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let temp = std::env::temp_dir().canonicalize().unwrap();
+            let root = temp.join(format!(
+                "qs-timing-{}-{}-{}",
+                std::process::id(),
+                crate::timeutil::now_ms(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&root).unwrap();
+            Self { root, temp }
+        }
+        fn write(&self, name: &str, model: &str) -> PathBuf {
+            let path = self.root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut rows =
+                vec![serde_json::json!({"type":"turn_context","payload":{"model":model}})];
+            for turn in 0..3 {
+                let at = chrono::DateTime::from_timestamp_millis(
+                    crate::timeutil::now_ms() - 60_000 + turn * 10_000,
+                )
+                .unwrap();
+                let finished = at + chrono::Duration::seconds(10);
+                rows.push(serde_json::json!({"type":"event_msg","timestamp":at.to_rfc3339(),"payload":{"type":"task_started"}}));
+                rows.push(serde_json::json!({"type":"event_msg","timestamp":finished.to_rfc3339(),"payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":100*(turn+1)}}}}));
+                rows.push(serde_json::json!({"type":"event_msg","timestamp":finished.to_rfc3339(),"payload":{"type":"task_complete","turn_id":turn.to_string(),"time_to_first_token_ms":1000}}));
+            }
+            let content = rows
+                .into_iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            std::fs::write(&path, content).unwrap();
+            path
+        }
+        fn read(&self, limits: TimingLimits) -> TimingReport {
+            read_timings_with_limits(
+                Provider::Codex,
+                &self.root,
+                crate::timeutil::now_ms(),
+                limits,
+            )
+        }
+    }
+    impl Drop for TimingFixture {
+        fn drop(&mut self) {
+            assert!(self.root.is_absolute() && self.root.parent() == Some(self.temp.as_path()));
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn bounded_timing_reader_keeps_complete_measured_replies_and_skips_old_files() {
+        let fixture = TimingFixture::new();
+        fixture.write("nested/current.jsonl", "current");
+        let old = fixture.write("old.jsonl", "old");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(old)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+        let report = fixture.read(TimingLimits::default());
+        assert!(!report.partial);
+        assert_eq!(report.models.len(), 1);
+        assert_eq!(report.models["current"].replies, 3);
+        assert_eq!(report.models["current"].speed(), Some(10.0));
+        assert_eq!(report.models["current"].first_token(), Some(1.0));
+        assert!(
+            !read_timings(
+                Provider::Codex,
+                &fixture.root.join("missing"),
+                crate::timeutil::now_ms()
+            )
+            .partial
+        );
+    }
+
+    #[test]
+    fn timing_directory_depth_entry_and_file_limits_preserve_other_files() {
+        let fixture = TimingFixture::new();
+        fixture.write("current.jsonl", "current");
+        fixture.write("a/b/deep.jsonl", "deep");
+        let report = fixture.read(TimingLimits {
+            depth: 1,
+            ..TimingLimits::default()
+        });
+        assert!(report.partial);
+        assert_eq!(report.models.len(), 1);
+        assert_eq!(report.models["current"].replies, 3);
+        let report = fixture.read(TimingLimits {
+            entries: 0,
+            ..TimingLimits::default()
+        });
+        assert!(report.partial && report.models.is_empty());
+        let report = fixture.read(TimingLimits {
+            files: 1,
+            ..TimingLimits::default()
+        });
+        assert!(report.partial);
+        assert_eq!(report.models.values().map(|m| m.replies).sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn timing_byte_and_line_limits_keep_complete_files_without_guessing_the_rest() {
+        let fixture = TimingFixture::new();
+        let good = fixture.write("a-good.jsonl", "good");
+        let size = std::fs::metadata(good).unwrap().len();
+        std::fs::write(
+            fixture.root.join("b-large.jsonl"),
+            vec![b'x'; size as usize + 1],
+        )
+        .unwrap();
+        let report = fixture.read(TimingLimits {
+            file_bytes: size,
+            ..TimingLimits::default()
+        });
+        assert!(report.partial);
+        assert_eq!(report.models["good"].replies, 3);
+        std::fs::remove_file(fixture.root.join("b-large.jsonl")).unwrap();
+        fixture.write("c-other.jsonl", "other");
+        let report = fixture.read(TimingLimits {
+            total_bytes: size,
+            ..TimingLimits::default()
+        });
+        assert!(report.partial);
+        assert_eq!(report.models.len(), 1);
+        assert_eq!(report.models["good"].replies, 3);
+        let report = fixture.read(TimingLimits {
+            line_bytes: 8,
+            ..TimingLimits::default()
+        });
+        assert!(report.partial && report.models.is_empty());
+    }
+
+    #[test]
+    fn damaged_or_excessive_timing_rows_do_not_contaminate_complete_files() {
+        use std::io::Write;
+        let fixture = TimingFixture::new();
+        fixture.write("good.jsonl", "good");
+        let broken = fixture.write("broken.jsonl", "broken");
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&broken)
+            .unwrap()
+            .write_all(b"{torn json\n")
+            .unwrap();
+        let report = fixture.read(TimingLimits::default());
+        assert!(report.partial);
+        assert_eq!(report.models.len(), 1);
+        assert_eq!(report.models["good"].replies, 3);
+        std::fs::write(broken, "\n".repeat(100_001)).unwrap();
+        let report = fixture.read(TimingLimits::default());
+        assert!(report.partial);
+        assert_eq!(report.models.len(), 1);
+        let control = std::sync::Arc::new(crate::scan::Control::default());
+        let stop = control.clone();
+        let result = crate::scan::run(
+            control,
+            1,
+            |_| {},
+            || {
+                stop.cancel();
+                fixture.read(TimingLimits::default())
+            },
+        );
+        assert!(matches!(result, Err(crate::scan::Cancelled)));
+        assert_eq!(
+            fixture.read(TimingLimits::default()).models["good"].replies,
+            3
+        );
+    }
+
     #[test]
     fn claude_streaming_is_one_timed_reply_and_has_no_invented_first_token() {
         let entries = [

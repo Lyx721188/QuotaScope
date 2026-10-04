@@ -43,6 +43,8 @@ $young=Join-Path $sessionRoot 'rollout-alpha.jsonl'
 Write-Rollout $young 0 'fixture-alpha' 20 6
 Write-Rollout (Join-Path $archiveRoot 'rollout-beta.jsonl') 60 'fixture-beta' 3 3 'fixture-requested-beta'
 Write-Rollout (Join-Path $archiveRoot 'rollout-gamma.jsonl') 120 'fixture-gamma' 1 0
+$timingDamage=Join-Path $sessionRoot 'damaged-timings.jsonl'
+[IO.File]::WriteAllText($timingDamage,"{`n",[Text.UTF8Encoding]::new($false))
 $info=[Diagnostics.ProcessStartInfo]::new([IO.Path]::GetFullPath($Executable))
 $info.ArgumentList.Add('--settings')
 $info.UseShellExecute=$false
@@ -109,6 +111,20 @@ function Configure {
     if($controls[0].Current.Name -eq '配置'){$controls[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()}
     Wait-Text '本地异常线索'
 }
+function Refresh-Timings {
+    # ControlView flattens the layout panels. The live tree places this
+    # section's Refresh immediately after its heading, before model rows.
+    Wait-Text '按模型查看用量（最近 30 天）'
+    $seenHeading=$false
+    foreach($node in @(Nodes)) {
+        if($node.Current.Name -eq '按模型查看用量（最近 30 天）'){$seenHeading=$true;continue}
+        if($seenHeading -and $node.Current.Name -eq '刷新' -and $node.Current.ControlType -eq [Windows.Automation.ControlType]::Button){
+            $node.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+            return
+        }
+    }
+    throw 'Model timing refresh button missing'
+}
 function Period([string]$label) {
     $until=[DateTime]::UtcNow.AddSeconds(5)
     do {
@@ -136,6 +152,16 @@ try {
     Configure
     Wait-Text $alpha20
     Wait-Text $beta -Absent
+    $phase='timing-partial-and-repair'
+    $timingWarning='部分本机时序记录无法读取；速度只覆盖可读取的回复。'
+    Wait-Text $timingWarning
+    Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
+    Wait-Text '计数可能不完整。' -Absent
+    Remove-Item -LiteralPath $timingDamage -Force
+    Refresh-Timings
+    Start-Sleep -Milliseconds 200
+    Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
+    Wait-Text $timingWarning -Absent
     $phase='90-days'
     Period '最近 90 个自然日'
     Wait-Text $beta
@@ -188,7 +214,7 @@ try {
     Wait-Text $alpha21
     $forbidden=@(Nodes|Where-Object {$_.Current.Name -match '服务端.*降级|实际模型.*fixture'})
     if($forbidden.Count){throw 'UI asserts an actual server model'}
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;SyntheticRecords=$true;CalendarPeriods=$true;SamplesAndDenominator=$true;RecordedSettingsDifference=$true;ManualRefresh=$true;CancellationSnapshotPreserved=$true;CancelUiMilliseconds=$cancelWatch.ElapsedMilliseconds;LeaveAndReopen=$true;CloseAndReopen=$true;RealAccountVerified=$false;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath 'target/upstream-followthrough-20261004/n3c-ui-result.json'
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;SyntheticRecords=$true;CalendarPeriods=$true;SamplesAndDenominator=$true;RecordedSettingsDifference=$true;ManualRefresh=$true;PartialTimingWarningAndRepair=$true;TokenCountsUnaffected=$true;CancellationSnapshotPreserved=$true;CancelUiMilliseconds=$cancelWatch.ElapsedMilliseconds;LeaveAndReopen=$true;CloseAndReopen=$true;RealAccountVerified=$false;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath 'target/upstream-followthrough-20261004/n3c-ui-result.json'
 } catch {
     $originalError=$_
     Write-Output "Failed phase: $phase"
