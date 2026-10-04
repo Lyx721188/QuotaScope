@@ -438,9 +438,11 @@ fn open_readonly<T>(store: &Path, read: impl Fn(&rusqlite::Connection) -> T) -> 
     match attempt() {
         Ok(connection) => read(&connection),
         Err(_) => {
-            let copy = copied_aside(store);
+            let Ok(copy) = copied_aside(store) else {
+                return read(&dead_connection());
+            };
             let Ok(connection) = rusqlite::Connection::open_with_flags(
-                &copy,
+                &copy.database,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             ) else {
                 // `read` must return something; a store that cannot be opened
@@ -458,18 +460,56 @@ fn dead_connection() -> rusqlite::Connection {
     rusqlite::Connection::open_in_memory().expect("in-memory sqlite always opens")
 }
 
-fn copied_aside(store: &Path) -> PathBuf {
-    let dir = std::env::temp_dir().join("quotascope-cookies");
-    let _ = std::fs::create_dir_all(&dir);
-    let copy = dir.join(format!(
-        "{}-cookies.db",
-        store
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("profile")
-    ));
-    let _ = std::fs::copy(store, &copy);
+struct CopiedStore {
+    directory: PathBuf,
+    database: PathBuf,
+}
+impl Drop for CopiedStore {
+    fn drop(&mut self) {
+        // The connection is declared after this guard and closes first. Remove
+        // only our fixed filenames, never recursively traverse a temp folder.
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let _ = std::fs::remove_file(self.directory.join(format!("Cookies.db{suffix}")));
+        }
+        let _ = std::fs::remove_dir(&self.directory);
+    }
+}
+
+fn copied_aside(store: &Path) -> std::io::Result<CopiedStore> {
+    let root = std::env::temp_dir().canonicalize()?;
+    copied_aside_in(store, &root)
+}
+
+fn copied_aside_in(store: &Path, root: &Path) -> std::io::Result<CopiedStore> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut owned = None;
+    for _ in 0..16 {
+        let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let directory = root.join(format!(
+            "quotascope-cookie-copy-{}-{}-{nonce}",
+            std::process::id(),
+            crate::timeutil::now_ms()
+        ));
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {
+                owned = Some(CopiedStore {
+                    database: directory.join("Cookies.db"),
+                    directory,
+                });
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let copy = owned.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "cannot create a private cookie copy",
+        )
+    })?;
+    // Any copy failure drops the guard and cannot reuse an older profile.
+    std::fs::copy(store, &copy.database)?;
     // A write-ahead log that the browser is mid-way through belongs beside
     // the copy, or the copied database looks older than it is.
     for sidecar in ["-wal", "-shm"] {
@@ -477,17 +517,20 @@ fn copied_aside(store: &Path) -> PathBuf {
             "{}{sidecar}",
             store.file_name().and_then(|n| n.to_str()).unwrap_or("")
         ));
-        if from.is_file() {
-            let _ = std::fs::copy(
+        if from.try_exists()? {
+            std::fs::copy(
                 from,
-                copy.with_file_name(format!(
+                copy.database.with_file_name(format!(
                     "{}{sidecar}",
-                    copy.file_name().and_then(|n| n.to_str()).unwrap_or("")
+                    copy.database
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
                 )),
-            );
+            )?;
         }
     }
-    copy
+    Ok(copy)
 }
 
 fn query_cookies<T>(
@@ -656,6 +699,109 @@ mod tests {
     fn app_bound_values_are_dropped_not_guessed() {
         let key = [9u8; 32];
         assert_eq!(decrypt_value(b"v20-not-really-encrypted", &key), None);
+    }
+
+    struct CopyFixture {
+        root: PathBuf,
+        temp: PathBuf,
+    }
+    impl CopyFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let temp = std::env::temp_dir().canonicalize().unwrap();
+            let root = temp.join(format!(
+                "qs-cookie-copy-test-{}-{}-{}",
+                std::process::id(),
+                crate::timeutil::now_ms(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&root).unwrap();
+            Self { root, temp }
+        }
+        fn folder(&self, name: &str) -> PathBuf {
+            let path = self.root.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        }
+    }
+    impl Drop for CopyFixture {
+        fn drop(&mut self) {
+            assert!(self.root.is_absolute() && self.root.parent() == Some(self.temp.as_path()));
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn overlapping_copies_of_same_profile_names_are_separate_and_cleaned() {
+        let fixture = CopyFixture::new();
+        let root = fixture.folder("copies");
+        let first = fixture.folder("first/Network").join("Cookies");
+        let second = fixture.folder("second/Network").join("Cookies");
+        for (path, marker) in [(&first, 1), (&second, 2)] {
+            let db = rusqlite::Connection::open(path).unwrap();
+            db.execute_batch("CREATE TABLE account(marker INTEGER)")
+                .unwrap();
+            db.execute("INSERT INTO account VALUES (?1)", [marker])
+                .unwrap();
+        }
+        let a = copied_aside_in(&first, &root).unwrap();
+        let b = copied_aside_in(&second, &root).unwrap();
+        assert_ne!(a.database, b.database);
+        for (copy, marker) in [(&a, 1_i64), (&b, 2_i64)] {
+            let db = rusqlite::Connection::open_with_flags(
+                &copy.database,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let actual = db
+                .query_row("SELECT marker FROM account", [], |row| row.get::<_, i64>(0))
+                .unwrap();
+            assert_eq!(actual, marker);
+        }
+        let directories = [a.directory.clone(), b.directory.clone()];
+        drop(a);
+        drop(b);
+        assert!(directories.iter().all(|path| !path.exists()));
+        assert!(first.exists() && second.exists());
+    }
+
+    #[test]
+    fn copy_failure_does_not_reuse_stale_content_and_cleans_partial_files() {
+        let fixture = CopyFixture::new();
+        let root = fixture.folder("copies");
+        let stale = root.join("Network-cookies.db");
+        std::fs::write(&stale, b"stale account").unwrap();
+        let store = fixture.folder("source/Network").join("Cookies");
+        assert!(copied_aside_in(&store, &root).is_err());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::write(&store, b"synthetic database").unwrap();
+        // A directory cannot be copied as a WAL; the already copied DB must go.
+        std::fs::create_dir(store.with_file_name("Cookies-wal")).unwrap();
+        assert!(copied_aside_in(&store, &root).is_err());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        assert_eq!(std::fs::read(&stale).unwrap(), b"stale account");
+        assert_eq!(std::fs::read(&store).unwrap(), b"synthetic database");
+    }
+
+    #[test]
+    fn copied_sidecars_are_scoped_and_original_files_are_preserved() {
+        let fixture = CopyFixture::new();
+        let root = fixture.folder("copies");
+        let store = fixture.folder("source/Network").join("Cookies");
+        for (suffix, contents) in [("", "database"), ("-wal", "wal"), ("-shm", "shm")] {
+            std::fs::write(store.with_file_name(format!("Cookies{suffix}")), contents).unwrap();
+        }
+        let copy = copied_aside_in(&store, &root).unwrap();
+        for (suffix, contents) in [("", "database"), ("-wal", "wal"), ("-shm", "shm")] {
+            assert_eq!(
+                std::fs::read(copy.directory.join(format!("Cookies.db{suffix}"))).unwrap(),
+                contents.as_bytes()
+            );
+        }
+        let directory = copy.directory.clone();
+        drop(copy);
+        assert!(!directory.exists());
+        assert_eq!(std::fs::read(store).unwrap(), b"database");
     }
 
     #[test]
