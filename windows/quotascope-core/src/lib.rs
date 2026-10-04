@@ -49,6 +49,7 @@ pub mod statusline;
 pub mod store;
 pub mod timeutil;
 pub mod updates;
+pub mod zcode_spend;
 mod zstd_stream;
 
 /// The application data directory: `%APPDATA%\QuotaScope`.
