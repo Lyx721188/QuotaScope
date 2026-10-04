@@ -1,39 +1,65 @@
-# Isolated Debug Token page: actual zstd frames, append, failure and repair.
-param([Parameter(Mandatory=$true)][string]$Executable,[string]$Python='python',[string]$OutputDirectory='target/upstream-followthrough-20261004')
+# Isolated Token page: native SQLite, retries, missing usage, replacement and reopen.
+param([Parameter(Mandatory=$true)][string]$Executable,[string]$Python='python',[string]$OutputDirectory='target/release-acceptance-20261004')
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Windows.Forms
 $id=[guid]::NewGuid().ToString('N')
-$profile=Join-Path $env:TEMP ('qs-dsh-ui-'+$id)
+$profile=Join-Path $env:TEMP ('qs-zcode-ui-'+$id)
 $fixtureHome=Join-Path $profile 'home'
 $data=Join-Path $profile 'appdata/QuotaScope'
-$transcript=Join-Path $fixtureHome '.dsh/sessions/fixture/session.jsonl.zstd'
+$transcript=Join-Path $fixtureHome '.zcode/cli/db/db.sqlite'
 New-Item -ItemType Directory -Path $data,(Split-Path $transcript),$OutputDirectory -Force | Out-Null
 $reserve=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
 $reserve.Start()
 $settings=@{hasRun=$true;enabledAccounts=@();language='zh';readsTokenSpend=$true;checksForUpdates=$false;proxyMode='manual';proxyUrl="http://127.0.0.1:$($reserve.LocalEndpoint.Port)"}
 [IO.File]::WriteAllText((Join-Path $data 'settings.json'),($settings|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
-$prices=@{fetched_at_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();prices=@{'fixture-dsh'=@{input=1.0;output=2.0}}}
+$prices=@{fetched_at_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();prices=@{'fixture-zcode'=@{input=1.0;output=2.0}}}
 [IO.File]::WriteAllText((Join-Path $data 'model-prices-4.json'),($prices|ConvertTo-Json -Depth 4))
 function Write-Fixture([string]$mode) {
+    Write-Host "Synthetic SQLite fixture: $mode"
     $script=@'
-import compression.zstd, json, pathlib, sys, time
+import json, os, pathlib, sqlite3, sys, time
+from contextlib import closing
 path=pathlib.Path(sys.argv[1]);mode=sys.argv[2];at=int(time.time()*1000)
-def event(seq,id,input,output,cache=0):
-    return {'type':'assistant/message','seq':seq,'time':at,'data':{'message':{'id':id},'usage':{'inputTokens':input,'outputTokens':output,'cacheReadTokens':cache,'reasoningTokens':3}}}
-def encode(rows):
-    return compression.zstd.compress(('\n'.join(json.dumps(row,separators=(',',':')) for row in rows)+'\n').encode())
-if mode=='base':
-    base=event(2,'one',11,7,2)
-    path.write_bytes(encode([{'type':'session','seedLength':2},{'type':'request/header','data':{'header':{'config':{'model':'fixture-dsh'}}}},event(1,'inherited',999,999),base,base]))
-elif mode=='append':
-    with path.open('ab') as stream: stream.write(encode([event(3,'two',4,6)]))
-elif mode=='corrupt':
-    with path.open('ab') as stream: stream.write(bytes.fromhex('28b52ffdffff'))
+schema="""CREATE TABLE model_usage (
+ id TEXT PRIMARY KEY, logical_request_id TEXT, attempt_index INTEGER, model_id TEXT,
+ status TEXT, started_at INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+ reasoning_tokens INTEGER, cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,
+ computed_total_tokens INTEGER, provider_total_tokens INTEGER, raw_usage_json TEXT);
+ CREATE INDEX model_usage_started_model_idx ON model_usage(started_at,model_id);"""
+def raw(i,o,w=0,r=0):
+    return json.dumps(dict(inputTokens=i,outputTokens=o,cacheWriteTokens=w,cacheReadTokens=r,reasoningTokens=3,totalTokens=i+o),separators=(',',':'))
+def row(id,attempt,i,o,w=0,r=0):
+    return (id,'request',attempt,'fixture-zcode','completed',at,i,o,3,w,r,i+o,i+o,raw(i,o,w,r))
+if mode=='delete':
+    path.unlink()
+elif mode=='replace':
+    stamp=path.stat();replacement=path.with_suffix('.replacement')
+    with closing(sqlite3.connect(path)) as old, closing(sqlite3.connect(replacement)) as new:
+        old.backup(new)
+        new.execute('UPDATE model_usage SET input_tokens=200,computed_total_tokens=220,provider_total_tokens=220,raw_usage_json=? WHERE id=?',(raw(200,20,10,30),'one'))
+        new.commit()
+    assert replacement.stat().st_size==stamp.st_size
+    os.utime(replacement,ns=(stamp.st_atime_ns,stamp.st_mtime_ns))
+    os.replace(replacement,path)
+else:
+    with sqlite3.connect(path) as db:
+        if mode=='base':
+            db.executescript('DROP TABLE IF EXISTS model_usage;'+schema)
+            db.execute('INSERT INTO model_usage VALUES ('+','.join('?'*14)+')',row('one',0,100,20,10,30))
+        elif mode=='append':
+            db.execute('INSERT INTO model_usage VALUES ('+','.join('?'*14)+')',row('retry',1,40,10))
+        elif mode=='missing':
+            db.execute('UPDATE model_usage SET raw_usage_json=NULL WHERE id=?',('retry',))
+        elif mode=='unpriced':
+            db.execute('UPDATE model_usage SET model_id=? WHERE id=?',('unpublished-fixture-7142','retry'))
+        elif mode=='repair':
+            db.execute('UPDATE model_usage SET raw_usage_json=? WHERE id=?',(raw(40,10),'retry'))
+        else: raise ValueError('Unknown fixture mode')
 '@
     $script | & $Python - $transcript $mode
-    if($LASTEXITCODE -ne 0){throw 'Synthetic zstd fixture failed'}
+    if($LASTEXITCODE -ne 0){throw 'Synthetic SQLite fixture failed'}
 }
 Write-Fixture 'base'
 $info=[Diagnostics.ProcessStartInfo]::new([IO.Path]::GetFullPath($Executable))
@@ -44,6 +70,8 @@ $info.Environment['USERPROFILE']=$fixtureHome
 $info.Environment['QUOTASCOPE_TEST_INSTANCE']=$id
 $testApp=[Diagnostics.Process]::Start($info)
 function Nodes {
+    # WinUI can replace its automation provider when a filter rebuilds the
+    # page. Reacquire the live process window rather than retaining that tree.
     $until=[DateTime]::UtcNow.AddSeconds(5)
     do {
         if($testApp.HasExited){throw 'Isolated app exited'}
@@ -90,16 +118,16 @@ function Refresh {
     } while([DateTime]::UtcNow -lt $until)
     throw 'Enabled refresh button unavailable'
 }
-function Agent([string]$name) {
+function Choose-Filter([int]$index,[string]$name) {
     $until=[DateTime]::UtcNow.AddSeconds(5)
     do {
         $combos=@(Nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox})
         if($combos.Count -eq 6){break};Start-Sleep -Milliseconds 100
     } while([DateTime]::UtcNow -lt $until)
     if($combos.Count -ne 6){throw 'Filters not ready'}
-    $combos[1].GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+    $combos[$index].GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
     $container=$null
-    if($combos[1].TryGetCurrentPattern([Windows.Automation.ItemContainerPattern]::Pattern,[ref]$container)){
+    if($combos[$index].TryGetCurrentPattern([Windows.Automation.ItemContainerPattern]::Pattern,[ref]$container)){
         $target=$container.FindItemByProperty($null,[Windows.Automation.AutomationElement]::NameProperty,$name)
         if($target){
             $virtual=$null
@@ -108,13 +136,13 @@ function Agent([string]$name) {
             try {$target.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select();return}catch{}
         }
     }
-    $combos[1].SetFocus()
+    $combos[$index].SetFocus()
     [Windows.Forms.SendKeys]::SendWait(($name.Split(' ')[0]))
     [Windows.Forms.SendKeys]::SendWait('{ENTER}')
     Start-Sleep -Milliseconds 100
-    $selection=$combos[1].GetCurrentPattern([Windows.Automation.SelectionPattern]::Pattern).GetSelection()
+    $selection=$combos[$index].GetCurrentPattern([Windows.Automation.SelectionPattern]::Pattern).GetSelection()
     if(@($selection|Where-Object {$_.Current.Name -eq $name}).Count){return}
-    $combos[1].GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+    $combos[$index].GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
     $until=[DateTime]::UtcNow.AddSeconds(10)
     do {
         $items=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$testApp.Id))
@@ -143,7 +171,8 @@ function Agent([string]$name) {
     if(-not $item){throw "Missing agent filter: $name"}
     $item.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
 }
-$warning='这些来源的本机记录不完整：DeepSeek Harness。总量只覆盖可读取的计数。'
+function Agent([string]$name) { Choose-Filter 1 $name }
+$warning='这些来源的本机记录不完整：ZCode。总量只覆盖可读取的计数。'
 try {
     $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$testApp.Id)
     $until=[DateTime]::UtcNow.AddSeconds(15)
@@ -154,27 +183,55 @@ try {
     if(-not $window){throw 'Settings window missing'}
     $page=Nodes|Where-Object {$_.Current.Name -eq 'Token 消耗' -and $_.Current.ClassName -like '*NavigationViewItem'}|Select-Object -First 1
     $page.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
-    Wait-Total 20
-    Agent 'DeepSeek Harness'
-    Wait-Total 20
+    Wait-Total 120
+    Agent 'ZCode'
+    Wait-Total 120
     Wait-Text $warning -Absent
+    Choose-Filter 0 '今日'
+    Wait-Total 120
+    Choose-Filter 2 'fixture-zcode'
+    Wait-Total 120
+    Choose-Filter 3 '模型'
+    Choose-Filter 4 '输入'
+    Choose-Filter 5 '升序'
+    Wait-Total 120
     Write-Fixture 'append'
-    Wait-Total 20
+    Wait-Total 120
     Refresh
-    Wait-Total 30
-    Write-Fixture 'corrupt'
+    Wait-Total 170
+    Write-Fixture 'missing'
     Refresh
+    Wait-Total 120
     Wait-Text $warning
-    Wait-Text 'DeepSeek Harness · 部分本机记录无法读取'
+    Wait-Text 'ZCode · 部分本机记录无法读取'
     Agent 'Codex'
     Wait-Total 0
     Wait-Text $warning -Absent
-    Agent 'DeepSeek Harness'
+    Agent 'ZCode'
+    Wait-Total 120
     Wait-Text $warning
-    Write-Fixture 'base';Write-Fixture 'append'
+    Write-Fixture 'repair'
     Refresh
-    Wait-Total 30
+    Wait-Total 170
     Wait-Text $warning -Absent
+    Write-Fixture 'unpriced'
+    Choose-Filter 2 '全部模型'
+    Refresh
+    Wait-Total 170
+    Wait-Text '未公开价格的 Token： 50'
+    Choose-Filter 2 'unpublished-fixture-7142'
+    Wait-Total 50
+    Choose-Filter 2 '全部模型'
+    Wait-Total 170
+    Write-Fixture 'replace'
+    Refresh
+    Wait-Total 270
+    Write-Fixture 'delete'
+    Refresh
+    Wait-Total 0
+    Write-Fixture 'base'
+    Refresh
+    Wait-Total 120
     $window.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
     Start-Sleep -Milliseconds 200
     if($testApp.HasExited){throw 'App exited on Settings close'}
@@ -189,13 +246,13 @@ try {
     if(-not $window){throw 'Reopened settings window missing'}
     $page=Nodes|Where-Object {$_.Current.Name -eq 'Token 消耗' -and $_.Current.ClassName -like '*NavigationViewItem'}|Select-Object -First 1
     $page.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
-    Agent 'DeepSeek Harness'
-    Wait-Total 30
+    Agent 'ZCode'
+    Wait-Total 120
     Wait-Text $warning -Absent
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;ActualZstdFrames=$true;InheritedAndDuplicateRecordsSkipped=$true;ReasoningNotAddedTwice=$true;ConcatenatedAppend=$true;SourceFilter=$true;PartialWarningAndRepair=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'dsh-ui-result.json')
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
 } catch {
     $originalError=$_
-    try {if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $OutputDirectory 'dsh-ui-failure.json')}}catch{}
+    try {if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $OutputDirectory 'zcode-ui-failure.json')}}catch{}
     throw $originalError
 } finally {
     if(-not $testApp.HasExited){$testApp.Kill();$testApp.WaitForExit()}

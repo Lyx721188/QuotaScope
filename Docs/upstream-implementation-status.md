@@ -10,11 +10,12 @@
 | N2 DeepSeek | 实际费用携带币种；有界官网历史缓存、余额回退、异步浏览器导入/清除；凭据、续读和缓存按账户隔离 | 合成协议、HTTP、Windows DPAPI 与隔离 UI 通过；真实账户未验证，见[说明](providers/windows-deepseek-console.md) |
 | N3 Codex | 保守比较设置/请求参数；有界、可取消 facts reader；主账户展开页显示时段、规则、分母、不可判断与缺口 | parser/worker/隔离 UI 通过；不证明服务端实际运行模型，见[说明](providers/windows-codex-signals.md) |
 | N4a DSH | 按 magic 流式解压 Zstandard 与拼接帧；原始/解码字节、单行和窗口有界；损坏、缺计数、变动保留 partial | 纯解析、取消、隔离 UI、冻结样本独立复算通过；不代表全部历史完整，见[说明](providers/windows-dsh-local-usage.md) |
+| N4b ZCode | 固定 SQLite 用量表；归一化输入含缓存、输出含 reasoning；WAL/索引/取消及内存缓存有界 | 16 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；Release UI 加入 CI，见[说明](providers/windows-zcode-local-usage.md) |
 | R1 自动化 | ZIP 许可证与哈希；相同 Release payload 的独立身份安装、托盘/设置生命周期、卸载；失败日志保留 | [ef9292d 的 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671) 成功；原 AppId 升级、Release Token 页、真实账户、多 DPI 人工验收仍分别待完成 |
 
 新增功能的源码基线回归为 706 passed / 6 ignored，fmt、普通 Clippy、Release 和 JSON CLI 完成；已有 Clippy 告警仍存在。每次后续改动以对应 commit 的检查为准。
 
-当前目录为 77 个 Windows 路由、54 个 Token 来源（34 个已知格式读取，含导出缓存；20 个标准导入）。下一项开发为 **N4b-1：ZCode 格式取证**；ZCode 目前仍仅支持标准导入，完成 reader、缓存、独立复算和 UI 验收后才更新支持状态。
+当前目录为 77 个 Windows 路由、54 个 Token 来源（35 个已知格式读取，含导出缓存；19 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。当前下一项是核对 R1d 的最终 Release Token 页 CI；真实账户与升级仍分别保留验收状态。
 
 ## 已发布的 1.3.0 / 1.3.1 基线
 
@@ -54,7 +55,7 @@ Windows 1.3.1 将 Kiro 替换为专用 ACP 读取器，补齐严格解析、稳�
 ## 未完全移植
 
 - 附加账户的交互式 OAuth 登录/续期；Codex 附加账户独立 app-server 登录。
-- 20 项来源的原生格式：CodeBuddy、WorkBuddy、Cherry Studio、Command Code、OpenCodeReview、ZCode、Hermes、Goose、Zed、Kiro、Crush、Unsloth、Antigravity CLI、MiMo Code、Devin Desktop、Freebuff、Trae、Warp、MiniMax Code、GitHub Copilot。仅接受标准导入；缺少 Token 的来源保持未知。
+- 19 项来源的原生格式：CodeBuddy、WorkBuddy、Cherry Studio、Command Code、OpenCodeReview、Hermes、Goose、Zed、Kiro、Crush、Unsloth、Antigravity CLI、MiMo Code、Devin Desktop、Freebuff、Trae、Warp、MiniMax Code、GitHub Copilot。仅接受标准导入；缺少 Token 的来源保持未知。
 - 1.3.0/1.3.1 的 DSH 仅读取纯文本 JSONL；main 已补入有界 Zstandard 解压，详见上方 N4a。
 - Devin 仅本机缓存套餐，未覆盖全部在线/跨账户路线；JetBrains 不推算 ISO duration 周期；Alibaba 不展开任意字符串嵌套的 JSON 包装。
 - 完整 BotMark 动画、所有 Windows 专有文字的繁中/日/韩翻译。

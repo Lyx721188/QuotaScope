@@ -63,8 +63,10 @@ a local client or a logged-in CLI. Implementation and parser fixtures do
 not imply that every provider has been verified with a real account.
 The [Windows route table](../Docs/providers/windows-ports.md) is the support reference.
 
-The Token page catalogs 54 sources: 34 read a known native or export-cache
-format, and 20 currently accept only the documented JSONL import format.
+The Token page catalogs 54 sources: 35 read a known native or export-cache
+format, and 19 currently accept only the documented JSONL import format.
+ZCode reads normalized model-attempt counts from its local SQLite usage table;
+see [format and limits](../Docs/providers/windows-zcode-local-usage.md).
 DSH supports real, bounded Zstandard decoding; its incomplete-record flag
 remains visible in the source list and filtered totals.
 
