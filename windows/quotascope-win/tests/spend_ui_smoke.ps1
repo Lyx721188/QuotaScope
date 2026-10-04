@@ -90,7 +90,7 @@ try {
   $watch.Stop()
   if (-not $cancelled -or -not $refresh.Current.IsEnabled) { throw 'Worker did not stop after cancellation' }
   if (@($nodes | Where-Object { $_.Current.Name -eq 'Token 总量' }).Count -ne 0) { throw 'Cancelled scan published partial statistics' }
-  $codexCache = Join-Path $data 'ledger-4-codex.json'
+  $codexCache = Join-Path $data 'ledger-5-codex.json'
   if (Test-Path -LiteralPath $codexCache) { throw 'Cancelled scan saved a partial Codex cache' }
   $cancelMilliseconds = $watch.ElapsedMilliseconds
   $refresh.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
@@ -140,7 +140,7 @@ try {
   } until (('已取消本地扫描。' -in $names -and $refresh.Current.IsEnabled) -or [DateTime]::UtcNow -gt $until)
   if ('150' -notin $names -or '当前仍显示上次完成的结果。' -notin $names -or -not $refresh.Current.IsEnabled) { throw 'Cancelling refresh discarded the complete snapshot' }
   if ((Get-FileHash -LiteralPath $codexCache -Algorithm SHA256).Hash -ne $previousHash) { throw 'Cancelling refresh overwrote the complete disk cache' }
-  [pscustomobject]@{Passed=$true; FixtureBytes=$fixtureBytes; Records=400000; Progress=$active.Progress; CancelMilliseconds=$cancelMilliseconds; NavigationCancelled=$true; ClosingCancelled=$true; ReopenedSameHost=$true; CompleteRescanTokens=150; NoPartialCache=$true; ManualRefreshRescans=$true; PreviousResultPreserved=$true} | ConvertTo-Json | Tee-Object -FilePath 'target/spend-ui-result.json'
+  [pscustomobject]@{Passed=$true; ExecutableSHA256=(Get-FileHash -LiteralPath $info.FileName -Algorithm SHA256).Hash; CodexCacheName='ledger-5-codex.json'; FixtureBytes=$fixtureBytes; Records=400000; Progress=$active.Progress; CancelMilliseconds=$cancelMilliseconds; NavigationCancelled=$true; ClosingCancelled=$true; ReopenedSameHost=$true; CompleteRescanTokens=150; NoPartialCache=$true; ManualRefreshRescans=$true; PreviousResultPreserved=$true} | ConvertTo-Json | Tee-Object -FilePath 'target/spend-ui-result.json'
 } finally {
   if (-not $testApp.HasExited) { $testApp.Kill(); $testApp.WaitForExit() }
   $resolved = [IO.Path]::GetFullPath($profile)

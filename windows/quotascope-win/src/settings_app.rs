@@ -316,7 +316,7 @@ impl Shared {
         state.generation = state.generation.wrapping_add(1);
     }
 
-    fn request_account_details(self: &Arc<Self>, provider: Provider) {
+    fn request_account_details(self: &Arc<Self>, provider: Provider, force_refresh: bool) {
         if !matches!(provider, Provider::ClaudeCode | Provider::Codex)
             || !self.alive.load(Ordering::SeqCst)
             || !quotascope_core::settings::with(|s| s.reads_token_spend)
@@ -343,6 +343,9 @@ impl Shared {
                     3,
                     |_| {},
                     || {
+                        if force_refresh {
+                            quotascope_core::ledger::invalidate_memory();
+                        }
                         let ledger = quotascope_core::ledger::ledger(provider);
                         let now = quotascope_core::timeutil::now_ms();
                         let timings = quotascope_core::ledger::transcript_root(provider)
@@ -1335,12 +1338,12 @@ impl Component for SettingsApp {
                         state.generation = state.generation.wrapping_add(1);
                     }
                 } else if let Some(provider) = all_providers().get(index) {
-                    self.shared.request_account_details(*provider);
+                    self.shared.request_account_details(*provider, false);
                 }
             }
             Message::RefreshAccountDetails(index) => {
                 if let Some(provider) = all_providers().get(index) {
-                    self.shared.request_account_details(*provider);
+                    self.shared.request_account_details(*provider, true);
                 }
             }
             Message::SignalPeriod(Some(index)) => {

@@ -5,10 +5,11 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-const FILES: [&str; 4] = [
+const FILES: [&str; 5] = [
     "ledger-4-claudeCode.json",
     "ledger-5-claudeCode.json",
     "ledger-4-codex.json",
+    "ledger-5-codex.json",
     "token-spend-2.json",
 ];
 const MIB: u64 = 1024 * 1024;
@@ -239,6 +240,17 @@ mod tests {
         );
         assert_eq!(inspect_at(&dir.0).files.len(), 1);
         assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 6);
+    }
+    #[test]
+    fn codex_current_and_previous_cache_versions_share_the_rebuildable_budget() {
+        let dir = Fixture::new();
+        dir.put("ledger-4-codex.json", b"old");
+        write_at(&dir.0, "ledger-5-codex.json", b"validated", 64).unwrap();
+        assert_eq!(inspect_at(&dir.0).files.len(), 2);
+        let cleared = prune_at(&dir.0, 0);
+        assert_eq!(cleared.removed_files, 2);
+        assert_eq!(cleared.freed_bytes, 12);
+        assert!(cleared.inventory.files.is_empty());
     }
     #[test]
     fn oversized_and_disabled_writes_preserve_live_results_without_disk_growth() {

@@ -122,18 +122,18 @@ try {
   $restart=Export-Report
   if($restart.preferences.statistics_cache_limit_mb -ne 16){throw 'Budget lost on restart'}
   Click '清理统计缓存';Wait-Maintenance
-  foreach($name in @('ledger-4-codex.json','ledger-4-claudeCode.json.tmp')){if(Test-Path -LiteralPath (Join-Path $data $name)){throw "Cache retained: $name"}}
+  foreach($name in @('ledger-4-codex.json','ledger-5-codex.json','ledger-4-claudeCode.json.tmp')){if(Test-Path -LiteralPath (Join-Path $data $name)){throw "Cache retained: $name"}}
   foreach($name in @('keys.dat','last-readings.json','ledger-4-unknown.json')){if((Get-Content -LiteralPath (Join-Path $data $name) -Raw) -ne 'private-storage-sentinel'){throw "Unrelated file changed: $name"}}
   if((Get-FileHash -LiteralPath $session).Hash -ne $sourceHash -or (Get-FileHash -LiteralPath (Join-Path $data 'model-prices-4.json')).Hash -ne $priceHash){throw 'Source or prices changed'}
   Select-Budget '禁用磁盘缓存' 0
   Select-Page 'Token 消耗';Wait-Tokens 150
-  if(Test-Path -LiteralPath (Join-Path $data 'ledger-4-codex.json')){throw 'Disabled disk cache was written'}
+  if(Test-Path -LiteralPath (Join-Path $data 'ledger-5-codex.json')){throw 'Disabled disk cache was written'}
   Select-Page '存储与诊断';Wait-Maintenance
   Select-Budget '64 MiB（默认）' 64
   Click '清理统计缓存';Wait-Maintenance
   Write-Session 2
   Select-Page 'Token 消耗';Wait-Tokens 300
-  if(-not (Test-Path -LiteralPath (Join-Path $data 'ledger-4-codex.json'))){throw 'Cache not rebuilt after enabling'}
+  if(-not (Test-Path -LiteralPath (Join-Path $data 'ledger-5-codex.json'))){throw 'Cache not rebuilt after enabling'}
   Select-Page '存储与诊断';Wait-Maintenance
   $final=Export-Report
   $reportHash=(Get-FileHash -LiteralPath $reportPath).Hash

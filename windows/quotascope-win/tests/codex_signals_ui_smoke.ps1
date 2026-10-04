@@ -1,7 +1,12 @@
-# Run from windows/ with a complete Debug payload and an unlocked desktop.
+# Run from windows/ with a complete payload and an unlocked desktop.
 # Synthetic rollout facts only; no credentials or real account requests.
-param([Parameter(Mandatory=$true)][string]$Executable)
+param(
+    [Parameter(Mandatory=$true)][string]$Executable,
+    [string]$OutputDirectory='target/codex-account-ui-validation'
+)
 $ErrorActionPreference='Stop'
+$evidence=[IO.Path]::GetFullPath($OutputDirectory)
+New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -TypeDefinition @'
@@ -173,6 +178,18 @@ try {
     Start-Sleep -Milliseconds 200
     Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
     Wait-Text $timingWarning -Absent
+    $phase='native-counter-gap-and-repair'
+    $nativeGap=Join-Path $sessionRoot 'native-counter-gap.jsonl'
+    $gapRecord=@{timestamp=[DateTime]::UtcNow.ToString('o');type='event_msg';payload=@{type='token_count';info=@{total_token_usage=@{input_tokens=-1;output_tokens=0}}}}|ConvertTo-Json -Depth 6 -Compress
+    [IO.File]::WriteAllText($nativeGap,('{"type":"turn_context","payload":{"model":"fixture-alpha"}}'+"`n"+$gapRecord+"`n"),[Text.UTF8Encoding]::new($false))
+    Refresh-Timings
+    Wait-Text '计数可能不完整。'
+    Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
+    Wait-Text $timingWarning -Absent
+    Remove-Item -LiteralPath $nativeGap -Force
+    Refresh-Timings
+    Wait-Text '计数可能不完整。' -Absent
+    Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
     Wait-Text '首字 — 秒' -Contains
     $phase='valid-and-future-timings'
     $currentTimings=Join-Path $sessionRoot 'current-timings.jsonl'
@@ -233,12 +250,12 @@ try {
     Wait-Text $alpha21
     $forbidden=@(Nodes|Where-Object {$_.Current.Name -match '服务端.*降级|实际模型.*fixture'})
     if($forbidden.Count){throw 'UI asserts an actual server model'}
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;SyntheticRecords=$true;CalendarPeriods=$true;SamplesAndDenominator=$true;RecordedSettingsDifference=$true;ManualRefresh=$true;PartialTimingWarningAndRepair=$true;FutureTimingsExcluded=$true;MeasuredFirstTokenSeconds=2.0;TokenCountsUnaffected=$true;CancellationSnapshotPreserved=$true;CancelUiMilliseconds=$cancelWatch.ElapsedMilliseconds;LeaveAndReopen=$true;CloseAndReopen=$true;RealAccountVerified=$false;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath 'target/upstream-followthrough-20261004/n3c-ui-result.json'
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;SyntheticRecords=$true;CalendarPeriods=$true;SamplesAndDenominator=$true;RecordedSettingsDifference=$true;ManualRefresh=$true;PartialTimingWarningAndRepair=$true;FutureTimingsExcluded=$true;MeasuredFirstTokenSeconds=2.0;NativeCounterWarningAndRepair=$true;TokenCountsUnaffected=$true;CancellationSnapshotPreserved=$true;CancelUiMilliseconds=$cancelWatch.ElapsedMilliseconds;LeaveAndReopen=$true;CloseAndReopen=$true;RealAccountVerified=$false;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $evidence 'codex-account-ui-result.json')
 } catch {
     $originalError=$_
     Write-Output "Failed phase: $phase"
     try {
-        if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName;Enabled=$_.Current.IsEnabled}}|ConvertTo-Json|Set-Content -LiteralPath 'target/upstream-followthrough-20261004/n3c-ui-failure.json'}
+        if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName;Enabled=$_.Current.IsEnabled}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $evidence 'codex-account-ui-failure.json')}
     } catch {Write-Output 'UI tree unavailable during failure capture'}
     throw $originalError
 } finally {

@@ -378,6 +378,9 @@ pub struct Scanned {
     /// separator.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Readable counts remain usable, but skipped usage cannot be reconstructed.
+    #[serde(default)]
+    pub partial: bool,
 }
 
 /// The quarter-hour a moment falls in, floored on the absolute epoch and then
@@ -613,9 +616,9 @@ pub fn parse_claude_code(lines: impl Iterator<Item = String>) -> Scanned {
 
 /// Codex reports a running total for the session rather than a figure per
 /// turn, so each reading is differenced against the one before it. The
-/// running total only ever climbs, which makes the differences safe to add up
-/// — and it sidesteps the duplicate readings that summing Codex's own
-/// per-turn field would double-count.
+/// valid running total only climbs. A backwards or invalid reading leaves the
+/// last valid baseline in place and marks coverage incomplete; no reset delta
+/// is inferred. Summing the per-turn field would double-count duplicates.
 pub fn parse_codex(lines: impl Iterator<Item = String>) -> Scanned {
     parse_codex_with_state(lines, Scanned::default(), &mut CodexState::default())
 }
@@ -624,6 +627,23 @@ pub fn parse_codex(lines: impl Iterator<Item = String>) -> Scanned {
 struct CodexState {
     model: Option<String>,
     previous: Option<[i64; 4]>,
+}
+
+const MAX_CODEX_COUNTER: i64 = 1_000_000_000_000;
+
+fn codex_totals(totals: &serde_json::Value) -> Option<[i64; 4]> {
+    let totals = totals.as_object()?;
+    let counter = |name: &str, optional| match totals.get(name) {
+        None if optional => Some(0),
+        value => value
+            .and_then(serde_json::Value::as_i64)
+            .filter(|n| (0..=MAX_CODEX_COUNTER).contains(n)),
+    };
+    let input = counter("input_tokens", false)?;
+    let cached = counter("cached_input_tokens", true)?;
+    let written = counter("cache_write_input_tokens", true)?;
+    let output = counter("output_tokens", false)?;
+    (cached <= input).then_some([input, cached, written, output])
 }
 
 fn parse_codex_with_state(
@@ -673,6 +693,7 @@ fn parse_codex_with_state(
             continue;
         }
         let Ok(root) = serde_json::from_str::<serde_json::Value>(&line) else {
+            scanned.partial |= is_count;
             continue;
         };
 
@@ -681,42 +702,41 @@ fn parse_codex_with_state(
         // The model can change mid-session; usage is attributed to whichever
         // was in force when the reading was taken.
         if let Some(named) = payload.get("model").and_then(|m| m.as_str()) {
-            state.model = Some(named.to_string());
+            state.model = (!named.trim().is_empty()).then(|| named.to_string());
         }
 
-        if !is_count
-            || payload.get("type").and_then(|t| t.as_str()) != Some("token_count")
-            || state.model.is_none()
-        {
+        if !is_count || payload.get("type").and_then(|t| t.as_str()) != Some("token_count") {
             continue;
         }
-        let Some(totals) = payload
-            .get("info")
-            .and_then(|info| info.get("total_token_usage"))
-        else {
+        // info:null can be a quota-only update in the upstream protocol.
+        let Some(info) = payload.get("info").filter(|info| !info.is_null()) else {
             continue;
         };
-        let Some(timestamp) = root.get("timestamp").and_then(|t| t.as_str()) else {
-            continue;
-        };
-        let Some(at_ms) = parse_iso8601(timestamp) else {
+        let Some(current) = info.get("total_token_usage").and_then(codex_totals) else {
+            scanned.partial = true;
             continue;
         };
 
-        let current = [
-            int(totals.get("input_tokens")),
-            int(totals.get("cached_input_tokens")),
-            int(totals.get("cache_write_input_tokens")),
-            int(totals.get("output_tokens")),
-        ];
-        let previous_totals = state.previous.unwrap_or([0; 4]);
-        let delta: [i64; 4] = std::array::from_fn(|i| (current[i] - previous_totals[i]).max(0));
+        let previous = state.previous.unwrap_or([0; 4]);
+        let mut delta = [0; 4];
+        let valid_delta = (0..4).all(|i| {
+            if let Some(value) = current[i].checked_sub(previous[i]).filter(|n| *n >= 0) {
+                delta[i] = value;
+                true
+            } else {
+                false
+            }
+        });
+        if !valid_delta || delta[1] > delta[0] {
+            scanned.partial = true;
+            continue;
+        }
         state.previous = Some(current);
 
         // Codex counts cached tokens inside its input figure; the price list
         // treats them as two separate rates.
         let tally = TokenTally {
-            input: (delta[0] - delta[1]).max(0),
+            input: delta[0] - delta[1],
             cache_write: delta[2],
             cache_read: delta[1],
             output: delta[3],
@@ -725,11 +745,22 @@ fn parse_codex_with_state(
             continue;
         }
 
+        let at_ms = root
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(parse_iso8601);
+        let (Some(at_ms), Some(model)) = (at_ms, state.model.as_ref()) else {
+            // Keep the cumulative baseline, so a later known reading cannot
+            // assign these unknown-time/model tokens to another request.
+            scanned.partial = true;
+            continue;
+        };
+
         let key = slot_key_from_ms(at_ms);
         *days
             .entry(key)
             .or_default()
-            .entry(state.model.clone().expect("guarded above"))
+            .entry(model.clone())
             .or_default() += tally;
     }
 
@@ -754,6 +785,8 @@ struct CachedEntry {
     title: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    partial: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     codex: Option<CodexCheckpoint>,
 }
@@ -818,11 +851,7 @@ impl FileCache {
 }
 
 fn ledger_cache_name(provider: Provider) -> String {
-    let version = if provider == Provider::ClaudeCode {
-        5
-    } else {
-        4
-    };
+    let version = 5;
     format!("ledger-{version}-{}.json", provider.raw())
 }
 
@@ -922,7 +951,7 @@ fn read_entry(
     if provider == Provider::Codex {
         if let Some(mut known) = known {
             if let Some(cursor) = known.codex.take().filter(|c| {
-                c.version == 1
+                c.version == 2
                     && known.stamp.size >= 0
                     && c.offset == known.stamp.size as u64
                     && stamp.size > known.stamp.size
@@ -935,6 +964,7 @@ fn read_entry(
                             days: known.days,
                             title: known.title,
                             cwd: known.cwd,
+                            partial: known.partial,
                         },
                         cursor.state,
                         digest,
@@ -980,8 +1010,9 @@ fn read_entry(
         days: scanned.days,
         title: scanned.title,
         cwd: scanned.cwd,
+        partial: scanned.partial,
         codex: (provider == Provider::Codex && newline).then_some(CodexCheckpoint {
-            version: 1,
+            version: 2,
             offset: end,
             digest,
             state,
@@ -1335,6 +1366,7 @@ fn parse_antigravity_database(path: &Path, seen: &mut HashSet<String>) -> Scanne
         days,
         title: None,
         cwd: None,
+        partial: false,
     }
 }
 
@@ -1371,27 +1403,30 @@ fn scan_antigravity() -> BTreeMap<String, BTreeMap<String, TokenTally>> {
 
 /// Reads every transcript under the provider's root, reusing the on-disk cache
 /// for any file whose stamp has not moved.
-fn scan(provider: Provider) -> (BTreeMap<String, BTreeMap<String, TokenTally>>, FileCache) {
+fn scan(provider: Provider) -> TranscriptScan {
     let Some(root) = transcript_root(provider) else {
-        return (BTreeMap::new(), FileCache::default());
+        return TranscriptScan::default();
     };
     let scanned = scan_cached(provider, &root, FileCache::load(provider));
     if scanned.changed {
         scanned.cache.save(provider);
     }
-    (scanned.buckets, scanned.cache)
+    scanned
 }
 
+#[derive(Default)]
 struct TranscriptScan {
     buckets: BTreeMap<String, BTreeMap<String, TokenTally>>,
     cache: FileCache,
     changed: bool,
+    partial: bool,
 }
 
 fn scan_cached(provider: Provider, root: &Path, mut cache: FileCache) -> TranscriptScan {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut fresh: BTreeMap<String, CachedEntry> = BTreeMap::new();
     let mut changed = false;
+    let mut partial = false;
 
     let mut files: Vec<PathBuf> = Vec::new();
     collect_jsonl(root, &mut files);
@@ -1402,6 +1437,7 @@ fn scan_cached(provider: Provider, root: &Path, mut cache: FileCache) -> Transcr
             break;
         }
         let Some(stamp) = Stamp::of(&file) else {
+            partial = true;
             continue;
         };
         let key = file.to_string_lossy().to_string();
@@ -1418,10 +1454,12 @@ fn scan_cached(provider: Provider, root: &Path, mut cache: FileCache) -> Transcr
                 entry
             }
             Err(_) => {
+                partial = true;
                 changed |= had_known;
                 continue;
             }
         };
+        partial |= entry.partial;
 
         for (day, models) in &entry.days {
             if !crate::scan::checkpoint() {
@@ -1444,6 +1482,7 @@ fn scan_cached(provider: Provider, root: &Path, mut cache: FileCache) -> Transcr
         buckets,
         cache,
         changed,
+        partial,
     }
 }
 
@@ -1694,20 +1733,23 @@ pub fn ledger(provider: Provider) -> UsageLedger {
 }
 
 fn build(provider: Provider) -> UsageLedger {
-    let buckets = if provider == Provider::Antigravity {
-        scan_antigravity()
+    let (buckets, partial) = if provider == Provider::Antigravity {
+        (scan_antigravity(), true)
     } else {
-        scan(provider).0
+        let scanned = scan(provider);
+        (scanned.buckets, scanned.partial)
     };
     if buckets.is_empty() {
-        return UsageLedger::empty();
+        let mut ledger = UsageLedger::empty();
+        ledger.has_partial_records = partial && provider != Provider::Antigravity;
+        return ledger;
     }
     if !crate::scan::checkpoint() {
         return UsageLedger::empty();
     }
     let prices = model_prices::prices();
     let mut ledger = priced(&buckets, &prices, None);
-    ledger.has_partial_records = provider == Provider::Antigravity;
+    ledger.has_partial_records = partial;
     ledger
 }
 
@@ -5221,6 +5263,49 @@ mod tests {
     }
 
     #[test]
+    fn codex_usage_gaps_survive_cache_reload_append_and_clear_after_repair() {
+        let invalid = codex_count(-1, 0, 0, 0, "2026-10-01T09:05:00Z") + "\n";
+        let file =
+            TranscriptFixture::new(&(codex_header("alpha") + &stream_codex_count(1) + &invalid));
+        let root = file.0.parent().unwrap();
+        let first = scan_cached(Provider::Codex, root, FileCache::default());
+        assert!(first.partial);
+        assert_eq!(entry_total(first.cache.files.values().next().unwrap()), 155);
+        let cache = serde_json::from_slice(&serde_json::to_vec(&first.cache).unwrap()).unwrap();
+        let reused = scan_cached(Provider::Codex, root, cache);
+        assert!(reused.partial && !reused.changed);
+        file.append(&stream_codex_count(2));
+        let appended = scan_cached(Provider::Codex, root, reused.cache);
+        assert!(appended.partial && appended.changed);
+        assert_eq!(
+            entry_total(appended.cache.files.values().next().unwrap()),
+            310
+        );
+        let cache = serde_json::from_slice(&serde_json::to_vec(&appended.cache).unwrap()).unwrap();
+        let reloaded = scan_cached(Provider::Codex, root, cache);
+        assert!(reloaded.partial && !reloaded.changed);
+        std::fs::write(&file.0, codex_header("alpha") + &stream_codex_count(2)).unwrap();
+        let repaired = scan_cached(Provider::Codex, root, reloaded.cache);
+        assert!(!repaired.partial && repaired.changed);
+        assert_eq!(
+            entry_total(repaired.cache.files.values().next().unwrap()),
+            310
+        );
+    }
+
+    #[test]
+    fn codex_old_resume_version_rebuilds_without_reusing_unvalidated_counters() {
+        let file = TranscriptFixture::new(&(codex_header("alpha") + &stream_codex_count(1)));
+        let mut old = file.read(None);
+        let cursor = old.codex.as_mut().unwrap();
+        cursor.version = 1;
+        cursor.state.previous = Some([0; 4]);
+        file.append(&stream_codex_count(2));
+        assert_eq!(entry_total(&file.read(Some(old))), 310);
+        assert_eq!(ledger_cache_name(Provider::Codex), "ledger-5-codex.json");
+    }
+
+    #[test]
     fn a_live_append_keeps_the_bounded_old_snapshot_and_is_counted_on_the_next_scan() {
         let file = TranscriptFixture::new(&(codex_header("alpha") + &stream_codex_count(1)));
         let stamp = Stamp::of(&file.0).unwrap();
@@ -5646,6 +5731,174 @@ mod tests {
         let day = &scanned.days[&key("2026-10-01T09:05:00Z")]["gpt-5.6"];
         // A backwards total differences to zero everywhere and is dropped.
         assert_eq!(day.total(), 1100, "only the first reading counts");
+    }
+
+    #[test]
+    fn codex_parser_recovery_never_recounts_the_previous_peak() {
+        let header = r#"{"payload":{"model":"fixture"}}"#;
+        let up = codex_count(1000, 0, 0, 100, "2026-10-01T09:05:00Z");
+        let down = codex_count(900, 0, 0, 50, "2026-10-01T09:06:00Z");
+        let recovered = codex_count(1000, 0, 0, 100, "2026-10-01T09:07:00Z");
+        let scanned = parse_codex(
+            [header, &up, &down, &recovered]
+                .into_iter()
+                .map(str::to_string),
+        );
+        assert_eq!(
+            scanned
+                .days
+                .values()
+                .flat_map(|m| m.values())
+                .map(TokenTally::total)
+                .sum::<i64>(),
+            1100
+        );
+        assert!(scanned.partial);
+    }
+
+    #[test]
+    fn codex_parser_rejects_extreme_counters_without_panicking() {
+        let header = r#"{"payload":{"model":"fixture"}}"#;
+        let negative = codex_count(i64::MIN, 0, 0, 0, "2026-10-01T09:05:00Z");
+        let huge = codex_count(i64::MAX, 0, 0, 0, "2026-10-01T09:06:00Z");
+        let scanned = parse_codex([header, &negative, &huge].into_iter().map(str::to_string));
+        assert!(scanned.days.is_empty());
+        assert!(scanned.partial);
+    }
+
+    #[test]
+    fn codex_parser_rejects_fractional_and_missing_required_counters() {
+        for totals in [
+            serde_json::json!({"input_tokens":1.5,"output_tokens":50}),
+            serde_json::json!({"output_tokens":50}),
+        ] {
+            let header = r#"{"payload":{"model":"fixture"}}"#.to_string();
+            let row = serde_json::json!({"timestamp":"2026-10-01T09:05:00Z","payload":{"type":"token_count","info":{"total_token_usage":totals}}}).to_string();
+            let scanned = parse_codex([header, row].into_iter());
+            assert!(scanned.days.is_empty() && scanned.partial);
+        }
+    }
+
+    #[test]
+    fn codex_invalid_fields_preserve_the_last_valid_baseline() {
+        let header = r#"{"payload":{"model":"fixture"}}"#.to_string();
+        let first = codex_count(100, 0, 0, 50, "2026-10-01T09:05:00Z");
+        let last = codex_count(200, 0, 0, 100, "2026-10-01T09:07:00Z");
+        for key in [
+            "input_tokens",
+            "output_tokens",
+            "cached_input_tokens",
+            "cache_write_input_tokens",
+        ] {
+            for value in [
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("10"),
+                serde_json::Value::Null,
+                serde_json::json!(MAX_CODEX_COUNTER + 1),
+                serde_json::json!(u64::MAX),
+            ] {
+                let mut totals = serde_json::json!({"input_tokens":150,"output_tokens":75});
+                totals[key] = value;
+                let row = serde_json::json!({"timestamp":"2026-10-01T09:06:00Z","payload":{"type":"token_count","info":{"total_token_usage":totals}}}).to_string();
+                let scanned =
+                    parse_codex([header.clone(), first.clone(), row, last.clone()].into_iter());
+                assert!(scanned.partial, "{key}");
+                assert_eq!(
+                    scanned
+                        .days
+                        .values()
+                        .flat_map(|m| m.values())
+                        .map(TokenTally::total)
+                        .sum::<i64>(),
+                    300,
+                    "{key}"
+                );
+            }
+        }
+        let contradictory = codex_count(150, 151, 0, 75, "2026-10-01T09:06:00Z");
+        let scanned = parse_codex([header, first, contradictory, last].into_iter());
+        assert!(scanned.partial);
+        assert_eq!(
+            scanned
+                .days
+                .values()
+                .flat_map(|m| m.values())
+                .map(TokenTally::total)
+                .sum::<i64>(),
+            300
+        );
+    }
+
+    #[test]
+    fn codex_unknown_time_or_model_does_not_shift_usage_to_a_later_reading() {
+        let header = r#"{"payload":{"model":"fixture"}}"#.to_string();
+        let unknown_model = codex_count(100, 0, 0, 50, "2026-10-01T09:05:00Z");
+        let unknown_time = codex_count(100, 0, 0, 50, "invalid-time");
+        let last = codex_count(200, 0, 0, 100, "2026-10-01T09:07:00Z");
+        for rows in [
+            vec![unknown_model, header.clone(), last.clone()],
+            vec![header, unknown_time, last],
+        ] {
+            let scanned = parse_codex(rows.into_iter());
+            assert!(scanned.partial);
+            assert_eq!(
+                scanned
+                    .days
+                    .values()
+                    .flat_map(|m| m.values())
+                    .map(TokenTally::total)
+                    .sum::<i64>(),
+                150
+            );
+        }
+    }
+
+    #[test]
+    fn codex_quota_only_updates_zero_and_maximum_valid_counters_are_complete() {
+        let header = r#"{"payload":{"model":"fixture"}}"#.to_string();
+        let quota =
+            r#"{"payload":{"type":"token_count","info":null,"rate_limits":{}}}"#.to_string();
+        let zero = codex_count(0, 0, 0, 0, "2026-10-01T09:05:00Z");
+        let empty = parse_codex([header.clone(), zero.clone(), quota.clone()].into_iter());
+        assert!(empty.days.is_empty() && !empty.partial);
+        let maximum = codex_count(
+            MAX_CODEX_COUNTER,
+            0,
+            0,
+            MAX_CODEX_COUNTER,
+            "2026-10-01T09:06:00Z",
+        );
+        let scanned = parse_codex([header, zero, quota, maximum].into_iter());
+        assert!(!scanned.partial);
+        assert_eq!(
+            scanned
+                .days
+                .values()
+                .flat_map(|m| m.values())
+                .map(TokenTally::total)
+                .sum::<i64>(),
+            2 * MAX_CODEX_COUNTER
+        );
+    }
+
+    #[test]
+    fn codex_inconsistent_cache_delta_does_not_replace_the_last_valid_baseline() {
+        let header = r#"{"payload":{"model":"fixture"}}"#.to_string();
+        let first = codex_count(100, 50, 0, 50, "2026-10-01T09:05:00Z");
+        let invalid = codex_count(110, 70, 0, 50, "2026-10-01T09:06:00Z");
+        let recovered = codex_count(120, 70, 0, 50, "2026-10-01T09:07:00Z");
+        let scanned = parse_codex([header, first, invalid, recovered].into_iter());
+        assert!(scanned.partial);
+        assert_eq!(
+            scanned
+                .days
+                .values()
+                .flat_map(|m| m.values())
+                .map(TokenTally::total)
+                .sum::<i64>(),
+            170
+        );
     }
 
     #[test]

@@ -53,6 +53,13 @@ function Sample([string]$phase) {
   $samples.Add($sample)
   $sample
 }
+function Get-CodexCachePath {
+  # Each benchmark starts with a fresh profile. Require exactly the one cache
+  # this executable wrote; historical binaries may still use version 4.
+  $paths=@(@('ledger-4-codex.json','ledger-5-codex.json')|ForEach-Object{Join-Path $data $_}|Where-Object{Test-Path -LiteralPath $_})
+  if($paths.Count -ne 1){throw 'Expected exactly one Codex ledger cache for this benchmark'}
+  $paths[0]
+}
 function Wait-Complete([string]$phase,[int]$expected,[Diagnostics.Stopwatch]$watch,[long]$baseline) {
   $until=[DateTime]::UtcNow.AddSeconds(60)
   $nextUi=0
@@ -73,7 +80,7 @@ function Wait-Complete([string]$phase,[int]$expected,[Diagnostics.Stopwatch]$wat
     $nodes|ForEach-Object{[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName;Enabled=$_.Current.IsEnabled}}|ConvertTo-Json -Depth 3|Set-Content -LiteralPath ('target/stream-'+$Label+'-failure.json') -Encoding utf8
     throw "Expected $expected tokens after $phase"
   }
-  $cache=Get-Content -LiteralPath (Join-Path $data 'ledger-4-codex.json') -Raw | ConvertFrom-Json
+  $cache=Get-Content -LiteralPath (Get-CodexCachePath) -Raw | ConvertFrom-Json
   [long]$cachedTokens=0
   foreach($entry in $cache.files.PSObject.Properties){
     foreach($day in $entry.Value.days.PSObject.Properties){
@@ -149,7 +156,7 @@ try {
   $full=Wait-Complete 'full' 150 $watch $initialBaseline
   $unchangedCacheVerified=$false
   if($VerifyUnchangedCache){
-    $cachePath=Join-Path $data 'ledger-4-codex.json'
+    $cachePath=Get-CodexCachePath
     $cacheStamp=(Get-Item -LiteralPath $cachePath).LastWriteTimeUtc.Ticks
     $cacheHash=(Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash
     for($refreshIndex=0;$refreshIndex -lt 2;$refreshIndex++){
@@ -179,7 +186,7 @@ try {
   $append=Wait-Complete 'append' 450 $watch $appendBaseline
   $filtersVerified=$false
   if($VerifyFilters){
-    $cachePath=Join-Path $data 'ledger-4-codex.json'
+    $cachePath=Get-CodexCachePath
     $cacheStamp=(Get-Item -LiteralPath $cachePath).LastWriteTimeUtc.Ticks
     $cacheHash=(Get-FileHash -LiteralPath $cachePath -Algorithm SHA256).Hash
     # Change the underlying file without refreshing. Every filter must keep
@@ -231,7 +238,7 @@ try {
   $watch=[Diagnostics.Stopwatch]::StartNew()
   (Refresh-Button).GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
   $rewrite=Wait-Complete 'rewrite' 750 $watch $rewriteBaseline
-  $result=[pscustomobject]@{Passed=$true;Label=$Label;ExecutableSHA256=(Get-FileHash -LiteralPath $info.FileName -Algorithm SHA256).Hash;FixtureBytes=$fixtureBytes;Records=$Records;Full=$full;Append=$append;Restart=$restart;RestartFromDisk=$true;UnchangedCacheVerified=$unchangedCacheVerified;FiltersVerified=$filtersVerified;ProcessIds=@($firstProcessId,$testApp.Id);Rewrite=$rewrite}
+  $result=[pscustomobject]@{Passed=$true;Label=$Label;ExecutableSHA256=(Get-FileHash -LiteralPath $info.FileName -Algorithm SHA256).Hash;CodexCacheName=(Split-Path -Leaf (Get-CodexCachePath));FixtureBytes=$fixtureBytes;Records=$Records;Full=$full;Append=$append;Restart=$restart;RestartFromDisk=$true;UnchangedCacheVerified=$unchangedCacheVerified;FiltersVerified=$filtersVerified;ProcessIds=@($firstProcessId,$testApp.Id);Rewrite=$rewrite}
   $samples|ConvertTo-Json|Set-Content -LiteralPath ('target/stream-'+$Label+'-samples.json') -Encoding utf8
   $result|ConvertTo-Json -Depth 5|Tee-Object -FilePath ('target/stream-'+$Label+'-result.json')
 } finally {
