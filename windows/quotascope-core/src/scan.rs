@@ -159,6 +159,10 @@ pub(crate) fn read_to_string(path: impl AsRef<Path>) -> io::Result<String> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+pub(crate) fn file_read() {
+    notify(|p| p.files_read += 1, false);
+}
+
 /// Check between buffered disk reads, including inside a very long line.
 struct CheckedReader<R>(R);
 impl<R: Read> Read for CheckedReader<R> {

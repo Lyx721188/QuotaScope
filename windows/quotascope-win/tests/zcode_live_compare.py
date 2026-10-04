@@ -107,8 +107,10 @@ def independent(rows):
 
 def run(args):
     assert 1 <= args.max_rows <= 100_000
+    if args.database.is_symlink() or args.database.is_junction():
+        raise ValueError("Source must not be a symlink or junction")
     source = args.database.resolve(strict=True)
-    if source.is_symlink() or source.stat().st_size > 256 * 1024 * 1024:
+    if not source.is_file() or source.stat().st_size > 256 * 1024 * 1024:
         raise ValueError("Source is not a bounded regular database")
     connection = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=0.1)
     try:

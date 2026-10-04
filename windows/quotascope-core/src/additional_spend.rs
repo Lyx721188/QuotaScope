@@ -19,7 +19,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("cherrystudio", "Cherry Studio", ""),
     ("commandcode", "Command Code", ".commandcode"),
     ("opencodereview", "OpenCodeReview", ".opencodereview"),
-    ("zcode", "ZCode", ".zcode"),
+    ("zcode", "ZCode", ".zcode/cli/db/db.sqlite"),
     ("hermes", "Hermes", ".hermes"),
     ("goose", "Goose", ".local/share/goose/sessions"),
     ("zed", "Zed", ""),
@@ -66,6 +66,7 @@ pub fn native_supported(id: &str) -> bool {
             | "kilocode"
             | "cline"
             | "dsh"
+            | "zcode"
             | "antigravity"
             | "hindsight"
             | "cursor"
@@ -184,12 +185,52 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
     let mut reader = Reader::default();
     let mut files = Vec::new();
     let mut seen_paths = HashSet::new();
-    for path in paths {
+    let mut zcode_listed = 0;
+    if id == "zcode" && paths.len() > 16 {
+        reader.partial = true;
+    }
+    for path in paths
+        .iter()
+        .take(if id == "zcode" { 16 } else { paths.len() })
+    {
+        if id == "zcode" {
+            if path.components().any(|p| p.as_os_str() == "UsageImports") {
+                collect_zcode_imports(
+                    path,
+                    0,
+                    &mut files,
+                    &mut seen_paths,
+                    &mut zcode_listed,
+                    &mut reader.partial,
+                );
+            } else {
+                let candidates = if path.is_dir() {
+                    vec![path.join("db.sqlite"), path.join("cli/db/db.sqlite")]
+                } else {
+                    vec![path.clone()]
+                };
+                for candidate in candidates {
+                    if candidate.file_name().is_none_or(|name| name != "db.sqlite") {
+                        continue;
+                    }
+                    if let Ok(canonical) = candidate.canonicalize() {
+                        if seen_paths.insert(canonical) {
+                            files.push(candidate);
+                        }
+                    } else if candidate.try_exists().unwrap_or(true) {
+                        reader.partial = true;
+                    }
+                }
+            }
+            continue;
+        }
         if !native_supported(id) && !path.components().any(|p| p.as_os_str() == "UsageImports") {
             continue;
         }
         collect(path, &mut files, &mut seen_paths);
     }
+    let mut zcode_database = false;
+    let mut zcode_import_bytes = 0_u64;
     for file in files {
         if !crate::scan::checkpoint() {
             reader.partial = true;
@@ -197,6 +238,32 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
         }
         let import = file.components().any(|p| p.as_os_str() == "UsageImports");
         let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if id == "zcode" && !import {
+            // One official database owns all ZCode attempts. Never add a second
+            // copy of that database as if it represented additional requests.
+            if zcode_database {
+                reader.partial = true;
+                continue;
+            }
+            zcode_database = true;
+            let report = crate::zcode_spend::read_cached(&file);
+            for (slot, models) in &report.buckets {
+                for (model, tally) in models {
+                    if !crate::scan::checkpoint() {
+                        reader.partial = true;
+                        break;
+                    }
+                    *reader
+                        .buckets
+                        .entry(slot.clone())
+                        .or_default()
+                        .entry(model.clone())
+                        .or_default() += *tally;
+                }
+            }
+            reader.partial |= report.partial;
+            continue;
+        }
         if id == "devin-cli" && name == "sessions.db" && !import {
             devin(&file, &mut reader);
             continue;
@@ -229,7 +296,9 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
             .metadata()
             .ok()
             .and_then(|m| Some((m.len(), m.modified().ok()?)));
-        let maximum = if dsh {
+        let maximum = if id == "zcode" {
+            8 * 1024 * 1024
+        } else if dsh {
             crate::zstd_stream::MAX_BYTES
         } else {
             128 * 1024 * 1024
@@ -237,6 +306,14 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
         if stamp.is_some_and(|(length, _)| length > maximum) {
             reader.partial = true;
             continue;
+        }
+        if id == "zcode" {
+            zcode_import_bytes =
+                zcode_import_bytes.saturating_add(stamp.map(|s| s.0).unwrap_or(maximum));
+            if zcode_import_bytes > 64 * 1024 * 1024 {
+                reader.partial = true;
+                break;
+            }
         }
         let Ok(mut input) = std::fs::File::open(&file) else {
             reader.partial = true;
@@ -282,7 +359,7 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
                 Box::new(input)
             };
             let hash = std::collections::hash_map::DefaultHasher::new();
-            let mut lines = if dsh {
+            let mut lines = if dsh || id == "zcode" {
                 crate::scan::LineReader::with_line_limit(input, crate::zstd_stream::MAX_LINE_BYTES)
             } else {
                 crate::scan::LineReader::new(input, hash, 0)
@@ -299,7 +376,7 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
                 reader.partial = true;
             }
         }
-        if dsh
+        if (dsh || id == "zcode")
             && (stamp.is_none()
                 || file
                     .metadata()
@@ -318,6 +395,66 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
         reader.partial = true;
     }
     reader
+}
+
+fn collect_zcode_imports(
+    path: &Path,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+    listed: &mut usize,
+    partial: &mut bool,
+) {
+    if !crate::scan::checkpoint() || depth > 8 || *listed >= 10_000 || out.len() >= 1024 {
+        *partial = true;
+        return;
+    }
+    *listed += 1;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => {
+            *partial = true;
+            return;
+        }
+    };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 {
+            return;
+        }
+    }
+    if !seen.insert(path.to_path_buf()) {
+        return;
+    }
+    if meta.is_file() {
+        if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("json" | "jsonl")
+        ) {
+            out.push(path.to_path_buf());
+        }
+    } else if meta.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            *partial = true;
+            return;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                *partial = true;
+                continue;
+            };
+            collect_zcode_imports(&entry.path(), depth + 1, out, seen, listed, partial);
+            if *listed >= 10_000 || out.len() >= 1024 || !crate::scan::checkpoint() {
+                *partial = true;
+                break;
+            }
+        }
+    }
 }
 
 fn collect(path: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
@@ -689,6 +826,64 @@ mod tests {
             .flat_map(|models| models.values())
             .map(TokenTally::total)
             .sum()
+    }
+
+    #[test]
+    fn zcode_reads_the_fixed_database_and_keeps_standard_imports_without_scanning_rollouts() {
+        let fixture = Fixture::new();
+        let native = fixture.0.join("cli/db/db.sqlite");
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        let db = rusqlite::Connection::open(&native).unwrap();
+        db.execute_batch("CREATE TABLE model_usage (
+            id TEXT PRIMARY KEY, logical_request_id TEXT, attempt_index INTEGER, model_id TEXT,
+            status TEXT, started_at INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+            reasoning_tokens INTEGER, cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER,
+            computed_total_tokens INTEGER, provider_total_tokens INTEGER, raw_usage_json TEXT);
+            CREATE INDEX model_usage_started_model_idx ON model_usage(started_at,model_id);").unwrap();
+        db.execute(
+            "INSERT INTO model_usage VALUES ('one','logical',0,'fixture','completed',?1,
+            100,20,5,10,30,120,120,?2)",
+            rusqlite::params![1790850000000_i64,
+            json!({"inputTokens":100,"outputTokens":20,"reasoningTokens":5,"cacheWriteTokens":10,
+                "cacheReadTokens":30,"totalTokens":120}).to_string()],
+        )
+        .unwrap();
+        drop(db);
+        fixture.write("should-not-read-rollout.jsonl", b"malformed conversation\n");
+        let first = read_source("zcode", &[fixture.0.clone(), native.clone()]);
+        assert_eq!(total(&first), 120);
+        assert!(!first.partial);
+        assert!(native_supported("zcode"));
+        let imports = fixture.0.join("UsageImports/zcode");
+        std::fs::create_dir_all(&imports).unwrap();
+        std::fs::write(
+            imports.join("import.jsonl"),
+            json!({"schema":"quotascope.usage.v1",
+            "source":"zcode","id":"import-one","timestamp":1790850000000_i64,"model":"fixture",
+            "usage":{"inputTokens":2,"outputTokens":3}})
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let combined = read_source("zcode", &[native.clone(), imports]);
+        assert_eq!(total(&combined), 125);
+        assert!(!combined.partial);
+        let copy = fixture.0.join("copy/db.sqlite");
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::copy(&native, &copy).unwrap();
+        let multiple = read_source("zcode", &[native, copy]);
+        assert_eq!(total(&multiple), 120);
+        assert!(multiple.partial);
+    }
+
+    #[test]
+    fn zcode_import_depth_limits_are_visible_instead_of_silently_complete() {
+        let fixture = Fixture::new();
+        let imports = fixture.0.join("UsageImports/zcode");
+        let deep = (0..10).fold(imports.clone(), |path, _| path.join("nested"));
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("usage.jsonl"), "{}\n").unwrap();
+        assert!(read_source("zcode", &[imports]).partial);
     }
     fn transcript() -> Vec<u8> {
         [

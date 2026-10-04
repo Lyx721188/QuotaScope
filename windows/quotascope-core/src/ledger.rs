@@ -1598,6 +1598,7 @@ pub fn release_expired_memory(enabled: bool) {
     if let Ok(mut cache) = MEMORY.try_lock() {
         expire_memory(&mut cache, Instant::now(), enabled);
     }
+    crate::zcode_spend::release_memory(enabled);
 }
 
 /// Manual refresh runs this on the scan worker, never on the UI thread.
@@ -1613,6 +1614,7 @@ pub fn invalidate_memory() {
 pub fn clear_statistics_cache() -> crate::statistics_cache::Cleanup {
     let mut cache = MEMORY.lock().unwrap_or_else(|e| e.into_inner());
     *cache = None;
+    crate::zcode_spend::clear_memory();
     crate::statistics_cache::clear_disk()
 }
 
