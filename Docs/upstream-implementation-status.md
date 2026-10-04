@@ -15,7 +15,7 @@
 
 N1–N4a 的源码基线回归为 706 passed / 6 ignored；含 ZCode 的 dcaa37c 为 724 passed / 6 ignored，fmt、普通 Clippy、Release 和 JSON CLI 完成；已有 Clippy 告警仍存在。每次后续改动以对应 commit 的检查为准。
 
-当前目录为 77 个 Windows 路由、54 个 Token 来源（35 个已知格式读取，含导出缓存；19 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。标准导入计数与零值覆盖随 `53bd960` 通过 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37186053767)，统一读取预算及流式 JSON 数组随 `f08ee5a` 通过 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37188857492)，浏览器副本隔离及清理随 `3e95c23` 通过 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37190912782)。日期展开仅补最近 366 天、所有实际记录保留，整仓 744 passed / 6 ignored、隔离 Debug UI 通过；该批 Release CI 随提交单独核对。真实账户与升级仍分别保留验收状态。
+当前目录为 77 个 Windows 路由、54 个 Token 来源（35 个已知格式读取，含导出缓存；19 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。标准导入计数与零值覆盖随 `53bd960` 通过 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37186053767)，统一读取预算及流式 JSON 数组随 `f08ee5a` 通过 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37188857492)，浏览器副本隔离及清理随 `3e95c23` 通过 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37190912782)。日期展开仅补最近 366 天、所有实际记录保留，整仓 744 passed / 6 ignored、隔离 Debug UI 通过；[日期改动 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37191964998) 通过。固定头部签名另通过本地 core 670 passed / 5 ignored，整仓/Release UI 随该批 CI 核对。真实账户与升级仍分别保留验收状态。
 
 ## 已发布的 1.3.0 / 1.3.1 基线
 

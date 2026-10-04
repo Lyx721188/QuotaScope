@@ -6,7 +6,7 @@ use rusqlite::{limits::Limit, Connection, OpenFlags};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -144,7 +144,7 @@ struct FileStamp {
 }
 
 impl FileStamp {
-    fn of(path: &Path) -> Option<Self> {
+    fn of<const HEADER_BYTES: usize>(path: &Path) -> Option<Self> {
         let meta = std::fs::symlink_metadata(path).ok()?;
         if !meta.is_file() || meta.file_type().is_symlink() {
             return None;
@@ -158,17 +158,13 @@ impl FileStamp {
         }
         let mut file = std::fs::File::open(path).ok()?;
         let meta = file.metadata().ok()?;
-        let mut first = [0; 128];
-        let mut last = [0; 32];
-        let first_size = meta.len().min(first.len() as u64) as usize;
-        file.read_exact(&mut first[..first_size]).ok()?;
+        // Only SQLite's fixed header belongs in this cache signature. Never
+        // sample arbitrary database pages or WAL frame payloads at the tail.
+        let mut header = [0; HEADER_BYTES];
+        let length = meta.len().min(HEADER_BYTES as u64) as usize;
+        file.read_exact(&mut header[..length]).ok()?;
         let mut hash = Sha256::new();
-        hash.update(&first[..first_size]);
-        if meta.len() > first.len() as u64 {
-            file.seek(SeekFrom::End(-(last.len() as i64))).ok()?;
-            file.read_exact(&mut last).ok()?;
-            hash.update(last);
-        }
+        hash.update(&header[..length]);
         Some(Self {
             size: meta.len(),
             modified: meta.modified().ok()?,
@@ -213,13 +209,13 @@ struct Stamp {
 
 impl Stamp {
     fn of(path: &Path) -> Option<Self> {
-        let database = FileStamp::of(path)?;
+        let database = FileStamp::of::<100>(path)?;
         let wal_path = path.with_file_name(format!("{}-wal", path.file_name()?.to_str()?));
         let wal = if wal_path.try_exists().ok()? {
             // A read-only SQLite connection may create an empty WAL sidecar.
             // It carries no frames; treat it as absent so that merely opening
             // a WAL-mode database does not manufacture a data-change gap.
-            Some(FileStamp::of(&wal_path)?).filter(|wal| wal.size != 0)
+            Some(FileStamp::of::<32>(&wal_path)?).filter(|wal| wal.size != 0)
         } else {
             None
         };
@@ -846,6 +842,61 @@ mod tests {
             .to_string(),
         );
         row
+    }
+
+    #[test]
+    fn cache_signatures_exclude_database_pages_and_wal_frame_payloads() {
+        let fixture = Fixture::new();
+        let database = fixture.path();
+        let wal = fixture.0.join("db.sqlite-wal");
+        for (path, length) in [(&database, 100), (&wal, 32)] {
+            let mut bytes = vec![11; length + 256];
+            std::fs::write(path, &bytes).unwrap();
+            let before = Stamp::of(&database).unwrap();
+            // Change both the first bytes outside the header and the tail.
+            bytes[length..].fill(29);
+            std::fs::write(path, &bytes).unwrap();
+            let after = Stamp::of(&database).unwrap();
+            assert_eq!(after.database.signature, before.database.signature);
+            assert_eq!(
+                after.wal.map(|s| s.signature),
+                before.wal.map(|s| s.signature)
+            );
+            bytes[24] ^= 1;
+            std::fs::write(path, &bytes).unwrap();
+            let changed = Stamp::of(&database).unwrap();
+            if length == 100 {
+                assert_ne!(changed.database.signature, after.database.signature);
+            } else {
+                assert_ne!(changed.wal.unwrap().signature, after.wal.unwrap().signature);
+            }
+        }
+    }
+
+    #[test]
+    fn rollback_commits_refresh_cache_even_when_mtime_and_size_are_restored() {
+        let fixture = Fixture::new();
+        fixture.insert(record());
+        let reader = Reader::default();
+        assert_eq!(total(&reader.read(&fixture.path()).report), 120);
+        assert!(reader.read(&fixture.path()).reused);
+        let before = Stamp::of(&fixture.path()).unwrap();
+        assert!(before.wal.is_none());
+        fixture.insert(changed_record());
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(fixture.path())
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(before.database.modified))
+            .unwrap();
+        let after = Stamp::of(&fixture.path()).unwrap();
+        assert_eq!(after.database.modified, before.database.modified);
+        assert_eq!(after.database.size, before.database.size);
+        assert_eq!(after.database.identity, before.database.identity);
+        assert_ne!(after.database.signature, before.database.signature);
+        let fresh = reader.read(&fixture.path());
+        assert!(!fresh.reused);
+        assert_eq!(total(&fresh.report), 220);
     }
 
     #[test]
