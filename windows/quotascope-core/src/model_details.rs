@@ -9,6 +9,15 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+// An engineering read limit, not a provider's advertised token allowance.
+const MAX_TIMING_OUTPUT: i64 = 1_000_000_000_000;
+
+fn output_counter(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .filter(|n| (0..=MAX_TIMING_OUTPUT).contains(n))
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Timing {
     pub output: i64,
@@ -19,20 +28,50 @@ pub struct Timing {
 }
 
 impl Timing {
-    fn reply(&mut self, output: i64, sent: i64, finished: i64) {
+    fn reply(&mut self, output: i64, sent: i64, finished: i64) -> bool {
+        if !(0..=MAX_TIMING_OUTPUT).contains(&output) {
+            return false;
+        }
         let seconds = finished.saturating_sub(sent) as f64 / 1000.0;
         if output >= 50 && seconds > 0.0 && seconds <= 1200.0 {
-            self.output += output;
-            self.seconds += seconds;
-            self.replies += 1;
+            let Some(total) = self.output.checked_add(output) else {
+                return false;
+            };
+            let Some(replies) = self.replies.checked_add(1) else {
+                return false;
+            };
+            let elapsed = self.seconds + seconds;
+            if !elapsed.is_finite() {
+                return false;
+            }
+            self.output = total;
+            self.seconds = elapsed;
+            self.replies = replies;
         }
+        true
     }
-    fn merge(&mut self, other: &Self) {
-        self.output += other.output;
-        self.seconds += other.seconds;
-        self.replies += other.replies;
-        self.first_token_seconds += other.first_token_seconds;
-        self.first_token_turns += other.first_token_turns;
+    fn merge(&mut self, other: &Self) -> bool {
+        let Some(output) = self.output.checked_add(other.output) else {
+            return false;
+        };
+        let Some(replies) = self.replies.checked_add(other.replies) else {
+            return false;
+        };
+        let Some(first_token_turns) = self.first_token_turns.checked_add(other.first_token_turns)
+        else {
+            return false;
+        };
+        let seconds = self.seconds + other.seconds;
+        let first_token_seconds = self.first_token_seconds + other.first_token_seconds;
+        if !seconds.is_finite() || !first_token_seconds.is_finite() {
+            return false;
+        }
+        self.output = output;
+        self.seconds = seconds;
+        self.replies = replies;
+        self.first_token_seconds = first_token_seconds;
+        self.first_token_turns = first_token_turns;
+        true
     }
     pub fn speed(&self) -> Option<f64> {
         (self.replies >= 3 && self.seconds > 0.0).then(|| self.output as f64 / self.seconds)
@@ -234,7 +273,7 @@ fn read_timings_with_limits(
             ),
             limits.line_bytes,
         );
-        let scanned = parse_checked(provider, reader.by_ref(), cutoff);
+        let scanned = parse_checked(provider, reader.by_ref(), cutoff, now);
         let after = std::fs::metadata(&path)
             .ok()
             .and_then(|m| Some((m.len(), m.modified().ok()?, m.created().ok())));
@@ -246,13 +285,12 @@ fn read_timings_with_limits(
             report.partial = true;
             continue;
         }
-        report.partial |= scanned.partial;
         for (model, timing) in scanned.models {
             if report.models.len() >= 1024 && !report.models.contains_key(&model) {
                 report.partial = true;
                 continue;
             }
-            report.models.entry(model).or_default().merge(&timing);
+            report.partial |= !report.models.entry(model).or_default().merge(&timing);
         }
     }
     report
@@ -263,13 +301,14 @@ pub fn parse(
     lines: impl Iterator<Item = String>,
     cutoff: i64,
 ) -> BTreeMap<String, Timing> {
-    parse_checked(provider, lines, cutoff).models
+    parse_checked(provider, lines, cutoff, i64::MAX).models
 }
 
 fn parse_checked(
     provider: Provider,
     lines: impl Iterator<Item = String>,
     cutoff: i64,
+    now: i64,
 ) -> TimingReport {
     let mut partial = false;
     let mut rows = 0;
@@ -287,28 +326,33 @@ fn parse_checked(
             }
         }
     });
-    let models = parse_values(provider, decoded, cutoff);
-    TimingReport { models, partial }
+    let mut report = parse_values(provider, decoded, cutoff, now);
+    report.partial |= partial;
+    report
 }
 
 fn parse_values(
     provider: Provider,
     values: impl Iterator<Item = Value>,
     cutoff: i64,
-) -> BTreeMap<String, Timing> {
+    now: i64,
+) -> TimingReport {
     let mut out: BTreeMap<String, Timing> = BTreeMap::new();
+    let mut partial = false;
+    let in_window = |at| (cutoff..=now).contains(&at);
     let mut sent = None;
     let mut parents: HashMap<String, (Option<String>, Option<i64>, bool)> = HashMap::new();
     let mut replies: HashMap<String, (String, i64, i64, i64)> = HashMap::new();
     let mut model: Option<String> = None;
-    let mut previous_output = 0;
+    let mut previous_output = Some(0);
     let mut pending: Option<(String, i64, i64, i64)> = None;
     let mut seen_turns = std::collections::HashSet::new();
     let finish = |pending: &mut Option<(String, i64, i64, i64)>,
-                  out: &mut BTreeMap<String, Timing>| {
+                  out: &mut BTreeMap<String, Timing>,
+                  partial: &mut bool| {
         if let Some((model, sent, finished, output)) = pending.take() {
-            if finished >= cutoff {
-                out.entry(model).or_default().reply(output, sent, finished);
+            if in_window(finished) {
+                *partial |= !out.entry(model).or_default().reply(output, sent, finished);
             }
         }
     };
@@ -369,10 +413,13 @@ fn parse_values(
             let Some(request) = request.or(sent) else {
                 continue;
             };
-            let output = root
-                .pointer("/message/usage/output_tokens")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            let Some(value) = root.pointer("/message/usage/output_tokens") else {
+                continue;
+            };
+            let Some(output) = output_counter(value) else {
+                partial = true;
+                continue;
+            };
             let reply = replies.entry(id.to_string()).or_insert((
                 name.to_string(),
                 request,
@@ -405,25 +452,41 @@ fn parse_values(
                 ) || (event == Some("message")
                     && payload.get("role").and_then(Value::as_str) == Some("user")));
             if input || (kind == Some("event_msg") && event == Some("task_started")) {
-                finish(&mut pending, &mut out);
+                finish(&mut pending, &mut out, &mut partial);
                 sent = at;
             }
             if event == Some("token_count") {
-                let output = payload
-                    .pointer("/info/total_token_usage/output_tokens")
-                    .and_then(Value::as_i64);
-                if let Some(output) = output {
-                    let delta = output.saturating_sub(previous_output).max(0);
-                    previous_output = output;
+                if let Some(value) = payload.pointer("/info/total_token_usage/output_tokens") {
+                    let Some(output) = output_counter(value) else {
+                        partial = true;
+                        pending = None;
+                        previous_output = None;
+                        continue;
+                    };
+                    let previous = previous_output.replace(output);
+                    let Some(delta) = previous
+                        .and_then(|old| output.checked_sub(old))
+                        .filter(|n| *n >= 0)
+                    else {
+                        // A reset has no reliable delta. Do not guess the missing output.
+                        partial = true;
+                        pending = None;
+                        continue;
+                    };
                     if let (Some(name), Some(sent), Some(at)) = (&model, sent, at) {
                         let record = pending.get_or_insert((name.clone(), sent, at, 0));
                         record.2 = at;
-                        record.3 += delta;
+                        if let Some(total) = record.3.checked_add(delta) {
+                            record.3 = total;
+                        } else {
+                            partial = true;
+                            pending = None;
+                        }
                     }
                 }
             }
             if event == Some("task_complete") {
-                finish(&mut pending, &mut out);
+                finish(&mut pending, &mut out, &mut partial);
                 if let (Some(name), Some(at), Some(ms)) = (
                     &model,
                     at,
@@ -436,7 +499,7 @@ fn parse_values(
                         .and_then(Value::as_str)
                         .map(str::to_string)
                         .unwrap_or_else(|| at.to_string());
-                    if at >= cutoff
+                    if in_window(at)
                         && ms.is_finite()
                         && ms > 0.0
                         && ms <= 1_200_000.0
@@ -451,13 +514,16 @@ fn parse_values(
             }
         }
     }
-    finish(&mut pending, &mut out);
+    finish(&mut pending, &mut out, &mut partial);
     for (_, (model, sent, finished, output)) in replies {
-        if finished >= cutoff {
-            out.entry(model).or_default().reply(output, sent, finished);
+        if in_window(finished) {
+            partial |= !out.entry(model).or_default().reply(output, sent, finished);
         }
     }
-    out
+    TimingReport {
+        models: out,
+        partial,
+    }
 }
 
 #[cfg(test)]
@@ -674,5 +740,218 @@ mod tests {
         );
         assert_eq!(timing["gpt-6-sol"].first_token(), Some(2.0));
         assert_eq!(timing["gpt-6-sol"].speed(), None);
+    }
+
+    #[test]
+    fn future_timing_records_do_not_enter_the_last_24_hours() {
+        let fixture = TimingFixture::new();
+        fixture.write("good.jsonl", "current");
+        let future = fixture.write("future.jsonl", "future");
+        let rows = std::fs::read_to_string(&future).unwrap();
+        let rows = rows
+            .lines()
+            .map(|line| {
+                let mut row: Value = serde_json::from_str(line).unwrap();
+                if let Some(stamp) = row.get_mut("timestamp") {
+                    let at = stamp
+                        .as_str()
+                        .and_then(crate::timeutil::parse_iso8601_ms)
+                        .unwrap();
+                    *stamp = Value::String(
+                        chrono::DateTime::from_timestamp_millis(at + 86_400_000)
+                            .unwrap()
+                            .to_rfc3339(),
+                    );
+                }
+                row.to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(future, rows).unwrap();
+        let report = fixture.read(TimingLimits::default());
+        assert!(!report.partial);
+        assert_eq!(report.models.len(), 1);
+        assert_eq!(report.models["current"].speed(), Some(10.0));
+        assert_eq!(report.models["current"].first_token(), Some(1.0));
+    }
+
+    #[test]
+    fn oversized_claude_outputs_are_a_timing_gap_instead_of_an_overflow() {
+        let fixture = TimingFixture::new();
+        let now = crate::timeutil::now_ms();
+        let mut rows = Vec::new();
+        for turn in 0..3 {
+            let sent =
+                chrono::DateTime::from_timestamp_millis(now - 60_000 + turn * 10_000).unwrap();
+            let finished = sent + chrono::Duration::seconds(5);
+            rows.push(serde_json::json!({"type":"user","uuid":format!("u{turn}"),"timestamp":sent.to_rfc3339()}).to_string());
+            rows.push(serde_json::json!({"type":"assistant","parentUuid":format!("u{turn}"),"timestamp":finished.to_rfc3339(),"message":{"id":format!("a{turn}"),"model":"overflow","usage":{"output_tokens":i64::MAX}}}).to_string());
+        }
+        std::fs::write(fixture.root.join("overflow.jsonl"), rows.join("\n")).unwrap();
+        let report = read_timings(Provider::ClaudeCode, &fixture.root, now);
+        assert!(report.partial);
+        assert!(report.models.is_empty());
+    }
+
+    #[test]
+    fn timing_window_includes_both_edges_and_excludes_one_millisecond_outside() {
+        let now = crate::timeutil::parse_iso8601_ms("2026-10-04T12:00:00Z").unwrap();
+        let cutoff = now - 86_400_000;
+        let stamp = |at| {
+            chrono::DateTime::from_timestamp_millis(at)
+                .unwrap()
+                .to_rfc3339()
+        };
+        let mut codex = vec![serde_json::json!({"type":"turn_context","payload":{"model":"edge"}})];
+        let mut claude = Vec::new();
+        for (index, finished) in [cutoff - 1, cutoff, now, now + 1].into_iter().enumerate() {
+            for sample in 0..3 {
+                let id = format!("{index}-{sample}");
+                codex.push(serde_json::json!({"type":"event_msg","timestamp":stamp(finished),"payload":{"type":"task_complete","turn_id":id,"time_to_first_token_ms":1000}}));
+                claude.push(
+                    serde_json::json!({"type":"user","uuid":id,"timestamp":stamp(finished-5000)}),
+                );
+                claude.push(serde_json::json!({"type":"assistant","parentUuid":id,"timestamp":stamp(finished),"message":{"id":id,"model":"edge","usage":{"output_tokens":100}}}));
+            }
+        }
+        let report = parse_checked(
+            Provider::Codex,
+            codex.into_iter().map(|v| v.to_string()),
+            cutoff,
+            now,
+        );
+        assert!(!report.partial);
+        assert_eq!(report.models["edge"].first_token_turns, 6);
+        assert_eq!(report.models["edge"].first_token(), Some(1.0));
+        let report = parse_checked(
+            Provider::ClaudeCode,
+            claude.into_iter().map(|v| v.to_string()),
+            cutoff,
+            now,
+        );
+        assert!(!report.partial);
+        assert_eq!(report.models["edge"].replies, 6);
+        assert_eq!(report.models["edge"].output, 600);
+        assert_eq!(report.models["edge"].speed(), Some(20.0));
+    }
+
+    #[test]
+    fn invalid_codex_counters_exclude_that_file_and_repair_restores_coverage() {
+        let fixture = TimingFixture::new();
+        fixture.write("a-good.jsonl", "good");
+        let bad = fixture.write("b-invalid.jsonl", "invalid");
+        let original = std::fs::read_to_string(&bad).unwrap();
+        for invalid in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("100"),
+            Value::Null,
+            serde_json::json!(MAX_TIMING_OUTPUT + 1),
+            serde_json::json!(u64::MAX),
+        ] {
+            let mut changed = false;
+            let rows = original
+                .lines()
+                .map(|line| {
+                    let mut row: Value = serde_json::from_str(line).unwrap();
+                    if !changed {
+                        if let Some(counter) =
+                            row.pointer_mut("/payload/info/total_token_usage/output_tokens")
+                        {
+                            *counter = invalid.clone();
+                            changed = true;
+                        }
+                    }
+                    row.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(&bad, rows).unwrap();
+            let report = fixture.read(TimingLimits::default());
+            assert!(report.partial, "{invalid}");
+            assert_eq!(report.models.len(), 1);
+            assert_eq!(report.models["good"].speed(), Some(10.0));
+        }
+        std::fs::write(&bad, &original).unwrap();
+        let report = fixture.read(TimingLimits::default());
+        assert!(!report.partial);
+        assert_eq!(report.models["invalid"].speed(), Some(10.0));
+    }
+
+    #[test]
+    fn codex_counter_reset_is_unknown_but_zero_and_the_read_limit_are_valid() {
+        let now = crate::timeutil::parse_iso8601_ms("2026-10-04T12:00:00Z").unwrap();
+        let stamp = |at| {
+            chrono::DateTime::from_timestamp_millis(at)
+                .unwrap()
+                .to_rfc3339()
+        };
+        let rows = |counters: &[i64]| {
+            let mut rows = vec![
+                serde_json::json!({"type":"turn_context","payload":{"model":"edge"}}),
+                serde_json::json!({"type":"event_msg","timestamp":stamp(now-10000),"payload":{"type":"task_started"}}),
+            ];
+            for &counter in counters {
+                rows.push(serde_json::json!({"type":"event_msg","timestamp":stamp(now),"payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":counter}}}}));
+            }
+            rows.into_iter().map(|v| v.to_string())
+        };
+        let report = parse_checked(Provider::Codex, rows(&[100, 0, 50]), 0, now);
+        assert!(report.partial);
+        let report = parse_checked(Provider::Codex, rows(&[0, MAX_TIMING_OUTPUT]), 0, now);
+        assert!(!report.partial);
+        assert_eq!(report.models["edge"].output, MAX_TIMING_OUTPUT);
+        assert_eq!(report.models["edge"].replies, 1);
+        assert_eq!(report.models["edge"].speed(), None);
+    }
+
+    #[test]
+    fn timing_aggregate_overflow_leaves_the_complete_snapshot_unchanged() {
+        let mut timing = Timing {
+            output: i64::MAX - 5,
+            seconds: 30.0,
+            replies: 3,
+            first_token_seconds: 3.0,
+            first_token_turns: 3,
+        };
+        let original = timing.clone();
+        assert!(!timing.merge(&Timing {
+            output: 10,
+            seconds: 10.0,
+            replies: 1,
+            first_token_seconds: 1.0,
+            first_token_turns: 1
+        }));
+        assert!(!timing.reply(50, 0, 5000));
+        assert_eq!(timing.output, original.output);
+        assert_eq!(timing.seconds, original.seconds);
+        assert_eq!(timing.replies, original.replies);
+        assert_eq!(timing.first_token_seconds, original.first_token_seconds);
+        assert_eq!(timing.first_token_turns, original.first_token_turns);
+        assert!(timing.merge(&Timing {
+            output: 5,
+            ..Timing::default()
+        }));
+        assert_eq!(timing.output, i64::MAX);
+        let mut turns = Timing {
+            first_token_turns: usize::MAX,
+            ..Timing::default()
+        };
+        assert!(!turns.merge(&Timing {
+            output: 100,
+            first_token_turns: 1,
+            ..Timing::default()
+        }));
+        assert_eq!(turns.output, 0);
+        let mut seconds = Timing {
+            seconds: f64::MAX,
+            ..Timing::default()
+        };
+        assert!(!seconds.merge(&Timing {
+            output: 100,
+            seconds: f64::MAX,
+            ..Timing::default()
+        }));
+        assert_eq!(seconds.output, 0);
     }
 }

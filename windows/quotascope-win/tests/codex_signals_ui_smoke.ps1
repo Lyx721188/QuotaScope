@@ -45,6 +45,17 @@ Write-Rollout (Join-Path $archiveRoot 'rollout-beta.jsonl') 60 'fixture-beta' 3 
 Write-Rollout (Join-Path $archiveRoot 'rollout-gamma.jsonl') 120 'fixture-gamma' 1 0
 $timingDamage=Join-Path $sessionRoot 'damaged-timings.jsonl'
 [IO.File]::WriteAllText($timingDamage,"{`n",[Text.UTF8Encoding]::new($false))
+function Write-FirstTokenTimings([string]$path,[DateTime]$at,[int]$milliseconds) {
+    $writer=[IO.StreamWriter]::new($path,$false,[Text.UTF8Encoding]::new($false))
+    try {
+        $writer.WriteLine('{"type":"turn_context","payload":{"model":"fixture-alpha"}}')
+        for($n=0;$n -lt 3;$n++) {
+            $writer.WriteLine((@{timestamp=$at.ToString('o');type='event_msg';payload=@{type='task_complete';turn_id=('timing-'+$path+'-'+$n);time_to_first_token_ms=$milliseconds}}|ConvertTo-Json -Depth 5 -Compress))
+        }
+    } finally {$writer.Dispose()}
+}
+$futureTimings=Join-Path $sessionRoot 'future-timings.jsonl'
+Write-FirstTokenTimings $futureTimings ([DateTime]::UtcNow.AddDays(1)) 10000
 $info=[Diagnostics.ProcessStartInfo]::new([IO.Path]::GetFullPath($Executable))
 $info.ArgumentList.Add('--settings')
 $info.UseShellExecute=$false
@@ -162,6 +173,14 @@ try {
     Start-Sleep -Milliseconds 200
     Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
     Wait-Text $timingWarning -Absent
+    Wait-Text '首字 — 秒' -Contains
+    $phase='valid-and-future-timings'
+    $currentTimings=Join-Path $sessionRoot 'current-timings.jsonl'
+    Write-FirstTokenTimings $currentTimings ([DateTime]::UtcNow.AddMinutes(-2)) 2000
+    Refresh-Timings
+    Wait-Text '首字 2.00 秒' -Contains
+    Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
+    Wait-Text $timingWarning -Absent
     $phase='90-days'
     Period '最近 90 个自然日'
     Wait-Text $beta
@@ -214,7 +233,7 @@ try {
     Wait-Text $alpha21
     $forbidden=@(Nodes|Where-Object {$_.Current.Name -match '服务端.*降级|实际模型.*fixture'})
     if($forbidden.Count){throw 'UI asserts an actual server model'}
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;SyntheticRecords=$true;CalendarPeriods=$true;SamplesAndDenominator=$true;RecordedSettingsDifference=$true;ManualRefresh=$true;PartialTimingWarningAndRepair=$true;TokenCountsUnaffected=$true;CancellationSnapshotPreserved=$true;CancelUiMilliseconds=$cancelWatch.ElapsedMilliseconds;LeaveAndReopen=$true;CloseAndReopen=$true;RealAccountVerified=$false;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath 'target/upstream-followthrough-20261004/n3c-ui-result.json'
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;SyntheticRecords=$true;CalendarPeriods=$true;SamplesAndDenominator=$true;RecordedSettingsDifference=$true;ManualRefresh=$true;PartialTimingWarningAndRepair=$true;FutureTimingsExcluded=$true;MeasuredFirstTokenSeconds=2.0;TokenCountsUnaffected=$true;CancellationSnapshotPreserved=$true;CancelUiMilliseconds=$cancelWatch.ElapsedMilliseconds;LeaveAndReopen=$true;CloseAndReopen=$true;RealAccountVerified=$false;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath 'target/upstream-followthrough-20261004/n3c-ui-result.json'
 } catch {
     $originalError=$_
     Write-Output "Failed phase: $phase"
