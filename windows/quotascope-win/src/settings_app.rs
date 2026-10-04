@@ -2391,6 +2391,15 @@ impl SettingsApp {
                 )),
             ));
         content.push(self.surface(summary_grid.into()));
+        if !summary.partial_sources.is_empty() {
+            content.push(
+                self.muted(&quotascope_core::localization::t_fmt(
+                    "Incomplete local records: {sources}. Totals cover readable counters only.",
+                    &[&summary.partial_sources.join(", ")],
+                ))
+                .into(),
+            );
+        }
         if let Some(rate) = total.cache_hit_rate() {
             content.push(
                 self.muted(&format!("{} {:.0}%", t("Cache hit rate"), rate * 100.0))
@@ -2586,6 +2595,8 @@ impl SettingsApp {
                             s.title,
                             t(if !s.present {
                                 "Store not found"
+                            } else if s.ledger.has_partial_records {
+                                "Some local records couldn't be read"
                             } else if summary.coverage.get(&s.id).copied().unwrap_or(false) {
                                 if s.location.contains("UsageImports") {
                                     "Recorded tokens; native and imported coverage varies"

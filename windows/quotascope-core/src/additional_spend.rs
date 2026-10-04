@@ -4,7 +4,7 @@
 use crate::ledger::{TokenTally, UsageLedger};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 pub const CATALOG: &[(&str, &str, &str)] = &[
@@ -159,6 +159,28 @@ impl Reader {
 }
 
 pub fn read(id: &str, paths: &[PathBuf]) -> UsageLedger {
+    let reader = read_source(id, paths);
+    price_source(reader, &crate::model_prices::prices())
+}
+
+/// Offline verification and callers that already own a model-price snapshot.
+pub fn read_with_prices(
+    id: &str,
+    paths: &[PathBuf],
+    prices: &BTreeMap<String, crate::model_prices::ModelPrice>,
+) -> UsageLedger {
+    price_source(read_source(id, paths), prices)
+}
+fn price_source(
+    reader: Reader,
+    prices: &BTreeMap<String, crate::model_prices::ModelPrice>,
+) -> UsageLedger {
+    let mut ledger = crate::ledger::priced(&reader.buckets, prices, None);
+    ledger.has_partial_records = reader.partial;
+    ledger
+}
+
+fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
     let mut reader = Reader::default();
     let mut files = Vec::new();
     let mut seen_paths = HashSet::new();
@@ -202,7 +224,17 @@ pub fn read(id: &str, paths: &[PathBuf]) -> UsageLedger {
         if !accepted {
             continue;
         }
-        if file.metadata().is_ok_and(|m| m.len() > 128 * 1024 * 1024) {
+        let dsh = id == "dsh" && !import;
+        let stamp = file
+            .metadata()
+            .ok()
+            .and_then(|m| Some((m.len(), m.modified().ok()?)));
+        let maximum = if dsh {
+            crate::zstd_stream::MAX_BYTES
+        } else {
+            128 * 1024 * 1024
+        };
+        if stamp.is_some_and(|(length, _)| length > maximum) {
             reader.partial = true;
             continue;
         }
@@ -212,7 +244,8 @@ pub fn read(id: &str, paths: &[PathBuf]) -> UsageLedger {
         };
         let mut magic = [0_u8; 4];
         let _ = input.read_exact(&mut magic);
-        if magic == [0x28, 0xb5, 0x2f, 0xfd] {
+        let compressed = magic == [0x28, 0xb5, 0x2f, 0xfd];
+        if compressed && !dsh {
             reader.partial = true;
             continue;
         }
@@ -231,11 +264,29 @@ pub fn read(id: &str, paths: &[PathBuf]) -> UsageLedger {
                 reader.partial = true;
             }
         } else {
-            let Ok(input) = std::fs::File::open(&file) else {
+            if input.seek(SeekFrom::Start(0)).is_err() {
+                reader.partial = true;
                 continue;
+            }
+            let input: Box<dyn Read> = if compressed {
+                match crate::zstd_stream::decode(input) {
+                    Ok(decoded) => decoded,
+                    Err(_) => {
+                        reader.partial = true;
+                        continue;
+                    }
+                }
+            } else if dsh {
+                crate::zstd_stream::plain(input)
+            } else {
+                Box::new(input)
             };
             let hash = std::collections::hash_map::DefaultHasher::new();
-            let mut lines = crate::scan::LineReader::new(input, hash, 0);
+            let mut lines = if dsh {
+                crate::scan::LineReader::with_line_limit(input, crate::zstd_stream::MAX_LINE_BYTES)
+            } else {
+                crate::scan::LineReader::new(input, hash, 0)
+            };
             let mut context = (0, None);
             for line in lines.by_ref() {
                 if let Ok(value) = serde_json::from_str::<Value>(&line) {
@@ -248,6 +299,16 @@ pub fn read(id: &str, paths: &[PathBuf]) -> UsageLedger {
                 reader.partial = true;
             }
         }
+        if dsh
+            && (stamp.is_none()
+                || file
+                    .metadata()
+                    .ok()
+                    .and_then(|m| Some((m.len(), m.modified().ok()?)))
+                    != stamp)
+        {
+            reader.partial = true;
+        }
     }
     if !native_supported(id)
         && paths
@@ -256,9 +317,7 @@ pub fn read(id: &str, paths: &[PathBuf]) -> UsageLedger {
     {
         reader.partial = true;
     }
-    let mut ledger = crate::ledger::priced(&reader.buckets, &crate::model_prices::prices(), None);
-    ledger.has_partial_records = reader.partial;
-    ledger
+    reader
 }
 
 fn collect(path: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
@@ -319,6 +378,28 @@ fn camel(usage: &Value) -> TokenTally {
         cache_write: count(&usage["cacheWriteTokens"]),
         cache_read: count(&usage["cacheReadTokens"]),
     }
+}
+
+fn dsh_tally(usage: &Value) -> Option<TokenTally> {
+    let usage = usage.as_object()?;
+    let required = |key| {
+        usage
+            .get(key)?
+            .as_i64()
+            .filter(|n| (0..=1_000_000_000_000).contains(n))
+    };
+    let optional = |key| match usage.get(key) {
+        None => Some(0),
+        Some(value) => value
+            .as_i64()
+            .filter(|n| (0..=1_000_000_000_000).contains(n)),
+    };
+    Some(TokenTally {
+        input: required("inputTokens")?,
+        output: required("outputTokens")?,
+        cache_write: optional("cacheWriteTokens")?,
+        cache_read: optional("cacheReadTokens")?,
+    })
 }
 
 fn parse(
@@ -437,9 +518,7 @@ fn parse(
                     context.1 = Some(model.into());
                 }
             }
-            if !matches!(kind, "assistant/message" | "compaction/summary")
-                || count(&row["seq"]) < context.0
-            {
+            if kind != "assistant/message" || count(&row["seq"]) < context.0 {
                 return;
             }
             let data = &row["data"];
@@ -449,7 +528,10 @@ fn parse(
                 .or_else(|| source["model"].as_str())
                 .or(context.1.as_deref());
             if let (Some(at), Some(model)) = (timestamp(&row["time"], true), model) {
-                let tally = camel(&data["usage"]);
+                let Some(tally) = dsh_tally(&data["usage"]) else {
+                    reader.partial = true;
+                    return;
+                };
                 let identity = data["message"]["id"]
                     .as_str()
                     .or_else(|| data["compactionId"].as_str())
@@ -464,6 +546,8 @@ fn parse(
                         serde_json::to_string(&tally).unwrap_or_default()
                     )),
                 );
+            } else {
+                reader.partial = true;
             }
         }
         "antigravity" => {
@@ -571,6 +655,195 @@ fn devin(path: &Path, reader: &mut Reader) {
 mod tests {
     use super::*;
     use serde_json::json;
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "qs-dsh-stream-{}-{}-{}",
+                std::process::id(),
+                crate::timeutil::now_ms(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
+            let path = self.0.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        }
+        fn read(&self) -> Reader {
+            read_source("dsh", std::slice::from_ref(&self.0))
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn total(reader: &Reader) -> i64 {
+        reader
+            .buckets
+            .values()
+            .flat_map(|models| models.values())
+            .map(TokenTally::total)
+            .sum()
+    }
+    fn transcript() -> Vec<u8> {
+        [
+            json!({"type":"session","seedLength":3}),
+            json!({"type":"request/header","data":{"header":{"config":{"model":"fixture"}}}}),
+            json!({"type":"assistant/chunk","seq":3,"time":1790850000000_i64,"data":{"usage":{"inputTokens":9999}}}),
+            json!({"type":"compaction/summary","seq":4,"time":1790850000000_i64,"data":{"compactionId":"compact","usage":{"inputTokens":9999}}}),
+            json!({"type":"assistant/message","seq":2,"time":1790850000000_i64,"data":{"message":{"id":"inherited"},"usage":{"inputTokens":9999}}}),
+            json!({"type":"assistant/message","seq":3,"time":1790850000000_i64,"data":{"message":{"id":"one"},"usage":{"inputTokens":10,"outputTokens":8,"cacheReadTokens":2,"reasoningTokens":5}}}),
+        ].into_iter().map(|row| row.to_string()+"\n").collect::<String>().into_bytes()
+    }
+
+    #[test]
+    fn real_frames_and_plain_zstd_suffixes_share_identity_and_keep_assistant_only_semantics() {
+        let fixture = Fixture::new();
+        let plain = transcript();
+        fixture.write("session.jsonl.zstd", &plain);
+        let first = fixture.read();
+        assert_eq!(total(&first), 20);
+        assert!(!first.partial);
+        fixture.write(
+            "session.v3.jsonl.zstd",
+            &zstd::stream::encode_all(&plain[..], 1).unwrap(),
+        );
+        let mut fork = String::from_utf8(plain.clone())
+            .unwrap()
+            .replace("\"seedLength\":3", "\"seedLength\":4");
+        fork.push_str(&(json!({"type":"assistant/message","seq":4,"time":1790850000001_i64,"data":{"message":{"id":"two"},"usage":{"inputTokens":4,"outputTokens":3}}}).to_string()+"\n"));
+        fixture.write(
+            "session.fork.jsonl.zstd",
+            &zstd::stream::encode_all(fork.as_bytes(), 1).unwrap(),
+        );
+        let combined = fixture.read();
+        assert_eq!(total(&combined), 27);
+        assert!(!combined.partial);
+    }
+
+    #[test]
+    fn concatenated_append_truncation_and_repair_report_readable_prefixes_as_partial() {
+        use std::io::Write;
+        let fixture = Fixture::new();
+        let prefix = zstd::stream::encode_all(&transcript()[..], 1).unwrap();
+        let tail=json!({"type":"assistant/message","seq":4,"time":1790850000001_i64,"data":{"message":{"id":"two"},"usage":{"inputTokens":4,"outputTokens":3}}}).to_string()+"\n";
+        let frame = zstd::stream::encode_all(tail.as_bytes(), 1).unwrap();
+        let path = fixture.write("session.jsonl.zstd", &prefix);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&frame)
+            .unwrap();
+        let whole = fixture.read();
+        assert_eq!(total(&whole), 27);
+        assert!(!whole.partial);
+        let mut truncated = prefix.clone();
+        truncated.extend(&frame[..frame.len() / 2]);
+        std::fs::write(&path, &truncated).unwrap();
+        let torn = fixture.read();
+        assert!(torn.partial && total(&torn) >= 20 && total(&torn) <= 27);
+        let mut corrupt = prefix.clone();
+        corrupt.extend([0x28, 0xb5, 0x2f, 0xfd, 0xff, 0xff]);
+        std::fs::write(&path, &corrupt).unwrap();
+        assert!(fixture.read().partial);
+        std::fs::write(&path, &prefix).unwrap();
+        let repaired = fixture.read();
+        assert_eq!(total(&repaired), 20);
+        assert!(!repaired.partial);
+    }
+
+    #[test]
+    fn oversized_decoded_line_is_partial_without_parsing_its_tail() {
+        let fixture = Fixture::new();
+        let mut text = transcript();
+        text.extend(std::iter::repeat_n(
+            b'x',
+            crate::zstd_stream::MAX_LINE_BYTES + 1,
+        ));
+        text.push(b'\n');
+        text.extend(transcript());
+        fixture.write(
+            "session.jsonl.zstd",
+            &zstd::stream::encode_all(&text[..], 1).unwrap(),
+        );
+        let bounded = fixture.read();
+        assert!(bounded.partial);
+        assert_eq!(total(&bounded), 20);
+    }
+
+    #[test]
+    fn cancellation_during_decompression_exits_and_does_not_poison_a_fresh_scan() {
+        use std::io::Write;
+        let fixture = Fixture::new();
+        let path = fixture.0.join("session.jsonl.zstd");
+        let mut encoded =
+            zstd::stream::Encoder::new(std::fs::File::create(&path).unwrap(), 1).unwrap();
+        encoded.write_all(&transcript()).unwrap();
+        let noise = json!({"type":"tool/result","data":{"text":"ignored"}}).to_string() + "\n";
+        for _ in 0..300000 {
+            encoded.write_all(noise.as_bytes()).unwrap();
+        }
+        encoded.finish().unwrap();
+        let control = std::sync::Arc::new(crate::scan::Control::default());
+        let stop = control.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            stop.cancel();
+        });
+        let began = std::time::Instant::now();
+        let result = crate::scan::run(control, 1, |_| {}, || fixture.read());
+        thread.join().unwrap();
+        assert!(result.is_err());
+        assert!(began.elapsed() < std::time::Duration::from_secs(5));
+        let fresh = fixture.read();
+        assert!(!fresh.partial);
+        assert_eq!(total(&fresh), 20);
+    }
+
+    #[test]
+    fn dsh_missing_or_invalid_main_counters_are_not_filled_with_zero() {
+        let mut reader = Reader::default();
+        let file = Path::new("session.jsonl");
+        let mut context = (0, Some("fixture".into()));
+        for usage in [
+            json!({"inputTokens":5}),
+            json!({"inputTokens":5,"outputTokens":-1}),
+            json!({"inputTokens":5.5,"outputTokens":2}),
+            json!({"inputTokens":5,"outputTokens":2,"cacheReadTokens":null}),
+        ] {
+            parse(
+                "dsh",
+                &json!({"type":"assistant/message","seq":1,"time":1790850000000_i64,"data":{"usage":usage}}),
+                false,
+                file,
+                &mut reader,
+                &mut context,
+            );
+        }
+        assert!(reader.partial && reader.buckets.is_empty());
+        let mut unidentified = Reader::default();
+        parse(
+            "dsh",
+            &json!({"type":"assistant/message","seq":1,"time":1790850000000_i64,"data":{"usage":{"inputTokens":5,"outputTokens":2}}}),
+            false,
+            file,
+            &mut unidentified,
+            &mut (0, None),
+        );
+        assert!(unidentified.partial && unidentified.buckets.is_empty());
+        assert_eq!(
+            dsh_tally(&json!({"inputTokens":0,"outputTokens":0}))
+                .unwrap()
+                .total(),
+            0
+        );
+    }
     #[test]
     fn dsh_fork_seed_and_reasoning_subset_do_not_double_count() {
         let mut reader = Reader::default();

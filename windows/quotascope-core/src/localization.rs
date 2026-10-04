@@ -75,6 +75,8 @@ struct Entry {
 }
 
 const TABLE: &[Entry] = &[
+    Entry { key: "Incomplete local records: {sources}. Totals cover readable counters only.", en: "Incomplete local records: {sources}. Totals cover readable counters only.", zh: "这些来源的本机记录不完整：{sources}。总量只覆盖可读取的计数。" },
+    Entry { key: "Some local records couldn't be read", en: "Some local records couldn't be read", zh: "部分本机记录无法读取" },
     Entry { key: "Local anomaly clues", en: "Local anomaly clues", zh: "本地异常线索" },
     Entry { key: "Signal rule: {version}", en: "Signal rule: {version}", zh: "线索规则：{version}" },
     Entry { key: "Local request records show selected parameters, not the model the server actually ran. The lattice rule is an empirical clue, not proof.", en: "Local request records show selected parameters, not the model the server actually ran. The lattice rule is an empirical clue, not proof.", zh: "本机请求记录只显示所选参数，无法证明服务端实际运行的模型。格点规则是经验线索，不是证明。" },

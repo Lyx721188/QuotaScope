@@ -49,6 +49,7 @@ pub mod statusline;
 pub mod store;
 pub mod timeutil;
 pub mod updates;
+mod zstd_stream;
 
 /// The application data directory: `%APPDATA%\QuotaScope`.
 pub fn data_dir() -> std::path::PathBuf {

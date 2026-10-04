@@ -179,6 +179,7 @@ pub(crate) struct LineReader<R> {
     ends_with_newline: bool,
     error: Option<io::Error>,
     done: bool,
+    max_line_bytes: Option<usize>,
 }
 
 impl<R: Read> LineReader<R> {
@@ -190,7 +191,14 @@ impl<R: Read> LineReader<R> {
             ends_with_newline: offset == 0,
             error: None,
             done: false,
+            max_line_bytes: None,
         }
+    }
+
+    pub(crate) fn with_line_limit(reader: R, maximum: usize) -> Self {
+        let mut lines = Self::new(reader, DefaultHasher::new(), 0);
+        lines.max_line_bytes = Some(maximum);
+        lines
     }
 
     pub(crate) fn finish(&mut self) -> io::Result<(u64, u64, bool)> {
@@ -213,7 +221,23 @@ impl<R: Read> Iterator for LineReader<R> {
         }
         let mut bytes = Vec::new();
         let result = if checkpoint() {
-            self.reader.read_until(b'\n', &mut bytes)
+            if let Some(maximum) = self.max_line_bytes {
+                let read = self
+                    .reader
+                    .by_ref()
+                    .take(maximum.saturating_add(1) as u64)
+                    .read_until(b'\n', &mut bytes);
+                if bytes.len() > maximum {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "JSONL line exceeds the read limit",
+                    ))
+                } else {
+                    read
+                }
+            } else {
+                self.reader.read_until(b'\n', &mut bytes)
+            }
         } else {
             Err(io::Error::other("scan cancelled"))
         };
@@ -285,6 +309,16 @@ pub(crate) fn verify_prefix(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn bounded_lines_fail_instead_of_accepting_a_truncated_record() {
+        let mut lines = LineReader::with_line_limit(&b"ok\n1234567890123456\nnext\n"[..], 8);
+        assert_eq!(lines.next().as_deref(), Some("ok"));
+        assert!(lines.next().is_none() && lines.finish().is_err());
+        let mut exact = LineReader::with_line_limit(&b"1234567\n12345678"[..], 8);
+        assert_eq!(exact.by_ref().collect::<Vec<_>>(), ["1234567", "12345678"]);
+        assert!(exact.finish().is_ok());
+    }
 
     #[test]
     fn streaming_returns_the_first_line_without_loading_a_large_file() {

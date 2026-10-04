@@ -47,6 +47,7 @@ pub struct Summary {
     pub models: Vec<String>,
     pub bins: Vec<i64>,
     pub coverage: BTreeMap<String, bool>,
+    pub partial_sources: Vec<String>,
     pub reused_aggregation: bool,
 }
 
@@ -75,6 +76,7 @@ impl Summary {
                         models: old.models.clone(),
                         bins: old.bins.clone(),
                         coverage: old.coverage.clone(),
+                        partial_sources: old.partial_sources.clone(),
                         reused_aggregation: true,
                     };
                 }
@@ -98,11 +100,17 @@ impl Summary {
                 );
                 let mut models = BTreeSet::new();
                 let mut coverage = BTreeMap::new();
+                let mut partial_sources = Vec::new();
                 for source in &snapshot.sources {
                     if !scan::checkpoint() {
                         break;
                     }
                     let mut has_tokens = false;
+                    if source.ledger.has_partial_records
+                        && query.source.as_ref().is_none_or(|id| *id == source.id)
+                    {
+                        partial_sources.push(source.title.clone());
+                    }
                     for day in &source.ledger.days {
                         if !scan::checkpoint() {
                             break;
@@ -127,6 +135,7 @@ impl Summary {
                     models: models.into_iter().collect(),
                     bins,
                     coverage,
+                    partial_sources,
                     reused_aggregation: false,
                 }
             },
@@ -265,6 +274,30 @@ mod tests {
         cache.insert(isolated);
         assert_eq!(cache.exact(&initial).unwrap().analysis.total.tokens, 35);
         assert_eq!(cache.exact(&selected).unwrap().analysis.total.tokens, 10);
+    }
+
+    #[test]
+    fn unreadable_sources_remain_visible_in_cached_and_filtered_summaries() {
+        let mut initial = request();
+        Arc::make_mut(&mut initial.snapshot).sources[1]
+            .ledger
+            .has_partial_records = true;
+        let first = compute(initial.clone(), None);
+        assert_eq!(first.partial_sources, ["b"]);
+        let mut reordered = initial.clone();
+        reordered.query.descending = false;
+        let cached = compute(reordered, Some(first));
+        assert!(cached.reused_aggregation);
+        assert_eq!(cached.partial_sources, ["b"]);
+        let mut clean = initial.clone();
+        clean.query.source = Some("a".into());
+        assert!(compute(clean, None).partial_sources.is_empty());
+        initial.query.source = Some("b".into());
+        Arc::make_mut(&mut initial.snapshot).sources[1]
+            .ledger
+            .days
+            .clear();
+        assert_eq!(compute(initial, None).partial_sources, ["b"]);
     }
 
     #[test]
