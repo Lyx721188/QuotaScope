@@ -934,6 +934,97 @@ fn collect_files(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TranscriptLimits {
+    depth: usize,
+    entries: usize,
+    files: usize,
+    path_bytes: usize,
+}
+impl Default for TranscriptLimits {
+    fn default() -> Self {
+        Self {
+            depth: 64,
+            entries: 100_000,
+            files: 10_000,
+            path_bytes: 8 * 1024 * 1024,
+        }
+    }
+}
+
+// Only the Codex/Claude transcript path uses these limits. Other native
+// readers need their own coverage propagation before discovery is bounded.
+fn collect_transcripts(root: &Path, limits: TranscriptLimits) -> (Vec<PathBuf>, bool) {
+    #[derive(Default)]
+    struct Discovery {
+        paths: Vec<PathBuf>,
+        listed: usize,
+        path_bytes: usize,
+        partial: bool,
+        exhausted: bool,
+    }
+    fn visit(dir: &Path, depth: usize, limits: TranscriptLimits, found: &mut Discovery) {
+        if found.exhausted {
+            return;
+        }
+        if !crate::scan::checkpoint() || depth > limits.depth {
+            found.partial = true;
+            return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                // A missing root is a normal empty source. A child which
+                // vanished after discovery is a coverage gap.
+                found.partial |= depth != 0 || error.kind() != std::io::ErrorKind::NotFound;
+                return;
+            }
+        };
+        for entry in entries {
+            if found.exhausted {
+                return;
+            }
+            if !crate::scan::checkpoint() || found.listed >= limits.entries {
+                found.partial = true;
+                found.exhausted = true;
+                return;
+            }
+            found.listed += 1;
+            let Ok(entry) = entry else {
+                found.partial = true;
+                continue;
+            };
+            let Ok(kind) = entry.file_type() else {
+                found.partial = true;
+                continue;
+            };
+            if kind.is_symlink() {
+                found.partial = true;
+                continue;
+            }
+            let path = entry.path();
+            if kind.is_dir() {
+                visit(&path, depth + 1, limits, found);
+            } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+                // Conservative path storage accounting, not an RSS limit.
+                let bytes = path.as_os_str().len().saturating_mul(2).saturating_add(64);
+                if found.paths.len() >= limits.files
+                    || bytes > limits.path_bytes.saturating_sub(found.path_bytes)
+                {
+                    found.partial = true;
+                    found.exhausted = true;
+                    return;
+                }
+                found.path_bytes += bytes;
+                found.paths.push(path);
+            }
+        }
+    }
+    let mut found = Discovery::default();
+    visit(root, 0, limits, &mut found);
+    (found.paths, found.partial)
+}
+
 fn read_entry(
     path: &Path,
     provider: Provider,
@@ -1422,14 +1513,20 @@ struct TranscriptScan {
     partial: bool,
 }
 
-fn scan_cached(provider: Provider, root: &Path, mut cache: FileCache) -> TranscriptScan {
+fn scan_cached(provider: Provider, root: &Path, cache: FileCache) -> TranscriptScan {
+    scan_cached_with_limits(provider, root, cache, TranscriptLimits::default())
+}
+
+fn scan_cached_with_limits(
+    provider: Provider,
+    root: &Path,
+    mut cache: FileCache,
+    limits: TranscriptLimits,
+) -> TranscriptScan {
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut fresh: BTreeMap<String, CachedEntry> = BTreeMap::new();
     let mut changed = false;
-    let mut partial = false;
-
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_jsonl(root, &mut files);
+    let (mut files, mut partial) = collect_transcripts(root, limits);
     files.sort();
 
     for file in files {
@@ -5046,6 +5143,218 @@ fn droid_provider_model(provider: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::model_prices::ModelPrice;
+
+    struct DiscoveryFixture {
+        root: PathBuf,
+        temp: PathBuf,
+    }
+    impl DiscoveryFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let temp = std::env::temp_dir().canonicalize().unwrap();
+            let root = temp.join(format!(
+                "qs-discovery-{}-{}-{}",
+                std::process::id(),
+                crate::timeutil::now_ms(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&root).unwrap();
+            Self { root, temp }
+        }
+        fn write(&self, relative: &Path, n: i64) {
+            let path = self.root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, codex_header("fixture") + &stream_codex_count(n)).unwrap();
+        }
+    }
+    impl Drop for DiscoveryFixture {
+        fn drop(&mut self) {
+            assert!(self.root.is_absolute() && self.root.parent() == Some(self.temp.as_path()));
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn native_discovery_stops_beyond_default_depth_and_keeps_shallow_counts() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("current.jsonl"), 1);
+        let mut deep = PathBuf::new();
+        for _ in 0..65 {
+            deep.push("a");
+        }
+        deep.push("deep.jsonl");
+        fixture.write(&deep, 2);
+        let scanned = scan_cached(Provider::Codex, &fixture.root, FileCache::default());
+        assert_eq!(
+            scanned
+                .buckets
+                .values()
+                .flat_map(|m| m.values())
+                .map(TokenTally::total)
+                .sum::<i64>(),
+            155
+        );
+        assert!(scanned.partial);
+    }
+
+    fn discovered_total(scan: &TranscriptScan) -> i64 {
+        scan.buckets
+            .values()
+            .flat_map(|models| models.values())
+            .map(TokenTally::total)
+            .sum()
+    }
+
+    #[test]
+    fn native_discovery_includes_the_default_depth_boundary() {
+        let fixture = DiscoveryFixture::new();
+        let mut deep = PathBuf::new();
+        for _ in 0..64 {
+            deep.push("a");
+        }
+        deep.push("boundary.jsonl");
+        fixture.write(&deep, 1);
+        let scanned = scan_cached(Provider::Codex, &fixture.root, FileCache::default());
+        assert_eq!(discovered_total(&scanned), 155);
+        assert!(!scanned.partial);
+    }
+
+    #[test]
+    fn native_discovery_file_and_entry_limits_keep_completed_counts() {
+        let fixture = DiscoveryFixture::new();
+        for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+            fixture.write(Path::new(name), 1);
+        }
+        for limits in [
+            TranscriptLimits {
+                files: 2,
+                ..Default::default()
+            },
+            TranscriptLimits {
+                entries: 2,
+                ..Default::default()
+            },
+        ] {
+            let scanned = scan_cached_with_limits(
+                Provider::Codex,
+                &fixture.root,
+                FileCache::default(),
+                limits,
+            );
+            assert_eq!(discovered_total(&scanned), 310);
+            assert_eq!(scanned.cache.files.len(), 2);
+            assert!(scanned.partial);
+        }
+        let scanned = scan_cached_with_limits(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            TranscriptLimits {
+                entries: 3,
+                files: 3,
+                ..Default::default()
+            },
+        );
+        assert_eq!(discovered_total(&scanned), 465);
+        assert!(!scanned.partial);
+    }
+
+    #[test]
+    fn native_discovery_path_budget_accepts_exact_fit_and_marks_exclusion() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("one.jsonl"), 1);
+        let path = fixture.root.join("one.jsonl");
+        let bytes = path.as_os_str().len() * 2 + 64;
+        for (budget, expected, partial) in [(bytes, 155, false), (bytes - 1, 0, true)] {
+            let scanned = scan_cached_with_limits(
+                Provider::Codex,
+                &fixture.root,
+                FileCache::default(),
+                TranscriptLimits {
+                    path_bytes: budget,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(discovered_total(&scanned), expected);
+            assert_eq!(scanned.partial, partial);
+        }
+    }
+
+    #[test]
+    fn native_discovery_missing_and_empty_roots_are_normal_but_wrong_type_is_partial() {
+        let fixture = DiscoveryFixture::new();
+        for root in [&fixture.root, &fixture.root.join("missing")] {
+            let scanned = scan_cached(Provider::Codex, root, FileCache::default());
+            assert!(scanned.buckets.is_empty());
+            assert!(!scanned.partial);
+        }
+        let ignored = fixture.root.join("notes.txt");
+        std::fs::write(&ignored, "not a transcript").unwrap();
+        let scanned = scan_cached(Provider::Codex, &fixture.root, FileCache::default());
+        assert!(!scanned.partial && scanned.cache.files.is_empty());
+        let wrong = scan_cached(Provider::Codex, &ignored, FileCache::default());
+        assert!(wrong.partial && wrong.buckets.is_empty());
+    }
+
+    #[test]
+    fn native_discovery_gap_is_recomputed_and_repairs_with_cached_files() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("current.jsonl"), 1);
+        fixture.write(Path::new("child/history.jsonl"), 2);
+        let limited = scan_cached_with_limits(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            TranscriptLimits {
+                depth: 0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(discovered_total(&limited), 155);
+        assert!(limited.partial);
+        assert!(limited.cache.files.values().all(|entry| !entry.partial));
+        let repaired = scan_cached(Provider::Codex, &fixture.root, limited.cache);
+        assert_eq!(discovered_total(&repaired), 465);
+        assert!(!repaired.partial && repaired.changed);
+        let warm = scan_cached(Provider::Codex, &fixture.root, repaired.cache);
+        assert_eq!(discovered_total(&warm), 465);
+        assert!(!warm.partial && !warm.changed);
+        let reduced = scan_cached_with_limits(
+            Provider::Codex,
+            &fixture.root,
+            warm.cache,
+            TranscriptLimits {
+                depth: 0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(discovered_total(&reduced), 155);
+        assert!(reduced.partial && reduced.changed);
+        assert_eq!(reduced.cache.files.len(), 1);
+    }
+
+    #[test]
+    fn native_discovery_cancellation_does_not_poison_a_fresh_scan() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("one.jsonl"), 1);
+        let control = std::sync::Arc::new(crate::scan::Control::default());
+        let stop = control.clone();
+        let result = crate::scan::run(
+            control,
+            1,
+            |_| {},
+            || {
+                stop.cancel();
+                let (paths, partial) =
+                    collect_transcripts(&fixture.root, TranscriptLimits::default());
+                assert!(paths.is_empty() && partial);
+            },
+        );
+        assert!(matches!(result, Err(crate::scan::Cancelled)));
+        let fresh = scan_cached(Provider::Codex, &fixture.root, FileCache::default());
+        assert_eq!(discovered_total(&fresh), 155);
+        assert!(!fresh.partial);
+    }
 
     struct TranscriptFixture(PathBuf);
     impl TranscriptFixture {

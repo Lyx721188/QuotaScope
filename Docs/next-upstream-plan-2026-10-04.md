@@ -4,6 +4,8 @@
 
 代码基线：N1/N2/N3/N4a 已随 `3c69d2f` 汇总到 main；R1 自动化和文档改动位于 `ef9292d`。已发布版本仍为 `windows-v1.3.1`，main 的新增功能列在 CHANGELOG 的 Unreleased 中。上游参考固定为 Pulse `3696a65`，后续上游变化需另行比较。
 
+原生会话发现已增加 64 层、10 万目录项、1 万 JSONL 和 8 MiB 估计路径容量上限，缺口每次重新核对。新增 7 项定向与整仓 773 passed / 6 ignored、fmt/普通 Clippy（无新增告警）通过；账户深层目录提示/修复与 40 万行（68,800,061 字节）的流式、续读、暖缓存、筛选及取消 Debug UI 通过。三个脚本使用相同程序；对应 Release CI 尚待提交后核对。唯一下一项是 Claude 原生计数的异常值与聚合溢出验证，缓存缺省拆分完整性另列设计。规则见[原生会话发现](providers/windows-native-transcript-discovery.md)。
+
 ## 1. 已完成的功能
 
 | 阶段 | 已实现行为 | 验证与限制 |
@@ -47,7 +49,7 @@ cargo build --release --workspace --locked
 
 ## 9. main 合并后的下一阶段
 
-N4b-1 至 N4b-4 的格式、解析、缓存、冻结样本与 Debug UI 已完成。**R1d 已完成**：dcaa37c 的 CI 使用实际 ZIP 内同一份 Release 程序，通过 DSH/ZCode Token 页面、刷新、修复及关闭重开验收。R2 前提检查尚未找到受支持的 Kiro 原生 CLI；DeepSeek 实账对照仍未完成。标准导入的严格计数、零值覆盖、partial/未计价 UI 已随 `53bd960` 完成，[对应 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37186053767) 成功。各来源的有界遍历、读取流、记录预算和流式 JSON 数组随 `f08ee5a` 通过 734 项本地测试、隔离 Debug UI 及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37188857492)。浏览器回退副本随 `3e95c23` 通过 737 项本地测试及 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37190912782)。账本日期展开与取消已通过本地 744 项测试与隔离 Debug UI，完整计数保留、旧空档稀疏保存、图表按日历区间分桶。日期改动的 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37191964998) 已通过。ZCode 固定头部签名已通过本地 core 670 passed / 5 ignored 及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37192497068)。模型时序的扫描上限和独立缺口提示已通过整仓 750 项测试；隔离账户 UI 也已通过，[该批 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37194125169) 成功。时序日期与计数有效性通过 12 项定向、整仓 756 passed / 6 ignored 及扩展账户 Debug UI（未来事件排除、首字 2.00 秒、Token 保持）；[对应 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37195452537) 已通过。Codex 原生累计计数及缺口缓存通过 core 690 passed / 5 ignored、整仓 766 passed / 6 ignored、账户/缓存维护/续读/筛选/取消 Debug UI；对应 Release CI 含新账户回归需按提交核对。通过后唯一下一项是原生 Codex/Claude 文件发现的目录与路径容量边界；升级与发布任务继续单独保留验收状态，详见[任务卡](release-acceptance-2026-10-04.md)。
+N4b-1 至 N4b-4 的格式、解析、缓存、冻结样本与 Debug UI 已完成。**R1d 已完成**：dcaa37c 的 CI 使用实际 ZIP 内同一份 Release 程序，通过 DSH/ZCode Token 页面、刷新、修复及关闭重开验收。R2 前提检查尚未找到受支持的 Kiro 原生 CLI；DeepSeek 实账对照仍未完成。标准导入的严格计数、零值覆盖、partial/未计价 UI 已随 `53bd960` 完成，[对应 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37186053767) 成功。各来源的有界遍历、读取流、记录预算和流式 JSON 数组随 `f08ee5a` 通过 734 项本地测试、隔离 Debug UI 及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37188857492)。浏览器回退副本随 `3e95c23` 通过 737 项本地测试及 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37190912782)。账本日期展开与取消已通过本地 744 项测试与隔离 Debug UI，完整计数保留、旧空档稀疏保存、图表按日历区间分桶。日期改动的 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37191964998) 已通过。ZCode 固定头部签名已通过本地 core 670 passed / 5 ignored 及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37192497068)。模型时序的扫描上限和独立缺口提示已通过整仓 750 项测试；隔离账户 UI 也已通过，[该批 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37194125169) 成功。时序日期与计数有效性通过 12 项定向、整仓 756 passed / 6 ignored 及扩展账户 Debug UI（未来事件排除、首字 2.00 秒、Token 保持）；[对应 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37195452537) 已通过。Codex 原生累计计数及缺口缓存通过 core 690 passed / 5 ignored、整仓 766 passed / 6 ignored、账户/缓存维护/续读/筛选/取消 Debug UI；新增账户回归随 [176cb24 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37197866133) 通过，三份 UI 结果使用同一程序。原生 Codex/Claude 目录发现上限已实现，当前验证见[发现规则](providers/windows-native-transcript-discovery.md)；升级与发布任务继续单独保留验收状态，详见[任务卡](release-acceptance-2026-10-04.md)。
 
 | 顺序 | 范围与依赖 | 验收标准 | 退出产物 |
 |---|---|---|---|

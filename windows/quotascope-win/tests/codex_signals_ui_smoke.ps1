@@ -191,6 +191,23 @@ try {
     Wait-Text '计数可能不完整。' -Absent
     Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
     Wait-Text '首字 — 秒' -Contains
+    $phase='native-discovery-gap-and-repair'
+    $deepRoot=Join-Path $sessionRoot 'discovery-gap'
+    $deep=$deepRoot
+    for($n=0;$n -lt 64;$n++) {$deep=Join-Path $deep 'a'}
+    New-Item -ItemType Directory -Path $deep -Force | Out-Null
+    Copy-Item -LiteralPath $young -Destination (Join-Path $deep 'native-depth.jsonl')
+    Refresh-Timings
+    Wait-Text '计数可能不完整。'
+    Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
+    $resolvedDeep=[IO.Path]::GetFullPath($deepRoot)
+    $ownedSession=[IO.Path]::GetFullPath($sessionRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)+[IO.Path]::DirectorySeparatorChar
+    if(-not $resolvedDeep.StartsWith($ownedSession,[StringComparison]::OrdinalIgnoreCase)) {throw 'Discovery fixture escaped the owned session directory'}
+    Remove-Item -LiteralPath $resolvedDeep -Recurse -Force
+    Refresh-Timings
+    Wait-Text '计数可能不完整。' -Absent
+    Wait-Text 'fixture-alpha · 占比 100.0% · 3000 tokens' -Contains
+    Wait-Text $timingWarning -Absent
     $phase='valid-and-future-timings'
     $currentTimings=Join-Path $sessionRoot 'current-timings.jsonl'
     Write-FirstTokenTimings $currentTimings ([DateTime]::UtcNow.AddMinutes(-2)) 2000
@@ -250,7 +267,7 @@ try {
     Wait-Text $alpha21
     $forbidden=@(Nodes|Where-Object {$_.Current.Name -match '服务端.*降级|实际模型.*fixture'})
     if($forbidden.Count){throw 'UI asserts an actual server model'}
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;SyntheticRecords=$true;CalendarPeriods=$true;SamplesAndDenominator=$true;RecordedSettingsDifference=$true;ManualRefresh=$true;PartialTimingWarningAndRepair=$true;FutureTimingsExcluded=$true;MeasuredFirstTokenSeconds=2.0;NativeCounterWarningAndRepair=$true;TokenCountsUnaffected=$true;CancellationSnapshotPreserved=$true;CancelUiMilliseconds=$cancelWatch.ElapsedMilliseconds;LeaveAndReopen=$true;CloseAndReopen=$true;RealAccountVerified=$false;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $evidence 'codex-account-ui-result.json')
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;SyntheticRecords=$true;CalendarPeriods=$true;SamplesAndDenominator=$true;RecordedSettingsDifference=$true;ManualRefresh=$true;PartialTimingWarningAndRepair=$true;FutureTimingsExcluded=$true;MeasuredFirstTokenSeconds=2.0;NativeCounterWarningAndRepair=$true;NativeDiscoveryWarningAndRepair=$true;TokenCountsUnaffected=$true;CancellationSnapshotPreserved=$true;CancelUiMilliseconds=$cancelWatch.ElapsedMilliseconds;LeaveAndReopen=$true;CloseAndReopen=$true;RealAccountVerified=$false;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $evidence 'codex-account-ui-result.json')
 } catch {
     $originalError=$_
     Write-Output "Failed phase: $phase"

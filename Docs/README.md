@@ -13,6 +13,7 @@
 | [providers/windows-ledger-calendar.md](providers/windows-ledger-calendar.md) | 日期展开上限、稀疏历史与图表日历位置 |
 | [providers/windows-model-timings.md](providers/windows-model-timings.md) | 模型速度扫描上限、时序缺口与计数的区分 |
 | [providers/windows-codex-local-counts.md](providers/windows-codex-local-counts.md) | Codex 累计计数校验、倒退基线、缺口与刷新 |
+| [providers/windows-native-transcript-discovery.md](providers/windows-native-transcript-discovery.md) | Codex/Claude 会话发现上限、缺口与大型文件边界 |
 | [release-acceptance-2026-10-04.md](release-acceptance-2026-10-04.md) | 当前发布验收、ZCode 原生读取和后续账户验证任务卡 |
 
 用户入口是仓库根目录的 [`README.md`](../README.md)。开发、测试和发布以
