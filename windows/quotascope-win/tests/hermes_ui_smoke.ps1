@@ -199,8 +199,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $folder 'usage.json'),($row|ConvertTo-Json -Depth 4),[Text.UTF8Encoding]::new($false))
     Refresh;Wait-Total 292
     Choose-Filter 2 'fixture-a';Wait-Total 227;Choose-Filter 2 '全部模型';Wait-Total 292
-    $close=Nodes|Where-Object {$_.Current.Name -eq '关闭' -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button}|Select-Object -First 1
-    $close.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+    $window.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
     Start-Sleep -Milliseconds 200
     if($testApp.HasExited){throw 'App exited on Settings close'}
     $reopen=[Diagnostics.Process]::Start($info)
