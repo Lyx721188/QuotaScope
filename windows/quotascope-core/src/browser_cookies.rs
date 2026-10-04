@@ -570,6 +570,8 @@ mod tests {
     }
 
     fn make_local_state(root: &Path, key: &[u8]) {
+        // Every fixture must work independently of test order and scheduling.
+        fake_dpapi();
         let protected: Vec<u8> = key.iter().map(|b| b ^ 0x5A).collect();
         let mut blob = b"DPAPI".to_vec();
         blob.extend_from_slice(&protected);
