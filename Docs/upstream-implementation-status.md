@@ -10,12 +10,12 @@
 | N2 DeepSeek | 实际费用携带币种；有界官网历史缓存、余额回退、异步浏览器导入/清除；凭据、续读和缓存按账户隔离 | 合成协议、HTTP、Windows DPAPI 与隔离 UI 通过；真实账户未验证，见[说明](providers/windows-deepseek-console.md) |
 | N3 Codex | 保守比较设置/请求参数；有界、可取消 facts reader；主账户展开页显示时段、规则、分母、不可判断与缺口 | parser/worker/隔离 UI 通过；不证明服务端实际运行模型，见[说明](providers/windows-codex-signals.md) |
 | N4a DSH | 按 magic 流式解压 Zstandard 与拼接帧；原始/解码字节、单行和窗口有界；损坏、缺计数、变动保留 partial | 纯解析、取消、隔离 UI、冻结样本独立复算通过；不代表全部历史完整，见[说明](providers/windows-dsh-local-usage.md) |
-| N4b ZCode | 固定 SQLite 用量表；归一化输入含缓存、输出含 reasoning；WAL/索引/取消及内存缓存有界 | 18 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；Release UI 加入 CI，见[说明](providers/windows-zcode-local-usage.md) |
-| R1 自动化 | ZIP 许可证与哈希；相同 Release payload 的独立身份安装、托盘/设置生命周期、卸载；失败日志保留 | [ef9292d 的 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671) 成功；原 AppId 升级、Release Token 页、真实账户、多 DPI 人工验收仍分别待完成 |
+| N4b ZCode | 固定 SQLite 用量表；归一化输入含缓存、输出含 reasoning；WAL/索引/取消及内存缓存有界 | 18 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；Release UI 也通过 [dcaa37c 的 CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37184221991)，见[说明](providers/windows-zcode-local-usage.md) |
+| R1 自动化 | ZIP 许可证与哈希；相同 Release payload 的独立身份安装、托盘/设置生命周期、卸载；失败日志保留 | [ef9292d 的 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671) 成功；[dcaa37c 的 CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37184221991) 另通过 DSH/ZCode Release Token 页；原 AppId 升级、真实账户、多 DPI 人工验收仍分别待完成 |
 
-新增功能的源码基线回归为 706 passed / 6 ignored，fmt、普通 Clippy、Release 和 JSON CLI 完成；已有 Clippy 告警仍存在。每次后续改动以对应 commit 的检查为准。
+N1–N4a 的源码基线回归为 706 passed / 6 ignored；含 ZCode 的 dcaa37c 为 724 passed / 6 ignored，fmt、普通 Clippy、Release 和 JSON CLI 完成；已有 Clippy 告警仍存在。每次后续改动以对应 commit 的检查为准。
 
-当前目录为 77 个 Windows 路由、54 个 Token 来源（35 个已知格式读取，含导出缓存；19 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。当前下一项是核对 R1d 的最终 Release Token 页 CI；真实账户与升级仍分别保留验收状态。
+当前目录为 77 个 Windows 路由、54 个 Token 来源（35 个已知格式读取，含导出缓存；19 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。R1d 已由 dcaa37c 的 Release CI 验收。标准导入新增严格计数、零值覆盖和确定的文件顺序，源码回归 729 passed / 6 ignored；本批隔离 Debug UI 也通过，Release UI 随 main 的 CI 单独核对，真实账户与升级仍分别保留验收状态。
 
 ## 已发布的 1.3.0 / 1.3.1 基线
 
@@ -72,6 +72,8 @@ OpenCode 官网会话在 OpenCode 设置中导入，API key 独立保存；Winds
 ```json
 {"schema":"quotascope.usage.v1","source":"zed","id":"request-1","timestamp":1790850000000,"model":"unknown","usage":{"inputTokens":10,"outputTokens":7,"cacheReadTokens":0,"cacheWriteTokens":0}}
 ```
+
+标准导入的计数、时间和覆盖规则见[格式说明](providers/windows-usage-imports.md)。
 
 Claude 状态栏：将 Claude 的 statusLine.command 配置为 `"完整路径\quotascope.exe" --statusline`。应用不会自动覆盖现有 Claude 设置/状态栏命令。只保存 rate_limits 的额度百分比、重置时间和读取时刻。
 `quotascope.exe --dashboard` 打开概览，--refresh 刷新，`--url quotascope://dashboard` 处理导航。URL 接受 settings/dashboard/refresh，并兼容报告中的 account 链接打开设置；不接受参数、凭据或命令。

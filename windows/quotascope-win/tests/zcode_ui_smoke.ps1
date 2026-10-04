@@ -172,6 +172,25 @@ function Choose-Filter([int]$index,[string]$name) {
     $item.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
 }
 function Agent([string]$name) { Choose-Filter 1 $name }
+function Write-Imports([string]$mode) {
+    $folder=Join-Path $data 'UsageImports/zcode'
+    $path=Join-Path $folder 'usage.jsonl'
+    if($mode -eq 'clear') { Remove-Item -LiteralPath $path; return }
+    New-Item -ItemType Directory -Path $folder -Force | Out-Null
+    $row=@{schema='quotascope.usage.v1';source='zcode';id='import-fixture';timestamp=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();model='fixture-zcode';usage=@{inputTokens=10;outputTokens=7;cacheReadTokens=5;cacheWriteTokens=3;reasoningTokens=4;totalTokens=25}}
+    $lines=@($row|ConvertTo-Json -Depth 4 -Compress)
+    if($mode -eq 'invalid') {
+        $row.id='missing-output';$row.usage=@{inputTokens=999}
+        $lines+=($row|ConvertTo-Json -Depth 4 -Compress)
+    } elseif($mode -eq 'zero') {
+        $row.usage=@{inputTokens=0;outputTokens=0}
+        $lines+=($row|ConvertTo-Json -Depth 4 -Compress)
+    } elseif($mode -eq 'unknown') {
+        $row.id='unknown-model';$row.Remove('model');$row.usage=@{inputTokens=2;outputTokens=3}
+        $lines+=($row|ConvertTo-Json -Depth 4 -Compress)
+    }
+    [IO.File]::WriteAllText($path,($lines -join "`n")+"`n",[Text.UTF8Encoding]::new($false))
+}
 $warning='这些来源的本机记录不完整：ZCode。总量只覆盖可读取的计数。'
 try {
     $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$testApp.Id)
@@ -232,6 +251,27 @@ try {
     Write-Fixture 'base'
     Refresh
     Wait-Total 120
+    Write-Imports 'valid'
+    Refresh
+    Wait-Total 145
+    Wait-Text $warning -Absent
+    Write-Imports 'invalid'
+    Refresh
+    Wait-Total 145
+    Wait-Text $warning
+    Write-Imports 'zero'
+    Refresh
+    Wait-Total 120
+    Wait-Text $warning -Absent
+    Write-Imports 'unknown'
+    Refresh
+    Wait-Total 150
+    Wait-Text $warning
+    Wait-Text '未公开价格的 Token： 5'
+    Write-Imports 'clear'
+    Refresh
+    Wait-Total 120
+    Wait-Text $warning -Absent
     $window.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
     Start-Sleep -Milliseconds 200
     if($testApp.HasExited){throw 'App exited on Settings close'}
@@ -249,7 +289,7 @@ try {
     Agent 'ZCode'
     Wait-Total 120
     Wait-Text $warning -Absent
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;StandardImportCounters=$true;ZeroSnapshotReplacesUsage=$true;UnknownImportModelUnpriced=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
 } catch {
     $originalError=$_
     try {if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $OutputDirectory 'zcode-ui-failure.json')}}catch{}

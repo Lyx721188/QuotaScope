@@ -2,7 +2,7 @@
 
 日期：2026-10-04（Asia/Shanghai）。功能基线：`3c69d2f`，包含 N1 性能、N2 DeepSeek 官网历史、N3 Codex 本地线索及 N4a DSH 解压；R1 自动化与文档基线为 `ef9292d`。
 
-本页承接[公开开发计划](next-upstream-plan-2026-10-04.md)，将后续工作拆成可独立验收的任务。R1 自动化与文档已完成，N4b 的原生读取、缓存、冻结样本和 Debug UI 已通过；当前下一项是核对新加入 CI 的 Release Token 页。真实账户、升级和多 DPI 交互仍各自保留验收状态。
+本页承接[公开开发计划](next-upstream-plan-2026-10-04.md)，将后续工作拆成可独立验收的任务。R1 自动化与文档已完成，N4b 的原生读取、缓存、冻结样本和 Debug UI 已通过；R1d 的 Release Token 页也通过 dcaa37c 的 CI。当前下一项是标准导入的计数与零值覆盖修复。真实账户、升级和多 DPI 交互仍各自保留验收状态。
 
 ## 1. 当前基线与这轮交付
 
@@ -12,6 +12,7 @@
 | 本地源码回归 | 706 passed / 6 ignored；fmt、普通 Clippy、Release 和 JSON CLI 均 exit 0 | 当前源码可构建，自动检查通过；Clippy 仍有告警 |
 | main 原 CI | [37169814380](https://github.com/Lyx721188/QuotaScope/actions/runs/37169814380)，对应 `3c69d2f`，成功 | Release 构建、便携包设置窗口生命周期通过；原流程没有执行 EXE 的安装/卸载 |
 | DSH 独立复算 | 冻结字节的 Python 与 Rust 结果一致；缺 usage 保持 partial | 已检查样本可复算，不能代表所有历史文件完整 |
+| R1d / N4b CI | [37184221991](https://github.com/Lyx721188/QuotaScope/actions/runs/37184221991)，对应 `dcaa37c`，成功 | 两个 Token 脚本均 Passed、使用相同 Release EXE SHA；只证明隔离合成账户 |
 | R1 新 CI | [37171576671](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671)，对应 `ef9292d`，成功 | ZIP 许可证、相同 Release payload 的独立身份安装、生命周期与卸载通过 |
 
 本轮改动：
@@ -34,7 +35,7 @@ CI 结果按源码 commit 和 `quotascope-installer-validation` artifact 核对�
 | R1a 文档 | 统一 README、Windows README、CHANGELOG、移植状态；旧版本历史保留原日期/数字 | 当前入口不再宣称只有 67 个路由或 14/17 已移植；主线与 Release 区分明确 | 本轮文档提交 |
 | R1b 便携包 | 在 CI 解压真实 ZIP，核对许可证；使用包内程序执行生命周期测试 | 哈希一致；首次打开、关闭重开、第二次启动、隐藏退出均通过 | CI 日志与 ZIP/SHA256 |
 | R1c EXE 安装包 | 使用同一 Release payload 和 Inno 脚本，仅改验收 AppId、安装目录与输出名；不注册协议和桌面入口 | EXE 哈希/版本一致，资源/许可证存在；安装程序可运行；卸载后 EXE 和独立注册项移除 | quotascope-installer-validation artifact |
-| R1d Token 页 | Debug 合成 UI 已覆盖；CI 新增 Python 3.14 的 DSH/ZCode 脚本，使用实际 ZIP 内 Release 程序，运行结果待核对 | 20→30 的追加样本、损坏提示、修复恢复、切源、关闭重开符合预期 | 带程序 SHA 的 Release 交互记录 |
+| R1d Token 页 | Debug 合成 UI 已覆盖；CI 新增 Python 3.14 的 DSH/ZCode 脚本，使用实际 ZIP 内 Release 程序，[dcaa37c 的运行](https://github.com/Lyx721188/QuotaScope/actions/runs/37184221991) 已通过 | 20→30 的追加样本、损坏提示、修复恢复、切源、关闭重开符合预期 | 带程序 SHA 的 Release 交互记录 |
 | R1e 本机升级 | 明确升级窗口后备份已有配置；记录旧版本/程序哈希，完成升级和回退检查 | 账户配置、DPAPI 凭据仍可使用；登录不串号；旧版本可恢复 | 升级/回退记录 |
 | R1f 发布准备 | 根据最终范围设置版本、更新锁文件/发布说明、构建并复验最终提交 | tag、Cargo 版本、EXE 版本及包名一致；所有阻塞问题解决，已知限制列明 | 可审查的 Release 说明和包清单 |
 
@@ -44,7 +45,7 @@ R1b/R1c 使用 CI 独立桌面和隔离配置。EXE 验收使用独立身份的�
 
 ## 3. N4b：ZCode 原生用量读取
 
-N4b-1 至 N4b-4 已完成：ZCode 3.14.4 的归一化 SQLite 用量格式、18 项定向回归、缓存与扫描、冻结字段独立复算和隔离 Debug UI。详见[字段、上限及命令](providers/windows-zcode-local-usage.md)。源码整仓检查为 724 passed / 6 ignored，普通 Clippy 通过并保留旧告警。最终 Release UI 由本轮 CI 单独验收；不代表账户所有历史请求完整。下列任务卡保留验收规则。
+N4b-1 至 N4b-4 已完成：ZCode 3.14.4 的归一化 SQLite 用量格式、18 项定向回归、缓存与扫描、冻结字段独立复算和隔离 Debug UI。详见[字段、上限及命令](providers/windows-zcode-local-usage.md)。源码整仓检查为 724 passed / 6 ignored，普通 Clippy 通过并保留旧告警。最终 Release UI 已由 dcaa37c 的 CI 单独验收；不代表账户所有历史请求完整。下列任务卡保留验收规则。
 
 ### N4b-1 格式取证
 
@@ -101,8 +102,8 @@ N4b-1 至 N4b-4 已完成：ZCode 3.14.4 的归一化 SQLite 用量格式、18 �
 
 1. 已完成：CI 安装/卸载验收、ZIP 许可证与入口文档，`ef9292d` 的 Windows CI 成功。
 2. 已完成：ZCode 格式记录、纯解析及只读 SQLite。
-3. 已完成：ZCode 扫描/缓存/Debug UI 与独立复算；35/19 支持数已更新。当前核对最终 Release Token 页 CI。
-4. DeepSeek 与 Kiro 每个服务商各一批验收/修复；需要登录的缺口独立记录。
+3. 已完成：ZCode 扫描/缓存/Debug UI 与独立复算；35/19 支持数已更新。Release Token 页由 dcaa37c 的 CI 通过。
+4. 当前推进标准导入的计数、时间与零值覆盖修复；随后 DeepSeek 与 Kiro 每个服务商各一批验收/修复；需要登录的缺口独立记录。
 5. 按实际优先级推进多账户与交互；正式发布时单独完成版本/tag/包的一致性。
 
 每次交接至少包含：分支/commit、改动行为、验证命令和退出码、程序与包哈希、真实账户与桌面各自状态、未解决问题、唯一下一项。原始日志与个人交接放 `windows/target/` 或 `work/`；只提交脱敏结论和合成 fixture。

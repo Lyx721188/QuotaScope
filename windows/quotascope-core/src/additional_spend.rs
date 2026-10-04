@@ -129,26 +129,32 @@ struct Reader {
     partial: bool,
 }
 impl Reader {
+    fn forget(&mut self, id: &str) {
+        if let Some((slot, model, old)) = self.ids.remove(id) {
+            if let Some(models) = self.buckets.get_mut(&slot) {
+                if let Some(previous) = models.get_mut(&model) {
+                    previous.input -= old.input;
+                    previous.output -= old.output;
+                    previous.cache_write -= old.cache_write;
+                    previous.cache_read -= old.cache_read;
+                    if previous.total() == 0 {
+                        models.remove(&model);
+                    }
+                }
+                if models.is_empty() {
+                    self.buckets.remove(&slot);
+                }
+            }
+        }
+    }
     fn add(&mut self, at: i64, model: &str, tally: TokenTally, id: Option<String>) {
         if tally.total() <= 0 || chrono::DateTime::from_timestamp_millis(at).is_none() || at <= 0 {
             return;
         }
         let key = crate::ledger::slot_key_from_ms(at);
         if let Some(id) = id {
-            if let Some((old_slot, old_model, old)) =
-                self.ids.insert(id, (key.clone(), model.to_string(), tally))
-            {
-                if let Some(previous) = self
-                    .buckets
-                    .get_mut(&old_slot)
-                    .and_then(|b| b.get_mut(&old_model))
-                {
-                    previous.input -= old.input;
-                    previous.output -= old.output;
-                    previous.cache_write -= old.cache_write;
-                    previous.cache_read -= old.cache_read;
-                }
-            }
+            self.forget(&id);
+            self.ids.insert(id, (key.clone(), model.to_string(), tally));
         }
         *self
             .buckets
@@ -229,6 +235,8 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
         }
         collect(path, &mut files, &mut seen_paths);
     }
+    // Snapshot replacement must not depend on filesystem enumeration order.
+    files.sort();
     let mut zcode_database = false;
     let mut zcode_import_bytes = 0_u64;
     for file in files {
@@ -539,6 +547,39 @@ fn dsh_tally(usage: &Value) -> Option<TokenTally> {
     })
 }
 
+fn import_tally(usage: &Value) -> Option<TokenTally> {
+    let tally = dsh_tally(usage)?;
+    if let Some(reasoning) = usage.get("reasoningTokens") {
+        if !(0..=tally.output).contains(&reasoning.as_i64()?) {
+            return None;
+        }
+    }
+    if let Some(total) = usage.get("totalTokens") {
+        if total.as_i64()? != tally.total() {
+            return None;
+        }
+    }
+    Some(tally)
+}
+
+fn import_time(value: &Value) -> Option<i64> {
+    let at = value.as_i64().or_else(|| {
+        let text = value.as_str().filter(|text| text.len() <= 128)?;
+        // A date without a time/zone is not a timestamp for an hourly ledger.
+        chrono::DateTime::parse_from_rfc3339(text)
+            .ok()
+            .map(|at| at.timestamp_millis())
+    })?;
+    if at <= 0
+        || chrono::DateTime::from_timestamp_millis(at)
+            .and_then(|at| at.checked_add_signed(chrono::Duration::days(1)))
+            .is_none()
+    {
+        return None;
+    }
+    Some(at)
+}
+
 fn parse(
     id: &str,
     row: &Value,
@@ -554,17 +595,30 @@ fn parse(
             reader.partial = true;
             return;
         }
-        if let (Some(at), Some(model), Some(record)) = (
-            timestamp(&row["timestamp"], true),
-            row["model"].as_str(),
-            row["id"].as_str(),
+        if let (Some(at), Some(record), Some(tally)) = (
+            import_time(&row["timestamp"]),
+            row["id"]
+                .as_str()
+                .filter(|id| !id.trim().is_empty() && id.len() <= 1024),
+            import_tally(&row["usage"]),
         ) {
-            reader.add(
-                at,
-                model,
-                camel(&row["usage"]),
-                Some(format!("export:{record}")),
-            );
+            let model = match row["model"]
+                .as_str()
+                .filter(|m| !m.trim().is_empty() && m.len() <= 256)
+            {
+                Some(model) => model.trim(),
+                None => {
+                    reader.partial = true;
+                    "unknown"
+                }
+            };
+            let identity = format!("export:{record}");
+            // Explicitly reported zero is a replacement, not missing usage.
+            if tally.total() == 0 {
+                reader.forget(&identity);
+            } else {
+                reader.add(at, model, tally, Some(identity));
+            }
         } else {
             reader.partial = true;
         }
@@ -1088,5 +1142,181 @@ mod tests {
             reader.buckets.values().next().unwrap()["unknown"].total(),
             17
         );
+    }
+
+    fn import_row() -> Value {
+        json!({"schema":"quotascope.usage.v1","source":"zed","id":"request",
+            "timestamp":1790850000000_i64,"model":"fixture",
+            "usage":{"inputTokens":10,"outputTokens":7,"cacheReadTokens":5,
+                "cacheWriteTokens":3,"reasoningTokens":4,"totalTokens":25}})
+    }
+
+    #[test]
+    fn imported_counters_reject_missing_and_conflicting_usage_instead_of_guessing() {
+        for usage in [
+            json!({"outputTokens":7}),
+            json!({"inputTokens":10}),
+            json!({"inputTokens":-1,"outputTokens":7}),
+            json!({"inputTokens":10.5,"outputTokens":7}),
+            json!({"inputTokens":"10","outputTokens":7}),
+            json!({"inputTokens":true,"outputTokens":7}),
+            json!({"inputTokens":1_000_000_000_001_i64,"outputTokens":7}),
+            json!({"inputTokens":10,"outputTokens":7,"cacheReadTokens":null}),
+            json!({"inputTokens":10,"outputTokens":7,"cacheWriteTokens":-1}),
+            json!({"inputTokens":10,"outputTokens":7,"reasoningTokens":8}),
+            json!({"inputTokens":10,"outputTokens":7,"reasoningTokens":null}),
+            json!({"inputTokens":10,"outputTokens":7,"totalTokens":18}),
+            json!({"inputTokens":10,"outputTokens":7,"totalTokens":"17"}),
+            json!({"inputTokens":10,"outputTokens":7,"totalTokens":null}),
+        ] {
+            let mut row = import_row();
+            row["usage"] = usage;
+            let mut reader = Reader::default();
+            parse(
+                "zed",
+                &row,
+                true,
+                Path::new("usage.jsonl"),
+                &mut reader,
+                &mut (0, None),
+            );
+            assert!(reader.partial && reader.buckets.is_empty(), "{row}");
+        }
+    }
+
+    #[test]
+    fn imported_timestamp_and_identity_must_define_an_actual_hourly_record() {
+        for timestamp in [
+            Value::Null,
+            json!(0),
+            json!(i64::MAX),
+            json!(1790850000000.5),
+            json!("1790850000000"),
+            json!("2026-10-01"),
+            json!("2026-10-01T14:00:00"),
+            json!(chrono::DateTime::<chrono::Utc>::MAX_UTC.timestamp_millis()),
+        ] {
+            let mut row = import_row();
+            row["timestamp"] = timestamp;
+            let mut reader = Reader::default();
+            parse(
+                "zed",
+                &row,
+                true,
+                Path::new("usage.jsonl"),
+                &mut reader,
+                &mut (0, None),
+            );
+            assert!(reader.partial && reader.buckets.is_empty(), "{row}");
+        }
+        for identity in [json!(""), json!(" \t"), json!("x".repeat(1025)), json!(7)] {
+            let mut row = import_row();
+            row["id"] = identity;
+            let mut reader = Reader::default();
+            parse(
+                "zed",
+                &row,
+                true,
+                Path::new("usage.jsonl"),
+                &mut reader,
+                &mut (0, None),
+            );
+            assert!(reader.partial && reader.buckets.is_empty());
+        }
+        assert_eq!(
+            import_time(&json!("2026-10-01T14:00:00+08:00")),
+            import_time(&json!("2026-10-01T06:00:00Z"))
+        );
+        assert!(import_time(&json!("2026-10-01T06:00:00Z")).is_some());
+    }
+
+    #[test]
+    fn explicit_zero_snapshot_removes_previous_import_and_a_later_update_replaces_it() {
+        let mut reader = Reader::default();
+        let mut row = import_row();
+        let file = Path::new("usage.jsonl");
+        parse("zed", &row, true, file, &mut reader, &mut (0, None));
+        parse("zed", &row, true, file, &mut reader, &mut (0, None));
+        assert_eq!(total(&reader), 25);
+        row["usage"] = json!({"inputTokens":0,"outputTokens":0});
+        parse("zed", &row, true, file, &mut reader, &mut (0, None));
+        assert_eq!(total(&reader), 0);
+        assert!(reader.buckets.is_empty());
+        row["usage"] = json!({"inputTokens":2,"outputTokens":3});
+        row["model"] = json!("updated");
+        row["timestamp"] = json!(1790936400000_i64);
+        parse("zed", &row, true, file, &mut reader, &mut (0, None));
+        assert_eq!(total(&reader), 5);
+        assert!(!reader.partial);
+        assert_eq!(reader.ids.len(), 1);
+        assert_eq!(reader.buckets.len(), 1);
+        assert_eq!(reader.buckets.values().next().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn imported_jsonl_keeps_valid_usage_unpriced_and_reports_invalid_records_as_partial() {
+        let fixture = Fixture::new();
+        let imports = fixture.0.join("UsageImports/zed");
+        std::fs::create_dir_all(&imports).unwrap();
+        let known = import_row();
+        let mut unknown = import_row();
+        unknown["id"] = json!("unknown-model");
+        unknown.as_object_mut().unwrap().remove("model");
+        unknown["usage"] = json!({"inputTokens":2,"outputTokens":3});
+        let mut invalid = import_row();
+        invalid["id"] = json!("invalid");
+        invalid["usage"] = json!({"inputTokens":999});
+        let content = [known, unknown, invalid]
+            .into_iter()
+            .map(|row| row.to_string() + "\n")
+            .collect::<String>();
+        std::fs::write(imports.join("usage.jsonl"), content).unwrap();
+        let reader = read_source("zed", std::slice::from_ref(&imports));
+        assert_eq!(total(&reader), 30);
+        let models = reader.buckets.values().next().unwrap();
+        assert_eq!(
+            models["fixture"],
+            TokenTally {
+                input: 10,
+                output: 7,
+                cache_read: 5,
+                cache_write: 3
+            }
+        );
+        assert_eq!(models["unknown"].total(), 5);
+        let ledger = read_with_prices("zed", &[imports], &BTreeMap::new());
+        assert!(ledger.has_partial_records);
+        assert_eq!(ledger.days.iter().map(|day| day.tokens).sum::<i64>(), 30);
+        assert_eq!(
+            ledger
+                .days
+                .iter()
+                .map(|day| day.unpriced_tokens)
+                .sum::<i64>(),
+            30
+        );
+    }
+
+    #[test]
+    fn import_snapshot_order_is_stable_across_root_order_and_model_changes() {
+        let fixture = Fixture::new();
+        let imports = fixture.0.join("UsageImports/zed");
+        std::fs::create_dir_all(&imports).unwrap();
+        let first = imports.join("01-old.json");
+        let last = imports.join("02-new.json");
+        let old = import_row();
+        let mut new = import_row();
+        new["model"] = json!("replacement");
+        new["usage"] = json!({"inputTokens":2,"outputTokens":3});
+        std::fs::write(&first, old.to_string()).unwrap();
+        std::fs::write(&last, new.to_string()).unwrap();
+        for paths in [vec![first.clone(), last.clone()], vec![last, first]] {
+            let reader = read_source("zed", &paths);
+            assert_eq!(total(&reader), 5);
+            assert!(!reader.partial);
+            let models = reader.buckets.values().next().unwrap();
+            assert_eq!(models.len(), 1);
+            assert!(models.contains_key("replacement"));
+        }
     }
 }
