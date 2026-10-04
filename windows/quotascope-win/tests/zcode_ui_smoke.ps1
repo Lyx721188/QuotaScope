@@ -191,7 +191,12 @@ function Write-Imports([string]$mode) {
         return
     }
     if(Test-Path -LiteralPath $jsonPath){Remove-Item -LiteralPath $jsonPath}
-    if($mode -eq 'invalid') {
+    if($mode -eq 'wide-calendar') {
+        $row.id='old-calendar';$row.timestamp='1970-01-01T12:00:00Z';$row.usage=@{inputTokens=11;outputTokens=0}
+        $lines=@($row|ConvertTo-Json -Depth 4 -Compress)
+        $row.id='future-calendar';$row.timestamp='9999-01-01T12:00:00Z';$row.usage=@{inputTokens=29;outputTokens=0}
+        $lines+=($row|ConvertTo-Json -Depth 4 -Compress)
+    } elseif($mode -eq 'invalid') {
         $row.id='missing-output';$row.usage=@{inputTokens=999}
         $lines+=($row|ConvertTo-Json -Depth 4 -Compress)
     } elseif($mode -eq 'zero') {
@@ -296,6 +301,17 @@ try {
     Refresh
     Wait-Total 120
     Wait-Text $warning -Absent
+    Write-Imports 'wide-calendar'
+    Refresh
+    Wait-Total 120
+    Wait-Text $warning -Absent
+    Choose-Filter 0 '全部时间'
+    Wait-Total 131
+    Choose-Filter 0 '今日'
+    Wait-Total 120
+    Write-Imports 'clear'
+    Refresh
+    Wait-Total 120
     $window.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
     Start-Sleep -Milliseconds 200
     if($testApp.HasExited){throw 'App exited on Settings close'}
@@ -313,7 +329,7 @@ try {
     Agent 'ZCode'
     Wait-Total 120
     Wait-Text $warning -Absent
-    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;StandardImportCounters=$true;ZeroSnapshotReplacesUsage=$true;UnknownImportModelUnpriced=$true;StreamedJsonArrayAndRepair=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
+    [pscustomobject]@{Passed=$true;Executable=[IO.Path]::GetFullPath($Executable);Sha256=(Get-FileHash -LiteralPath $Executable).Hash;NativeSqlite=$true;RetriesCounted=$true;ReasoningNotAddedTwice=$true;RefreshAppend=$true;SourceFilter=$true;TimeModelAndSortFilters=$true;UnpricedModel=$true;PartialWarningAndRepair=$true;SameSizeSameMtimeReplacement=$true;Deletion=$true;StandardImportCounters=$true;ZeroSnapshotReplacesUsage=$true;UnknownImportModelUnpriced=$true;StreamedJsonArrayAndRepair=$true;WideCalendarAndFutureFiltering=$true;SettingsCloseAndReopen=$true;OfflineSyntheticProfile=$true;RealAccountVerified=$false}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'zcode-ui-result.json')
 } catch {
     $originalError=$_
     try {if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $OutputDirectory 'zcode-ui-failure.json')}}catch{}

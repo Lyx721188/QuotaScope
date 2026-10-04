@@ -122,12 +122,7 @@ impl Summary {
                     }
                     coverage.insert(source.id.clone(), has_tokens);
                 }
-                let bin_size = analysis.days.len().div_ceil(40).max(1);
-                let bins = analysis
-                    .days
-                    .chunks(bin_size)
-                    .map(|days| days.iter().map(|day| day.measures.tokens).sum())
-                    .collect();
+                let bins = calendar_bins(&analysis.days);
                 Self {
                     request,
                     analysis,
@@ -141,6 +136,25 @@ impl Summary {
             },
         )
     }
+}
+
+/// At most forty calendar intervals, including empty intervals. Sparse old
+/// records must not make years of quiet look like adjacent active days.
+fn calendar_bins(days: &[crate::spend::Day]) -> Vec<i64> {
+    let (Some(first), Some(last)) = (days.first(), days.last()) else {
+        return Vec::new();
+    };
+    let span = (last.date.signed_duration_since(first.date).num_days() + 1) as usize;
+    let width = span.div_ceil(40).max(1);
+    let mut bins = vec![0_i64; span.div_ceil(width)];
+    for day in days {
+        if !scan::checkpoint() {
+            return Vec::new();
+        }
+        let index = day.date.signed_duration_since(first.date).num_days() as usize / width;
+        bins[index] = bins[index].saturating_add(day.measures.tokens);
+    }
+    bins
 }
 
 /// At most four filter results, all from one held snapshot. Pointer identity
@@ -244,6 +258,42 @@ mod tests {
     }
     fn compute(request: Request, previous: Option<Arc<Summary>>) -> Arc<Summary> {
         Arc::new(Summary::compute(request, Arc::new(Control::default()), previous).unwrap())
+    }
+
+    #[test]
+    fn sparse_history_bins_preserve_elapsed_time_and_all_counts() {
+        let days = [(1970, 11), (9999, 29)]
+            .into_iter()
+            .map(|(year, tokens)| crate::spend::Day {
+                date: NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
+                measures: crate::spend::Measures {
+                    tokens,
+                    ..Default::default()
+                },
+            })
+            .collect::<Vec<_>>();
+        let bins = calendar_bins(&days);
+        assert_eq!(bins.len(), 40);
+        assert_eq!(bins[0], 11);
+        assert_eq!(bins[39], 29);
+        assert!(bins[1..39].iter().all(|count| *count == 0));
+        assert_eq!(bins.iter().sum::<i64>(), 40);
+    }
+
+    #[test]
+    fn short_history_bins_include_quiet_days_and_empty_history_stays_empty() {
+        let days = [(1, 10), (3, 25)]
+            .into_iter()
+            .map(|(day, tokens)| crate::spend::Day {
+                date: NaiveDate::from_ymd_opt(2026, 10, day).unwrap(),
+                measures: crate::spend::Measures {
+                    tokens,
+                    ..Default::default()
+                },
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calendar_bins(&days), [10, 0, 25]);
+        assert!(calendar_bins(&[]).is_empty());
     }
 
     #[test]

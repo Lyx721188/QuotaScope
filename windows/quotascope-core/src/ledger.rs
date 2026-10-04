@@ -182,7 +182,8 @@ pub struct LedgerDay {
 /// for the value estimate.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UsageLedger {
-    /// Ascending by date, gaps closed so the chart reads as a calendar.
+    /// Ascending by date. All observed days are retained; quiet dates are
+    /// filled only within the latest 366-day span, so old gaps can be sparse.
     pub days: Vec<LedgerDay>,
     pub earliest: Option<NaiveDate>,
     /// Models seen in the logs that models.dev has no price for.
@@ -273,14 +274,13 @@ impl UsageLedger {
 
     pub fn today(&self) -> Option<&LedgerDay> {
         let today = Local::now().date_naive();
-        self.days.last().filter(|day| day.date == today)
+        let index = self.days.partition_point(|day| day.date < today);
+        self.days.get(index).filter(|day| day.date == today)
     }
 
     pub fn total_over_last(&self, count: usize) -> (i64, f64) {
-        self.days
+        self.recent(count)
             .iter()
-            .rev()
-            .take(count)
             .fold((0, 0.0), |(tokens, cost), day| {
                 (tokens + day.tokens, cost + day.cost)
             })
@@ -293,7 +293,15 @@ impl UsageLedger {
     }
 
     pub fn recent(&self, count: usize) -> &[LedgerDay] {
-        let from = self.days.len().saturating_sub(count);
+        let Some(latest) = self.days.last().filter(|_| count > 0) else {
+            return &[];
+        };
+        let age = u64::try_from(count - 1).unwrap_or(u64::MAX);
+        let cutoff = latest
+            .date
+            .checked_sub_days(chrono::Days::new(age))
+            .unwrap_or(NaiveDate::MIN);
+        let from = self.days.partition_point(|day| day.date < cutoff);
         &self.days[from..]
     }
 
@@ -1447,7 +1455,18 @@ pub fn priced(
     prices: &BTreeMap<String, ModelPrice>,
     vendor: Option<&str>,
 ) -> UsageLedger {
-    if !crate::scan::checkpoint() || buckets.is_empty() {
+    price_buckets(buckets, prices, vendor, crate::scan::checkpoint)
+}
+
+// The callback lets regression tests cancel during date expansion without
+// timing a background thread or depending on the machine's speed.
+fn price_buckets(
+    buckets: &BTreeMap<String, BTreeMap<String, TokenTally>>,
+    prices: &BTreeMap<String, ModelPrice>,
+    vendor: Option<&str>,
+    mut keep_reading: impl FnMut() -> bool,
+) -> UsageLedger {
+    if !keep_reading() || buckets.is_empty() {
         return UsageLedger::empty();
     }
 
@@ -1467,7 +1486,7 @@ pub fn priced(
     let mut day_tally: HashMap<NaiveDate, TokenTally> = HashMap::new();
 
     for (key, models) in buckets {
-        if !crate::scan::checkpoint() {
+        if !keep_reading() {
             return UsageLedger::empty();
         }
         let Some(start_ms) = slot_key_to_ms(key) else {
@@ -1481,6 +1500,9 @@ pub fn priced(
         let mut costs: BTreeMap<String, f64> = BTreeMap::new();
 
         for (model, tally) in models {
+            if !keep_reading() {
+                return UsageLedger::empty();
+            }
             tokens += tally.total();
             *day_models
                 .entry(day)
@@ -1533,23 +1555,48 @@ pub fn priced(
         return UsageLedger::empty();
     };
 
-    // Fill the quiet days back in. Without them the bars would sit shoulder to
-    // shoulder and a fortnight off would look like a weekend.
-    let mut days: Vec<LedgerDay> = Vec::new();
-    let mut cursor = earliest;
-    while cursor <= latest {
-        days.push(LedgerDay {
-            date: cursor,
-            tokens: day_tokens.get(&cursor).copied().unwrap_or(0),
-            cost: day_cost.get(&cursor).copied().unwrap_or(0.0),
-            unpriced_tokens: day_unpriced.get(&cursor).copied().unwrap_or(0),
-            models: day_models.get(&cursor).cloned().unwrap_or_default(),
-            tally: day_tally.get(&cursor).copied().unwrap_or_default(),
-            model_tallies: day_model_tallies.get(&cursor).cloned().unwrap_or_default(),
-            model_costs: day_model_costs.get(&cursor).cloned().unwrap_or_default(),
-        });
+    // Keep every observed date, but never allocate centuries of empty rows
+    // between two records. The recent calendar stays dense; charts for older
+    // dates must position records by their dates, not by row indices.
+    const CALENDAR_DAYS: u64 = 366;
+    let mut dates = BTreeSet::new();
+    for date in day_tokens.keys() {
+        if !keep_reading() {
+            return UsageLedger::empty();
+        }
+        dates.insert(*date);
+    }
+    let mut cursor = latest
+        .checked_sub_days(chrono::Days::new(CALENDAR_DAYS - 1))
+        .unwrap_or(NaiveDate::MIN)
+        .max(earliest);
+    loop {
+        if !keep_reading() {
+            return UsageLedger::empty();
+        }
+        dates.insert(cursor);
+        if cursor == latest {
+            break;
+        }
         let Some(next) = cursor.succ_opt() else { break };
         cursor = next;
+    }
+
+    let mut days: Vec<LedgerDay> = Vec::new();
+    for date in dates {
+        if !keep_reading() {
+            return UsageLedger::empty();
+        }
+        days.push(LedgerDay {
+            date,
+            tokens: day_tokens.remove(&date).unwrap_or(0),
+            cost: day_cost.remove(&date).unwrap_or(0.0),
+            unpriced_tokens: day_unpriced.remove(&date).unwrap_or(0),
+            models: day_models.remove(&date).unwrap_or_default(),
+            tally: day_tally.remove(&date).unwrap_or_default(),
+            model_tallies: day_model_tallies.remove(&date).unwrap_or_default(),
+            model_costs: day_model_costs.remove(&date).unwrap_or_default(),
+        });
     }
 
     slots.sort_by_key(|slot| slot.start_ms);
@@ -5703,6 +5750,162 @@ mod tests {
         let (tokens, cost) = ledger.all_time();
         assert_eq!(tokens, 4_000_500);
         assert!((cost - 18.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pricing_keeps_centuries_of_recorded_work_without_expanding_the_gap() {
+        let buckets = BTreeMap::from([
+            (
+                "1970-01-01 12:00".into(),
+                BTreeMap::from([(
+                    "known".into(),
+                    TokenTally {
+                        input: 1_000_000,
+                        cache_read: 2_000_000,
+                        output: 1_000_000,
+                        ..Default::default()
+                    },
+                )]),
+            ),
+            (
+                "9999-01-01 12:00".into(),
+                BTreeMap::from([(
+                    "unknown".into(),
+                    TokenTally {
+                        output: 37,
+                        ..Default::default()
+                    },
+                )]),
+            ),
+        ]);
+        let prices = BTreeMap::from([("known".into(), price(3.0, 15.0, Some(0.3)))]);
+        let ledger = priced(&buckets, &prices, None);
+        assert_eq!(ledger.days.len(), 367);
+        assert_eq!(ledger.earliest, NaiveDate::from_ymd_opt(1970, 1, 1));
+        assert_eq!(ledger.slots.len(), 2);
+        assert_eq!(ledger.unpriced_models, ["unknown"]);
+        assert!(
+            !ledger.has_partial_records,
+            "no recorded counts were dropped"
+        );
+        assert_eq!(ledger.all_time().0, 4_000_037);
+        assert!((ledger.all_time().1 - 18.6).abs() < 1e-9);
+        let first = &ledger.days[0];
+        assert_eq!(first.tally.cache_read, 2_000_000);
+        assert_eq!(first.model_tallies["known"].total(), 4_000_000);
+        assert!((first.model_costs["known"].total() - 18.6).abs() < 1e-9);
+        let last = ledger.days.last().unwrap();
+        assert_eq!(last.unpriced_tokens, 37);
+        assert_eq!(last.models["unknown"], 37);
+        assert!(ledger.days[1..366].iter().all(|day| day.tokens == 0));
+    }
+
+    #[test]
+    fn recent_windows_count_calendar_days_even_when_old_history_is_sparse() {
+        let latest = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let old = latest - chrono::Days::new(500);
+        let buckets = [old, latest]
+            .into_iter()
+            .map(|date| {
+                (
+                    format!("{date} 12:00"),
+                    BTreeMap::from([(
+                        "unknown".into(),
+                        TokenTally {
+                            input: 10,
+                            ..Default::default()
+                        },
+                    )]),
+                )
+            })
+            .collect();
+        let ledger = priced(&buckets, &BTreeMap::new(), None);
+        assert_eq!(ledger.days.len(), 367);
+        assert_eq!(ledger.recent(7).len(), 7);
+        assert_eq!(ledger.total_over_last(400).0, 10);
+        assert_eq!(ledger.total_over_last(501).0, 20);
+        assert!(ledger.recent(0).is_empty());
+        assert_eq!(ledger.recent(usize::MAX), ledger.days);
+    }
+
+    #[test]
+    fn pricing_still_fills_short_quiet_gaps() {
+        let buckets = ["2026-10-01 12:00", "2026-10-03 12:00"]
+            .into_iter()
+            .map(|date| {
+                (
+                    date.into(),
+                    BTreeMap::from([(
+                        "m".into(),
+                        TokenTally {
+                            input: 10,
+                            ..Default::default()
+                        },
+                    )]),
+                )
+            })
+            .collect();
+        let ledger = priced(&buckets, &BTreeMap::new(), None);
+        assert_eq!(
+            ledger.days.iter().map(|day| day.tokens).collect::<Vec<_>>(),
+            [10, 0, 10]
+        );
+        assert_eq!(
+            ledger.days[1].date,
+            NaiveDate::from_ymd_opt(2026, 10, 2).unwrap()
+        );
+    }
+
+    #[test]
+    fn future_records_do_not_hide_todays_work() {
+        let today = Local::now().date_naive();
+        let later = today + chrono::Days::new(700);
+        let buckets = [today, later]
+            .into_iter()
+            .map(|date| {
+                (
+                    format!("{date} 12:00"),
+                    BTreeMap::from([(
+                        "m".into(),
+                        TokenTally {
+                            input: 17,
+                            ..Default::default()
+                        },
+                    )]),
+                )
+            })
+            .collect();
+        let ledger = priced(&buckets, &BTreeMap::new(), None);
+        assert_eq!(ledger.today().unwrap().tokens, 17);
+    }
+
+    #[test]
+    fn cancellation_during_calendar_expansion_returns_no_half_ledger() {
+        let buckets = ["1970-01-01 12:00", "9999-01-01 12:00"]
+            .into_iter()
+            .map(|date| {
+                (
+                    date.into(),
+                    BTreeMap::from([(
+                        "m".into(),
+                        TokenTally {
+                            input: 10,
+                            ..Default::default()
+                        },
+                    )]),
+                )
+            })
+            .collect();
+        // Cancel while planning dates and again after output rows have begun.
+        for limit in [20, 380] {
+            let mut calls = 0;
+            let cancelled = price_buckets(&buckets, &BTreeMap::new(), None, || {
+                calls += 1;
+                calls < limit
+            });
+            assert_eq!(calls, limit);
+            assert_eq!(cancelled, UsageLedger::empty());
+        }
     }
 
     #[test]

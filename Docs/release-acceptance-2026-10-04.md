@@ -2,14 +2,14 @@
 
 日期：2026-10-04（Asia/Shanghai）。功能基线：`3c69d2f`，包含 N1 性能、N2 DeepSeek 官网历史、N3 Codex 本地线索及 N4a DSH 解压；R1 自动化与文档基线为 `ef9292d`。
 
-本页承接[公开开发计划](next-upstream-plan-2026-10-04.md)，将后续工作拆成可独立验收的任务。R1 自动化与文档已完成，N4b 的原生读取、缓存、冻结样本和 Debug UI 已通过；R1d 的 Release Token 页也通过 dcaa37c 的 CI。标准导入的计数与零值覆盖修复已随 `53bd960` 通过整仓、隔离 UI 与 Release CI；统一导入资源上限随 `f08ee5a` 通过本地检查及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37188857492)。浏览器回退副本已实现独立目录、复制失败即停与作用域清理，整仓 737 passed / 6 ignored；该批 Release CI 随提交单独核对。下一项是限制账本空白日期展开并支持取消。真实账户、升级和多 DPI 交互仍各自保留验收状态。
+本页承接[公开开发计划](next-upstream-plan-2026-10-04.md)，将后续工作拆成可独立验收的任务。R1 自动化与文档已完成，N4b 的原生读取、缓存、冻结样本和 Debug UI 已通过；R1d 的 Release Token 页也通过 dcaa37c 的 CI。标准导入的计数与零值覆盖修复已随 `53bd960` 通过整仓、隔离 UI 与 Release CI；统一导入资源上限随 `f08ee5a` 通过本地检查及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37188857492)。浏览器回退副本随 `3e95c23` 通过 737 项本地测试及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37190912782)。账本空白日期现仅补齐最新 366 天，所有实际记录保留，日期规划/输出支持取消；整仓 744 passed / 6 ignored、隔离 Debug UI 通过。该批 Release CI 单独核对后，下一项是将 ZCode 缓存签名读取限制到固定数据库/WAL 头部。真实账户、升级和多 DPI 交互仍各自保留验收状态。
 
 ## 1. 当前基线与这轮交付
 
 | 项目 | 当前证据 | 能证明什么 |
 |---|---|---|
 | 功能基线 | `3c69d2f` 汇总 N1/N2/N3/N4a | 主线功能已汇总；发布状态另行记录 |
-| 本地源码回归 | 706 passed / 6 ignored；fmt、普通 Clippy、Release 和 JSON CLI 均 exit 0 | 当前源码可构建，自动检查通过；Clippy 仍有告警 |
+| 功能基线源码回归 | 706 passed / 6 ignored；fmt、普通 Clippy、Release 和 JSON CLI 均 exit 0 | 对应 3c69d2f；后续改动分别复验，Clippy 仍有告警 |
 | main 原 CI | [37169814380](https://github.com/Lyx721188/QuotaScope/actions/runs/37169814380)，对应 `3c69d2f`，成功 | Release 构建、便携包设置窗口生命周期通过；原流程没有执行 EXE 的安装/卸载 |
 | DSH 独立复算 | 冻结字节的 Python 与 Rust 结果一致；缺 usage 保持 partial | 已检查样本可复算，不能代表所有历史文件完整 |
 | R1d / N4b CI | [37184221991](https://github.com/Lyx721188/QuotaScope/actions/runs/37184221991)，对应 `dcaa37c`，成功 | 两个 Token 脚本均 Passed、使用相同 Release EXE SHA；只证明隔离合成账户 |
@@ -103,7 +103,7 @@ N4b-1 至 N4b-4 已完成：ZCode 3.14.4 的归一化 SQLite 用量格式、18 �
 1. 已完成：CI 安装/卸载验收、ZIP 许可证与入口文档，`ef9292d` 的 Windows CI 成功。
 2. 已完成：ZCode 格式记录、纯解析及只读 SQLite。
 3. 已完成：ZCode 扫描/缓存/Debug UI 与独立复算；35/19 支持数已更新。Release Token 页由 dcaa37c 的 CI 通过。
-4. 标准导入的计数、时间与零值覆盖已随 53bd960 验证；导入资源上限和 JSON 数组流已随 f08ee5a 通过整仓、Debug UI 与 Release CI。浏览器回退副本隔离及清理已通过本地 737 项测试，规则见[浏览器读取说明](providers/windows-browser-cookie-read.md)。核对该批 CI 后，处理账本异常日期跨度与取消，再推进 DeepSeek 与 Kiro 每个服务商各一批验收/修复；需要登录的缺口独立记录。
+4. 标准导入、导入资源上限、浏览器回退副本分别随 53bd960、f08ee5a、3e95c23 完成整仓及 Release CI。日期展开与取消已通过本地 744 项测试及隔离 Debug UI，规则见[日期范围](providers/windows-ledger-calendar.md)。核对该批 Release CI 后，缩小 ZCode 缓存签名的读取范围，再推进 DeepSeek 与 Kiro 每个服务商各一批验收/修复；需要登录的缺口独立记录。
 5. 按实际优先级推进多账户与交互；正式发布时单独完成版本/tag/包的一致性。
 
 每次交接至少包含：分支/commit、改动行为、验证命令和退出码、程序与包哈希、真实账户与桌面各自状态、未解决问题、唯一下一项。原始日志与个人交接放 `windows/target/` 或 `work/`；只提交脱敏结论和合成 fixture。
