@@ -1,0 +1,47 @@
+{
+  "summary": {
+    "affected_components": [],
+    "structure": {
+      "items": [
+        {
+          "group": {
+            "id": "01KMKF9EBTCD8BN9PG8DJZXRSQ",
+            "name": "Codex",
+            "display_aggregated_uptime": true,
+            "hidden": false,
+            "components": [
+              {
+                "component_id": "01JVCV8YSWZFRSM1G5CVP253SK",
+                "display_uptime": true,
+                "name": "Codex Web",
+                "hidden": false,
+                "data_available_since": "2025-05-16T15:26:46.075Z"
+              },
+              {
+                "component_id": "01KMP3KP5MGE23B80K1EK4S8PV",
+                "display_uptime": true,
+                "name": "Codex API",
+                "hidden": false,
+                "data_available_since": "2026-03-26T22:18:01.779Z"
+              },
+              {
+                "component_id": "01KMKFAMWKNQ84Z1766MV08ZDE",
+                "display_uptime": true,
+                "name": "CLI",
+                "hidden": false,
+                "data_available_since": "2026-03-25T21:45:05.171Z"
+              },
+              {
+                "component_id": "01KMP3KP5M8X0EBTVW6KN327EE",
+                "display_uptime": true,
+                "name": "VS Code extension",
+                "hidden": false,
+                "data_available_since": "2026-03-26T22:18:01.779Z"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

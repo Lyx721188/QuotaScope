@@ -83,6 +83,8 @@ pub struct AppSettings {
     pub alert_threshold: i64,
     pub alerts_on_reset: bool,
     pub alerts_on_failure: bool,
+    /// Independent public service-status monitor; no quota alerts enabled.
+    pub alerts_on_outage: bool,
     /// Account id -> balance floor for the low-balance warning.
     pub low_balance_alerts: HashMap<String, f64>,
     // --- DeepSeek's basis: the ring's denominator is a choice. ---
@@ -150,6 +152,7 @@ impl Default for AppSettings {
             alert_threshold: 75,
             alerts_on_reset: false,
             alerts_on_failure: false,
+            alerts_on_outage: false,
             low_balance_alerts: HashMap::new(),
             deepseek_basis: "sinceTopUp".into(),
             deepseek_budget: None,

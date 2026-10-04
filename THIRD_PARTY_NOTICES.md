@@ -1,5 +1,13 @@
 # Third-Party Notices
 
+The official service-status readers and outage-transition rules are adapted
+from Pulse 1.7.2, commit `b570dd7`, Copyright (c) 2026 qunqin24,
+Apache License 2.0: `Sources/Pulse/Providers/ServiceStatus.swift`,
+`Sources/Pulse/Usage/OutageMemory.swift` and their tests. The Windows status
+fixtures preserve only public page data from Pulse's 2026-10-04 captures.
+Source: <https://github.com/qunqin24/Pulse>. Windows adds bounded reads,
+shared request cooldown and an independent tray-notification setting.
+
 The Kiro Windows provider and ACP handshake are adapted from Pulse by
 qunqin24, Copyright (c) 2026 qunqin24, under Apache License 2.0:
 `Sources/Pulse/Providers/KiroUsageService.swift` and `KiroACPClient.swift` at

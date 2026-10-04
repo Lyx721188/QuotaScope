@@ -7,6 +7,8 @@ inherited macOS history and do not establish Windows feature availability.
 
 ## Unreleased (Windows)
 
+- **Official service status.** Expanded Codex, Claude Code and DeepSeek accounts show their official public component status, check time and an explicit unreadable state. Optional service outage notifications are independent from quota alerts, watch enabled providers every five minutes and persist outage/worsening/recovery deduplication. Pane and monitor share bounded public requests without sending account credentials. See [the status-page rules](Docs/providers/windows-service-status.md).
+
 - **Faster local Token views.** Price lookups reuse an indexed snapshot, unchanged transcript caches keep their files untouched, and filtering runs in a cancellable background worker. Cache timestamps retain exact nanoseconds across restarts.
 - **DeepSeek console history.** Explicitly imported console sessions provide account history and a balance fallback without an API key. Console credentials and caches are isolated per account; actual charges retain their reported currency, while missing amounts remain unknown.
 - **Codex local clues.** The account details show recorded request-setting differences separately from an empirical distribution clue, with sample counts, rule version, cancellation and incomplete-record indicators. These records do not establish which model the server actually ran.

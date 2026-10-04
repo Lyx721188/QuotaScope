@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use quotascope_core::model::{Provider, ProviderUsage, State};
+use quotascope_core::service_status::{
+    OutageMemory, Page as StatusPage, ReadError as ServiceError, Reading as ServiceReading,
+};
 use quotascope_core::store::{Command, StoreHandle, Update};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -38,6 +41,7 @@ pub enum AppMsg {
     ),
     CodexDetails(u64, quotascope_core::codex_account::AccountDetails),
     UpdateChecked(bool, quotascope_core::updates::CheckResult),
+    ServiceChecked(u64, Vec<(StatusPage, Result<ServiceReading, ServiceError>)>),
 }
 
 pub struct App {
@@ -70,6 +74,11 @@ pub struct App {
     codex_details_at: Option<std::time::Instant>,
     update_check_running: bool,
     update_notified: Option<String>,
+    outage_memory: OutageMemory,
+    outage_pages: std::collections::HashSet<StatusPage>,
+    outage_generation: u64,
+    outage_running: bool,
+    outage_at: Option<std::time::Instant>,
     maintenance_at: std::time::Instant,
 }
 
@@ -219,6 +228,13 @@ impl App {
             codex_details_at: None,
             update_check_running: false,
             update_notified: None,
+            outage_memory: OutageMemory::load(
+                &quotascope_core::data_dir().join("status-alerts.json"),
+            ),
+            outage_pages: Default::default(),
+            outage_generation: 0,
+            outage_running: false,
+            outage_at: None,
             maintenance_at: std::time::Instant::now(),
         };
 
@@ -329,6 +345,30 @@ impl App {
                         }
                     }
                     self.settings.set_update_status(UpdateStatus::Done(result));
+                }
+                AppMsg::ServiceChecked(generation, results) => {
+                    self.outage_running = false;
+                    // Reconcile switches before considering a late result.
+                    self.sync_outage_pages();
+                    if generation == self.outage_generation {
+                        for (page, result) in results {
+                            if !self.outage_pages.contains(&page) {
+                                continue;
+                            }
+                            let Ok(reading) = result else { continue };
+                            let before = self.outage_memory.clone();
+                            let change = self.outage_memory.changes(page, &reading.components);
+                            if before != self.outage_memory {
+                                self.outage_memory
+                                    .save(&quotascope_core::data_dir().join("status-alerts.json"));
+                            }
+                            if !change.is_empty() {
+                                let (title, body) = change.notification_text(page);
+                                self.tray
+                                    .show_balloon(&title, &body, !change.worse.is_empty());
+                            }
+                        }
+                    }
                 }
                 AppMsg::DeviceFlowDone(result) => match result {
                     Ok(token) => {
@@ -534,6 +574,57 @@ impl App {
             }));
         }
         self.check_updates(false);
+        self.maybe_check_services();
+    }
+
+    fn sync_outage_pages(&mut self) {
+        let pages = quotascope_core::settings::with(quotascope_core::service_status::watched_pages);
+        if pages != self.outage_pages {
+            self.outage_generation = self.outage_generation.wrapping_add(1);
+            self.outage_at = None;
+            self.outage_pages = pages;
+        }
+        // Also prune disk-restored pages on the very first launch, even when
+        // both the current and initial watched sets are empty.
+        let before = self.outage_memory.clone();
+        self.outage_memory.keep_only(&self.outage_pages);
+        if before != self.outage_memory {
+            self.outage_memory
+                .save(&quotascope_core::data_dir().join("status-alerts.json"));
+        }
+    }
+
+    fn maybe_check_services(&mut self) {
+        self.sync_outage_pages();
+        if self.outage_running
+            || self.outage_pages.is_empty()
+            || self
+                .outage_at
+                .is_some_and(|at| at.elapsed() < quotascope_core::service_status::CHECK_INTERVAL)
+        {
+            return;
+        }
+        self.outage_running = true;
+        self.outage_at = Some(std::time::Instant::now());
+        let generation = self.outage_generation;
+        let pages: Vec<_> = StatusPage::ALL
+            .into_iter()
+            .filter(|page| self.outage_pages.contains(page))
+            .collect();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let results = pages
+                .into_iter()
+                .map(|page| {
+                    let result = std::panic::catch_unwind(|| {
+                        quotascope_core::service_status::read(page, false)
+                    })
+                    .unwrap_or(Err(ServiceError::Unreadable));
+                    (page, result)
+                })
+                .collect();
+            let _ = tx.send(AppMsg::ServiceChecked(generation, results));
+        });
     }
 
     fn check_updates(&mut self, manual: bool) {

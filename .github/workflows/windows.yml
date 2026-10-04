@@ -157,7 +157,7 @@ jobs:
 
       # Run against the actual portable Release payload on the runner's own
       # desktop. All databases, transcripts, prices and profiles are synthetic.
-      - name: Release Token page regression
+      - name: Release Token and service-status page regression
         shell: pwsh
         run: |
           $executable = Join-Path $env:RUNNER_TEMP 'quotascope-package-smoke/quotascope.exe'
@@ -165,6 +165,7 @@ jobs:
           ./quotascope-win/tests/dsh_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
           ./quotascope-win/tests/zcode_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
           ./quotascope-win/tests/codex_signals_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
+          ./quotascope-win/tests/service_status_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
 
       - name: Upload synthetic Token validation evidence
         if: always()

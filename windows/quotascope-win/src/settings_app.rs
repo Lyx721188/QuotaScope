@@ -69,6 +69,42 @@ struct SettingsSnapshot {
     account_detail_generation: u64,
     codex_signals: crate::codex_signal_state::State,
     console_operations: HashMap<String, ConsoleOperation>,
+    service_status: HashMap<quotascope_core::service_status::Page, ServiceStatusState>,
+}
+
+#[derive(Default)]
+struct ServiceStatusState {
+    generation: u64,
+    running: bool,
+    attempted: Option<std::time::Instant>,
+    reading: Option<quotascope_core::service_status::Reading>,
+    failed: bool,
+}
+
+impl ServiceStatusState {
+    fn release(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.attempted = None;
+        self.reading = None;
+        self.failed = false;
+    }
+    fn complete(
+        &mut self,
+        generation: u64,
+        visible: bool,
+        result: Result<
+            quotascope_core::service_status::Reading,
+            quotascope_core::service_status::ReadError,
+        >,
+    ) {
+        self.running = false;
+        if self.generation == generation && visible {
+            self.failed = result.is_err();
+            if let Ok(reading) = result {
+                self.reading = Some(reading);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -202,6 +238,53 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    fn request_service_status(
+        self: &Arc<Self>,
+        page: quotascope_core::service_status::Page,
+        force: bool,
+    ) {
+        if !self.alive.load(Ordering::SeqCst) {
+            return;
+        }
+        let generation = {
+            let mut state = self.snapshot.lock().unwrap();
+            let status = state.service_status.entry(page).or_default();
+            if status.running
+                || (!force
+                    && status.attempted.is_some_and(|at| {
+                        at.elapsed() < quotascope_core::service_status::CHECK_INTERVAL
+                    }))
+            {
+                return;
+            }
+            status.running = true;
+            status.attempted = Some(std::time::Instant::now());
+            let generation = status.generation;
+            state.generation = state.generation.wrapping_add(1);
+            generation
+        };
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            let result =
+                std::panic::catch_unwind(|| quotascope_core::service_status::read(page, force))
+                    .unwrap_or(Err(quotascope_core::service_status::ReadError::Unreadable));
+            let mut state = shared.snapshot.lock().unwrap();
+            let status = state.service_status.entry(page).or_default();
+            status.complete(generation, shared.alive.load(Ordering::SeqCst), result);
+            state.generation = state.generation.wrapping_add(1);
+        });
+    }
+
+    fn release_service_status(&self, page: Option<quotascope_core::service_status::Page>) {
+        let mut state = self.snapshot.lock().unwrap();
+        for (key, status) in &mut state.service_status {
+            if page.is_none_or(|page| page == *key) {
+                status.release();
+            }
+        }
+        state.generation = state.generation.wrapping_add(1);
+    }
+
     fn change_deepseek_console(
         self: &Arc<Self>,
         account: quotascope_core::model::AccountKey,
@@ -306,6 +389,7 @@ impl Shared {
         state.generation += 1;
     }
     fn release_account_details(&self) {
+        self.release_service_status(None);
         let mut state = self.snapshot.lock().unwrap();
         for control in state.account_detail_controls.values() {
             control.cancel();
@@ -1050,6 +1134,7 @@ enum ToggleKey {
     Alerts,
     AlertReset,
     AlertFailure,
+    AlertOutage,
     CheckUpdates,
 }
 
@@ -1082,6 +1167,8 @@ enum Message {
     ToggleEnabled(usize, bool),
     ExpandAccount(usize),
     RefreshAccountDetails(usize),
+    ServiceStatusRefresh(quotascope_core::service_status::Page),
+    ServiceStatusOpen(quotascope_core::service_status::Page),
     SignalPeriod(Option<usize>),
     SignalRefresh,
     SignalCancel,
@@ -1244,6 +1331,7 @@ impl Component for SettingsApp {
                     self.keys.clear();
                 }
                 self.status = self.shared.read_status();
+                self.refresh_visible_service_status();
             }
             Message::Nav(tag) => {
                 let previous = self.page;
@@ -1261,6 +1349,7 @@ impl Component for SettingsApp {
                     self.shared
                         .request_maintenance(MaintenanceOperation::Inspect);
                 }
+                self.refresh_visible_service_status();
                 self.revealed_keys.clear();
             }
             Message::SpendRefresh => self.shared.request_spend(true),
@@ -1332,6 +1421,13 @@ impl Component for SettingsApp {
                 if !self.expanded_accounts.insert(index) {
                     self.expanded_accounts.remove(&index);
                     self.revealed_keys.remove(&index);
+                    if let Some(page) = all_providers()
+                        .get(index)
+                        .copied()
+                        .and_then(quotascope_core::service_status::Page::for_provider)
+                    {
+                        self.shared.release_service_status(Some(page));
+                    }
                     if all_providers().get(index) == Some(&Provider::Codex) {
                         let mut state = self.shared.snapshot.lock().unwrap();
                         state.codex_signals.release();
@@ -1339,8 +1435,17 @@ impl Component for SettingsApp {
                     }
                 } else if let Some(provider) = all_providers().get(index) {
                     self.shared.request_account_details(*provider, false);
+                    if let Some(page) =
+                        quotascope_core::service_status::Page::for_provider(*provider)
+                    {
+                        self.shared.request_service_status(page, false);
+                    }
                 }
             }
+            Message::ServiceStatusRefresh(page) => self.shared.request_service_status(page, true),
+            Message::ServiceStatusOpen(page) => self
+                .shared
+                .send(SettingsAction::OpenUrl(page.address().into())),
             Message::RefreshAccountDetails(index) => {
                 if let Some(provider) = all_providers().get(index) {
                     self.shared.request_account_details(*provider, true);
@@ -1391,6 +1496,12 @@ impl Component for SettingsApp {
                     state.codex_signals.release();
                     state.generation = state.generation.wrapping_add(1);
                 }
+                for page in quotascope_core::service_status::Page::ALL {
+                    if !self.service_status_visible(page) {
+                        self.shared.release_service_status(Some(page));
+                    }
+                }
+                self.refresh_visible_service_status();
             }
             Message::RevealKey(index, on) => {
                 if on {
@@ -1991,6 +2102,30 @@ fn section(text: &str) -> TextBlock {
 }
 
 impl SettingsApp {
+    fn service_status_visible(&self, page: quotascope_core::service_status::Page) -> bool {
+        if self.page != Page::Accounts || !self.shared.alive.load(Ordering::SeqCst) {
+            return false;
+        }
+        let query = self.search.trim().to_lowercase();
+        self.expanded_accounts
+            .iter()
+            .any(|index| all_providers().get(*index) == Some(&page.provider()))
+            && (page
+                .provider()
+                .display_name()
+                .to_lowercase()
+                .contains(&query)
+                || page.provider().raw().to_lowercase().contains(&query))
+    }
+
+    fn refresh_visible_service_status(&self) {
+        for page in quotascope_core::service_status::Page::ALL {
+            if self.service_status_visible(page) {
+                self.shared.request_service_status(page, false);
+            }
+        }
+    }
+
     fn spend_models(&self) -> Vec<String> {
         let state = self.shared.snapshot.lock().unwrap();
         let Some(snapshot) = state.spend.as_ref() else {
@@ -2730,6 +2865,8 @@ impl SettingsApp {
                     || watcher.show_requested.load(Ordering::SeqCst)
                     || watcher.shutdown_requested.load(Ordering::SeqCst)
                     || watcher.generation() != seen
+                    || (started.elapsed() >= quotascope_core::service_status::CHECK_INTERVAL
+                        && watcher.alive.load(Ordering::SeqCst))
                     || (started.elapsed() >= Duration::from_secs(1)
                         && watcher.alive.load(Ordering::SeqCst)
                         && quotascope_core::settings::with(|s| s.animated_bots))
@@ -2768,6 +2905,7 @@ impl SettingsApp {
             ToggleKey::Alerts => s.wants_alerts = value,
             ToggleKey::AlertReset => s.alerts_on_reset = value,
             ToggleKey::AlertFailure => s.alerts_on_failure = value,
+            ToggleKey::AlertOutage => s.alerts_on_outage = value,
             ToggleKey::CheckUpdates => s.checks_for_updates = value,
             ToggleKey::Startup => {}
         });
@@ -2934,6 +3072,7 @@ impl SettingsApp {
         self.aligned(
             label,
             ToggleSwitch::new()
+                .automation_name(quotascope_core::localization::t(label))
                 .is_on(on)
                 .on_toggled(context.callback(move |on| Message::Toggle(key, on)))
                 .into(),
@@ -3437,9 +3576,73 @@ impl SettingsApp {
                         View::empty()
                     },
                     self.account_details_view(index, provider, context),
-                ))
-                .into(),
+                    self.service_status_view(provider, context),
+                )),
         )
+    }
+
+    fn service_status_view(&self, provider: Provider, context: &ViewContext<Self>) -> View {
+        use quotascope_core::localization::{t, t_fmt};
+        use quotascope_core::service_status::{Page as StatusPage, State};
+        let Some(page) = StatusPage::for_provider(provider) else {
+            return View::empty();
+        };
+        let (reading, running, failed) = {
+            let state = self.shared.snapshot.lock().unwrap();
+            let status = state.service_status.get(&page);
+            (
+                status.and_then(|s| s.reading.clone()),
+                status.is_some_and(|s| s.running),
+                status.is_some_and(|s| s.failed),
+            )
+        };
+        let mut rows: Vec<(String, View)> = Vec::new();
+        if let Some(reading) = &reading {
+            for component in &reading.components {
+                let colour = match component.state {
+                    State::Operational => Color::rgb(46, 160, 97),
+                    State::Maintenance => Color::rgb(91, 143, 213),
+                    State::Degraded | State::PartialOutage => Color::rgb(200, 134, 35),
+                    State::FullOutage => Color::rgb(220, 67, 76),
+                    State::Unrecognised => Color::rgb(128, 128, 128),
+                };
+                rows.push((
+                    component.id.clone(),
+                    row((
+                        TextBlock::new()
+                            .text(&component.name)
+                            .text_wrapping(TextWrapping::Wrap),
+                        TextBlock::new()
+                            .text(component.state.title())
+                            .foreground(Brush::Solid(colour)),
+                    )),
+                ));
+            }
+        }
+        let feedback = if running {
+            t("Checking service status…")
+        } else if failed {
+            t("Couldn't read the status page. Any previous reading below is older; recovery is unconfirmed.")
+        } else if reading.is_none() {
+            t("No service status reading yet.")
+        } else {
+            ""
+        };
+        StackPanel::new().spacing(8.0).children((
+            heading("Service status"),
+            self.muted(&t_fmt("Published by {company}; separate from your account allowance.", &[page.company()])),
+            self.muted(feedback),
+            StackPanel::new().spacing(6.0).keyed_children(rows),
+            self.muted(&reading.as_ref().map(|r| t_fmt("Status checked: {time}",
+                &[&quotascope_core::timeutil::format_local_naive(r.checked_at)])).unwrap_or_default()),
+            row((
+                Button::new().is_enabled(!running).on_click(context.message(Message::ServiceStatusRefresh(page)))
+                    .content(t("Refresh service status")),
+                Button::new().on_click(context.message(Message::ServiceStatusOpen(page)))
+                    .content(t("Open official status page")),
+            )),
+            self.muted(t("Checked every five minutes while this section is open. Enable service outage notifications to watch enabled providers in the background.")),
+        ))
     }
 
     fn account_details_view(
@@ -3941,8 +4144,14 @@ impl SettingsApp {
                     context,
                 ),
                 follow_ups,
+                self.toggle(
+                    ToggleKey::AlertOutage,
+                    "when a provider service goes down or recovers",
+                    s.alerts_on_outage,
+                    context,
+                ),
+                self.muted(quotascope_core::localization::t("Service outage notifications use official public status pages and only watch enabled Codex, Claude Code and DeepSeek accounts. Quota alerts remain a separate switch.")),
             ))
-            .into()
     }
 
     fn maintenance_view(&self, context: &ViewContext<Self>) -> View {
@@ -4297,5 +4506,68 @@ mod tests {
         }
         assert_eq!(positive_or_empty(" 1.25 "), Ok(Some(1.25)));
         assert_eq!(positive_or_empty("  "), Ok(None));
+    }
+
+    #[test]
+    fn service_status_late_completion_after_leave_and_reopen_is_rejected() {
+        use quotascope_core::service_status::{Page, Reading};
+        let mut state = super::ServiceStatusState {
+            running: true,
+            ..Default::default()
+        };
+        let generation = state.generation;
+        state.release();
+        assert!(
+            state.running,
+            "reopening must wait for the bounded old worker"
+        );
+        state.complete(
+            generation,
+            true,
+            Ok(Reading {
+                page: Page::Codex,
+                checked_at: 1,
+                components: vec![],
+            }),
+        );
+        assert!(!state.running);
+        assert!(state.reading.is_none() && !state.failed);
+        state.running = true;
+        state.complete(
+            state.generation,
+            false,
+            Ok(Reading {
+                page: Page::Codex,
+                checked_at: 2,
+                components: vec![],
+            }),
+        );
+        assert!(state.reading.is_none());
+    }
+
+    #[test]
+    fn service_status_failed_retry_keeps_the_previous_timestamp_and_marks_it_old() {
+        use quotascope_core::service_status::{Page, ReadError, Reading};
+        let mut state = super::ServiceStatusState::default();
+        let reading = Reading {
+            page: Page::Claude,
+            checked_at: 11,
+            components: vec![],
+        };
+        state.complete(0, true, Ok(reading.clone()));
+        state.complete(0, true, Err(ReadError::Unreachable));
+        assert!(state.failed);
+        assert_eq!(state.reading, Some(reading));
+        state.complete(
+            0,
+            true,
+            Ok(Reading {
+                page: Page::Claude,
+                checked_at: 22,
+                components: vec![],
+            }),
+        );
+        assert!(!state.failed);
+        assert_eq!(state.reading.unwrap().checked_at, 22);
     }
 }

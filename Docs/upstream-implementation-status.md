@@ -2,6 +2,12 @@
 
 更新日期：2026-10-04。当前公开路线图见[下一轮计划](next-upstream-plan-2026-10-04.md)，依赖和验收标准见[实施任务](release-acceptance-2026-10-04.md)。
 
+第二轮新增上游参考：Pulse 1.7.2 `b570dd7`。Windows 已接入 Codex、Claude Code、DeepSeek 当前官方状态、独立故障通知开关及持久化去重，验证与范围见[服务状态说明](providers/windows-service-status.md)。官网约 90 天历史条与 uptime 数字尚未移植，不宣称该功能完全对齐。
+
+服务状态本地整仓 797 passed / 6 ignored、fmt、普通 Clippy（无新增诊断）及隔离 Debug UI 通过；Release CI 将在本批推送后独立核对。
+
+上一轮最终基线为 main `bd1f19d`：780 passed / 6 ignored，[Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37200397474) 成功，同一程序的三个隔离 UI 验收均通过。下方“CI 尚待核对”属于早期记录，已由本条更新。
+
 原生会话发现已增加 64 层、10 万目录项、1 万 JSONL 和 8 MiB 估计路径容量上限，缺口每次重新核对。新增 7 项定向与整仓 773 passed / 6 ignored、fmt/普通 Clippy（无新增告警）通过；账户深层目录提示/修复与 40 万行（68,800,061 字节）的流式、续读、暖缓存、筛选及取消 Debug UI 通过。三个脚本使用相同程序；[34a454d 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37199456283) 已通过，三份 UI 使用同一 Release 程序。Claude 原生整数/文件容量/原子回复状态及缓存 6 已实现，新增 7 项回归、整仓 780 passed / 6 ignored、fmt/普通 Clippy（无新增告警）、扩展 Token Debug UI 的 150 Token 保留/提示/修复/筛选/新缓存/重开通过；对应提交的 Release CI 尚待核对。规则见 [Claude 本机计数](providers/windows-claude-local-counts.md)。缓存字段缺省的完整性仍需独立设计。规则见[原生会话发现](providers/windows-native-transcript-discovery.md)。
 
 ## main 新增能力（尚未发布）
