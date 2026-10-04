@@ -10,7 +10,7 @@
 | N2 DeepSeek | 实际费用携带币种；有界官网历史缓存、余额回退、异步浏览器导入/清除；凭据、续读和缓存按账户隔离 | 合成协议、HTTP、Windows DPAPI 与隔离 UI 通过；真实账户未验证，见[说明](providers/windows-deepseek-console.md) |
 | N3 Codex | 保守比较设置/请求参数；有界、可取消 facts reader；主账户展开页显示时段、规则、分母、不可判断与缺口 | parser/worker/隔离 UI 通过；不证明服务端实际运行模型，见[说明](providers/windows-codex-signals.md) |
 | N4a DSH | 按 magic 流式解压 Zstandard 与拼接帧；原始/解码字节、单行和窗口有界；损坏、缺计数、变动保留 partial | 纯解析、取消、隔离 UI、冻结样本独立复算通过；不代表全部历史完整，见[说明](providers/windows-dsh-local-usage.md) |
-| N4b ZCode | 固定 SQLite 用量表；归一化输入含缓存、输出含 reasoning；WAL/索引/取消及内存缓存有界 | 16 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；Release UI 加入 CI，见[说明](providers/windows-zcode-local-usage.md) |
+| N4b ZCode | 固定 SQLite 用量表；归一化输入含缓存、输出含 reasoning；WAL/索引/取消及内存缓存有界 | 18 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；Release UI 加入 CI，见[说明](providers/windows-zcode-local-usage.md) |
 | R1 自动化 | ZIP 许可证与哈希；相同 Release payload 的独立身份安装、托盘/设置生命周期、卸载；失败日志保留 | [ef9292d 的 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671) 成功；原 AppId 升级、Release Token 页、真实账户、多 DPI 人工验收仍分别待完成 |
 
 新增功能的源码基线回归为 706 passed / 6 ignored，fmt、普通 Clippy、Release 和 JSON CLI 完成；已有 Clippy 告警仍存在。每次后续改动以对应 commit 的检查为准。

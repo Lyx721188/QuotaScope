@@ -230,9 +230,40 @@ impl Stamp {
     }
 }
 
+/// The first two 48-byte copies in SQLite's standard WAL index contain the
+/// commit counter and last committed frame checksum. The following read marks
+/// and locks are volatile reader state and must not invalidate cached counts.
+fn wal_index_head(path: &Path) -> Option<[u8; 48]> {
+    let path = path.with_file_name(format!("{}-shm", path.file_name()?.to_str()?));
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 {
+            return None;
+        }
+    }
+    let mut header = [0_u8; 96];
+    std::fs::File::open(path)
+        .ok()?
+        .read_exact(&mut header)
+        .ok()?;
+    if header[..48] != header[48..]
+        || header[12] != 1
+        || u32::from_ne_bytes(header[..4].try_into().ok()?) != 3_007_000
+    {
+        return None;
+    }
+    header[..48].try_into().ok()
+}
+
 struct Kept {
     path: PathBuf,
     stamp: Stamp,
+    wal_head: Option<[u8; 48]>,
     offset: i32,
     algorithm: &'static str,
     report: Arc<Report>,
@@ -289,12 +320,21 @@ impl Reader {
             };
         }
         let stamp = Stamp::of(path);
+        let wal_head = stamp
+            .as_ref()
+            .filter(|s| s.wal.is_some())
+            .and_then(|_| wal_index_head(path));
+        let can_cache = stamp
+            .as_ref()
+            .is_some_and(|s| s.wal.is_none() || wal_head.is_some());
         let offset = chrono::Local::now().offset().local_minus_utc();
         let generation = {
             let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(kept) = memory.kept.as_mut().filter(|k| {
                 k.path == path
+                    && can_cache
                     && Some(&k.stamp) == stamp.as_ref()
+                    && k.wal_head == wal_head
                     && k.offset == offset
                     && k.algorithm == ALGORITHM
                     && k.used.elapsed() < CACHE_TTL
@@ -311,13 +351,19 @@ impl Reader {
             memory.generation
         };
         let report = Arc::new(read_counts(path));
-        if report.complete && crate::scan::checkpoint() && Stamp::of(path) == stamp {
+        if can_cache
+            && report.complete
+            && crate::scan::checkpoint()
+            && Stamp::of(path) == stamp
+            && (wal_head.is_none() || wal_index_head(path) == wal_head)
+        {
             if let Some(stamp) = stamp.filter(|s| s.database.identity.is_some()) {
                 let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
                 if memory.generation == generation && crate::scan::checkpoint() {
                     memory.kept = Some(Kept {
                         path: path.to_path_buf(),
                         stamp,
+                        wal_head,
                         offset,
                         algorithm: ALGORITHM,
                         report: report.clone(),
@@ -373,6 +419,7 @@ fn read_limited(path: &Path, maximum_rows: usize) -> Report {
         report.partial = path.try_exists().unwrap_or(true);
         return report;
     };
+    let wal_before = before.wal.as_ref().and_then(|_| wal_index_head(path));
     if !crate::scan::checkpoint() {
         report.partial = true;
         return report;
@@ -508,7 +555,10 @@ fn read_limited(path: &Path, maximum_rows: usize) -> Report {
             .or_default() += record.tally;
     }
     let after = Stamp::of(path);
-    if !crate::scan::checkpoint() || after.as_ref() != Some(&before) {
+    if !crate::scan::checkpoint()
+        || after.as_ref() != Some(&before)
+        || wal_before.is_some_and(|head| wal_index_head(path) != Some(head))
+    {
         report.partial = true;
         report.complete = false;
     }
@@ -655,28 +705,30 @@ mod tests {
             Connection::open(self.path()).unwrap()
         }
         fn insert(&self, row: Record) {
-            self.db()
-                .execute(
-                    "INSERT OR REPLACE INTO model_usage VALUES
+            Self::insert_in(&self.db(), row);
+        }
+        fn insert_in(db: &Connection, row: Record) {
+            db.execute(
+                "INSERT OR REPLACE INTO model_usage VALUES
                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-                    rusqlite::params![
-                        row.id,
-                        row.logical,
-                        row.attempt,
-                        row.model,
-                        row.status,
-                        row.at,
-                        row.input,
-                        row.output,
-                        row.reasoning,
-                        row.write,
-                        row.read,
-                        row.total,
-                        row.provider_total,
-                        row.raw
-                    ],
-                )
-                .unwrap();
+                rusqlite::params![
+                    row.id,
+                    row.logical,
+                    row.attempt,
+                    row.model,
+                    row.status,
+                    row.at,
+                    row.input,
+                    row.output,
+                    row.reasoning,
+                    row.write,
+                    row.read,
+                    row.total,
+                    row.provider_total,
+                    row.raw
+                ],
+            )
+            .unwrap();
         }
     }
     impl Drop for Fixture {
@@ -736,8 +788,15 @@ mod tests {
     fn committed_wal_rows_are_read_and_pre_cancelled_scans_publish_nothing() {
         let fixture = Fixture::new();
         let db = fixture.db();
-        db.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
-        fixture.insert(record());
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        Fixture::insert_in(&db, record());
+        assert!(
+            std::fs::metadata(fixture.0.join("db.sqlite-wal"))
+                .unwrap()
+                .len()
+                > 32
+        );
         assert_eq!(total(&read_counts(&fixture.path())), 120);
         let control = std::sync::Arc::new(crate::scan::Control::default());
         control.cancel();
@@ -844,21 +903,62 @@ mod tests {
     fn wal_changes_and_repaired_missing_usage_invalidate_even_partial_snapshots() {
         let fixture = Fixture::new();
         let db = fixture.db();
-        db.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        let main_before = std::fs::read(fixture.path()).unwrap();
         let mut missing = record();
         missing.raw = None;
-        fixture.insert(missing);
+        Fixture::insert_in(&db, missing);
         let reader = Reader::default();
         let first = reader.read(&fixture.path());
         assert!(first.report.partial && first.report.complete);
         assert!(reader.read(&fixture.path()).reused);
-        fixture.insert(record());
+        Fixture::insert_in(&db, record());
         let repaired = reader.read(&fixture.path());
         assert!(!repaired.reused);
         assert!(!repaired.report.partial);
         assert_eq!(total(&repaired.report), 120);
-        fixture.insert(changed_record());
+        Fixture::insert_in(&db, changed_record());
         assert_eq!(total(&reader.read(&fixture.path()).report), 220);
+        assert_eq!(std::fs::read(fixture.path()).unwrap(), main_before);
+    }
+
+    #[test]
+    fn empty_wal_sidecars_created_by_read_only_open_do_not_manufacture_a_gap() {
+        let fixture = Fixture::new();
+        let writer = fixture.db();
+        writer.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        fixture.insert(record());
+        let reader = Reader::default();
+        let first = reader.read(&fixture.path());
+        assert!(first.report.complete && !first.report.partial);
+        assert_eq!(total(&first.report), 120);
+        assert!(reader.read(&fixture.path()).reused);
+    }
+
+    #[test]
+    fn active_wal_commits_invalidate_preallocated_same_size_same_mtime_cache() {
+        let fixture = Fixture::new();
+        let writer = fixture.db();
+        writer
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        Fixture::insert_in(&writer, record());
+        let wal = fixture.0.join("db.sqlite-wal");
+        let file = std::fs::OpenOptions::new().write(true).open(&wal).unwrap();
+        file.set_len(8 * 1024 * 1024).unwrap();
+        let reader = Reader::default();
+        assert_eq!(total(&reader.read(&fixture.path()).report), 120);
+        assert!(reader.read(&fixture.path()).reused);
+        let before = Stamp::of(&fixture.path()).unwrap();
+        Fixture::insert_in(&writer, changed_record());
+        file.set_times(std::fs::FileTimes::new().set_modified(before.wal.unwrap().modified))
+            .unwrap();
+        assert_eq!(Stamp::of(&fixture.path()).unwrap(), before);
+        assert_eq!(total(&read_counts(&fixture.path())), 220);
+        let fresh = reader.read(&fixture.path());
+        assert!(!fresh.reused);
+        assert_eq!(total(&fresh.report), 220);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 | N2 DeepSeek 官网 | 近 30 个自然日的 Token 与实际账单，人民币/美元分别显示；官网会话导入、余额回退、账户隔离和刷新 | 合成协议、HTTP、DPAPI 与隔离 UI 已验证；真实账户同口径对照仍待完成，见[使用说明](providers/windows-deepseek-console.md) |
 | N3 Codex 线索 | 读取本地 rollout 中设置与请求参数的差异，并单独展示启发式线索、样本分母与不可判断项 | 有界可取消 reader 和隔离 UI 已验证；记录参数不证明服务端实际运行模型，见[使用说明](providers/windows-codex-signals.md) |
 | N4a DSH | 按 magic 选择有界 Zstandard 解压，支持拼接帧；缺计数、损坏、截断和变动传播 partial | 纯解析、取消、隔离 UI 和冻结样本独立复算已验证；仅计助手消息的已报告用量，见[使用说明](providers/windows-dsh-local-usage.md) |
-| N4b ZCode | 固定 SQLite `model_usage` 的归一化计数、只读 WAL 快照、有界扫描与内存缓存 | 16 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；[格式与边界](providers/windows-zcode-local-usage.md) |
+| N4b ZCode | 固定 SQLite `model_usage` 的归一化计数、只读 WAL 快照、有界扫描与内存缓存 | 18 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；[格式与边界](providers/windows-zcode-local-usage.md) |
 | R1 自动验收 | ZIP 携带许可证；CI 使用同一 Release payload 执行独立身份安装、托盘/设置生命周期和卸载 | [ef9292d 的 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671) 成功；不覆盖原 AppId 升级、正式 Token 页交互、真实账户或多 DPI 人工验收 |
 
 Windows 路由表有 77 项。Token 目录有 54 项，其中 35 项读取已知格式（含导出缓存），19 项只支持标准导入；ZCode 现在读取原生 SQLite 用量。目录注册不代表原生格式支持，Kiro 额度 ACP 支持也不代表其本地 Token 格式已支持。

@@ -44,7 +44,7 @@ R1b/R1c 使用 CI 独立桌面和隔离配置。EXE 验收使用独立身份的�
 
 ## 3. N4b：ZCode 原生用量读取
 
-N4b-1 至 N4b-4 已完成：ZCode 3.14.4 的归一化 SQLite 用量格式、16 项定向回归、缓存与扫描、冻结字段独立复算和隔离 Debug UI。详见[字段、上限及命令](providers/windows-zcode-local-usage.md)。源码整仓检查为 722 passed / 6 ignored，普通 Clippy 通过并保留旧告警。最终 Release UI 由本轮 CI 单独验收；不代表账户所有历史请求完整。下列任务卡保留验收规则。
+N4b-1 至 N4b-4 已完成：ZCode 3.14.4 的归一化 SQLite 用量格式、18 项定向回归、缓存与扫描、冻结字段独立复算和隔离 Debug UI。详见[字段、上限及命令](providers/windows-zcode-local-usage.md)。源码整仓检查为 724 passed / 6 ignored，普通 Clippy 通过并保留旧告警。最终 Release UI 由本轮 CI 单独验收；不代表账户所有历史请求完整。下列任务卡保留验收规则。
 
 ### N4b-1 格式取证
 
