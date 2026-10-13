@@ -40,9 +40,28 @@ pub struct TokenTally {
     pub output: i64,
 }
 
+/// The highest count one file can report in one kind. Both native readers cap
+/// their own files here, and the transcript archive refuses anything above it,
+/// so [`TokenTally::total`] and stored aggregates stay exact for any archive
+/// that can exist. Raising this is an archive-format decision: see the bounds
+/// test in `transcript_archive`.
+pub(crate) const MAX_STORED_COUNTER: i64 = 1_000_000_000_000;
+
 impl TokenTally {
+    /// Sums the four kinds. Stored counts are bounded so a measured total never
+    /// clamps, but an unvalidated figure must not wrap into a negative one.
     pub fn total(&self) -> i64 {
-        self.input + self.cache_write + self.cache_read + self.output
+        self.input
+            .saturating_add(self.cache_write)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.output)
+    }
+
+    /// Whether one file could have measured these kinds.
+    pub(crate) fn storable(&self) -> bool {
+        [self.input, self.cache_write, self.cache_read, self.output]
+            .iter()
+            .all(|count| (0..=MAX_STORED_COUNTER).contains(count))
     }
 
     /// Rates are per million tokens. A missing cache rate falls back to the
@@ -408,6 +427,13 @@ fn parse_iso8601(text: &str) -> Option<i64> {
         .map(|at| at.timestamp_millis())
 }
 
+/// Whether a stored slot key is exactly one this machine's own formatter
+/// writes: a real local quarter-hour. The archive is read back from disk, so a
+/// syntactically plausible key must not pass as measured history.
+pub(crate) fn canonical_slot_key(key: &str) -> bool {
+    slot_key_to_ms(key).is_some_and(|ms| slot_key_from_ms(ms) == key)
+}
+
 fn slot_key_to_ms(key: &str) -> Option<i64> {
     let naive: NaiveDateTime = NaiveDateTime::parse_from_str(key, "%Y-%m-%d %H:%M").ok()?;
     let at = naive
@@ -478,8 +504,9 @@ fn contains(line: &str, needle: &str) -> bool {
     line.contains(needle)
 }
 
-// Per-message and per-file field capacity, not a provider allowance.
-const MAX_CLAUDE_COUNTER: i64 = 1_000_000_000_000;
+// Per-message and per-file field capacity, not a provider allowance. It is
+// the archive's stored-kind ceiling too, so the two numbers move together.
+const MAX_CLAUDE_COUNTER: i64 = MAX_STORED_COUNTER;
 
 fn claude_tally(usage: &serde_json::Value) -> Option<TokenTally> {
     let usage = usage.as_object()?;
@@ -660,7 +687,7 @@ struct CodexState {
     previous: Option<[i64; 4]>,
 }
 
-const MAX_CODEX_COUNTER: i64 = 1_000_000_000_000;
+const MAX_CODEX_COUNTER: i64 = MAX_STORED_COUNTER;
 
 fn codex_totals(totals: &serde_json::Value) -> Option<[i64; 4]> {
     let totals = totals.as_object()?;
@@ -1533,9 +1560,80 @@ fn scan(provider: Provider) -> TranscriptScan {
     let Some(root) = transcript_root(provider) else {
         return TranscriptScan::default();
     };
-    let scanned = scan_cached(provider, &root, FileCache::load(provider));
+    let scanned = scan_archived_at(provider, &root, FileCache::load(provider), &data_dir());
     if scanned.changed {
         scanned.cache.save(provider);
+    }
+    scanned
+}
+
+/// Files the archive would not take are still this scan's measurements, so
+/// they are shown once here even though they cannot be kept. Nothing that was
+/// already stored is ever dropped for them.
+fn show_unstored(
+    archive: &mut crate::transcript_archive::Archive,
+    name: String,
+    entry: &CachedEntry,
+    unstored: &mut BTreeMap<String, crate::transcript_archive::Kept>,
+    incomplete: &mut bool,
+) {
+    use crate::transcript_archive::{Kept, Stored};
+    let kept = Kept {
+        days: entry.days.clone(),
+        partial: entry.partial,
+    };
+    let stored = archive.observe(name.clone(), kept.clone());
+    match stored {
+        Stored::Updated | Stored::Unchanged => {}
+        Stored::Rejected => {
+            *incomplete = true;
+            unstored.insert(name, kept);
+        }
+        Stored::PartialKept | Stored::Invalid => *incomplete = true,
+    }
+}
+
+fn scan_archived_at(
+    provider: Provider,
+    root: &Path,
+    cache: FileCache,
+    directory: &Path,
+) -> TranscriptScan {
+    use crate::transcript_archive::Archive;
+    let path = crate::transcript_archive::path(directory, provider, root);
+    let loaded = Archive::load(&path, root);
+    // Seed only this root's existing numbered parse cache on the first scan.
+    // This also retains a file deleted immediately before the upgrade.
+    let mut archive = loaded.as_ref().ok().cloned();
+    let original = archive.clone();
+    let mut unstored = BTreeMap::new();
+    let mut incomplete = false;
+    if let Some(archive) = &mut archive {
+        for (name, entry) in &cache.files {
+            if Path::new(name).starts_with(root) && !archive.files.contains_key(name) {
+                show_unstored(archive, name.clone(), entry, &mut unstored, &mut incomplete);
+            }
+        }
+    }
+    let mut scanned = scan_cached(provider, root, cache);
+    if !crate::scan::checkpoint() {
+        return scanned;
+    }
+    if let Some(archive) = &mut archive {
+        for (name, entry) in &scanned.cache.files {
+            show_unstored(archive, name.clone(), entry, &mut unstored, &mut incomplete);
+        }
+        let mut buckets = archive.buckets();
+        for kept in unstored.values() {
+            kept.add_into(&mut buckets);
+        }
+        scanned.buckets = buckets;
+        scanned.partial |= archive.files.values().any(|file| file.partial) || incomplete;
+        if original.as_ref() != Some(archive) && archive.save(&path).is_err() {
+            scanned.partial = true;
+        }
+    } else {
+        scanned.partial = true;
     }
     scanned
 }
@@ -5292,6 +5390,343 @@ mod tests {
             .flat_map(|models| models.values())
             .map(TokenTally::total)
             .sum()
+    }
+
+    #[test]
+    fn archived_transcripts_survive_deletion_cache_loss_and_reappearance() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("a.jsonl"), 1);
+        let directory = fixture.root.join("archive");
+        let first = scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert_eq!(discovered_total(&first), 155);
+        std::fs::remove_file(fixture.root.join("a.jsonl")).unwrap();
+        let missing = scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert_eq!(missing.buckets, first.buckets);
+        assert!(!missing.partial);
+        fixture.write(Path::new("a.jsonl"), 1);
+        assert_eq!(
+            discovered_total(&scan_archived_at(
+                Provider::Codex,
+                &fixture.root,
+                FileCache::default(),
+                &directory
+            )),
+            155
+        );
+        fixture.write(Path::new("b.jsonl"), 1);
+        assert_eq!(
+            discovered_total(&scan_archived_at(
+                Provider::Codex,
+                &fixture.root,
+                FileCache::default(),
+                &directory
+            )),
+            310
+        );
+        std::fs::remove_file(fixture.root.join("a.jsonl")).unwrap();
+        std::fs::remove_file(fixture.root.join("b.jsonl")).unwrap();
+        assert_eq!(
+            discovered_total(&scan_archived_at(
+                Provider::Codex,
+                &fixture.root,
+                FileCache::default(),
+                &directory
+            )),
+            310
+        );
+    }
+
+    #[test]
+    fn archived_claude_history_survives_deletion_and_a_restart() {
+        let fixture = DiscoveryFixture::new();
+        let line = claude_line("alpha", 100, 0, 20, 50, "2026-10-04T09:00:00Z", "one");
+        std::fs::write(fixture.root.join("claude.jsonl"), line).unwrap();
+        let directory = fixture.root.join("archive");
+        let first = scan_archived_at(
+            Provider::ClaudeCode,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert_eq!(discovered_total(&first), 170);
+        assert!(!first.partial);
+        std::fs::remove_file(fixture.root.join("claude.jsonl")).unwrap();
+        // A restart reads a fresh parse cache: losing the rebuildable cache
+        // must not lose the file's counts.
+        let restarted = scan_archived_at(
+            Provider::ClaudeCode,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert_eq!(restarted.buckets, first.buckets);
+        assert!(!restarted.partial);
+    }
+
+    #[test]
+    fn a_partial_reread_keeps_the_stored_read_and_never_blends_categories() {
+        let fixture = DiscoveryFixture::new();
+        let path = fixture.root.join("claude.jsonl");
+        std::fs::write(
+            &path,
+            claude_line("alpha", 100, 0, 0, 50, "2026-10-04T09:00:00Z", "one"),
+        )
+        .unwrap();
+        let directory = fixture.root.join("archive");
+        let first = scan_archived_at(
+            Provider::ClaudeCode,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert_eq!(discovered_total(&first), 150);
+
+        // The same path is rewritten while half-written: one fresh count and
+        // one usage row the parser cannot trust.
+        let good = claude_line("alpha", 40, 7, 0, 50, "2026-10-04T09:00:00Z", "two");
+        let broken = r#"{"type":"assistant","timestamp":"2026-10-04T09:00:30Z","message":{"id":"bad","model":"alpha","usage":{"input_tokens":"x","output_tokens":1}}}"#;
+        std::fs::write(&path, format!("{good}\n{broken}\n")).unwrap();
+        let partial = scan_archived_at(
+            Provider::ClaudeCode,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert!(partial.partial);
+        // The stored read is kept whole — (100, 0, 0, 50) — not a per-field
+        // blend like (100, 7, 0, 50) that no single read produced.
+        assert_eq!(discovered_total(&partial), 150);
+        let tally = partial
+            .buckets
+            .values()
+            .flat_map(|models| models.values())
+            .next()
+            .unwrap();
+        assert_eq!((tally.input, tally.cache_write, tally.output), (100, 0, 50));
+
+        // A complete reread afterwards replaces the stored observation.
+        std::fs::write(&path, good).unwrap();
+        let repaired = scan_archived_at(
+            Provider::ClaudeCode,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert!(!repaired.partial);
+        assert_eq!(discovered_total(&repaired), 97);
+        let tally = repaired
+            .buckets
+            .values()
+            .flat_map(|models| models.values())
+            .next()
+            .unwrap();
+        assert_eq!((tally.input, tally.cache_write, tally.output), (40, 7, 50));
+    }
+
+    #[test]
+    fn a_full_archive_keeps_stored_history_and_shows_the_files_it_could_not_take() {
+        use crate::transcript_archive::{Archive, Kept, MAX_FILES};
+        let fixture = DiscoveryFixture::new();
+        let directory = fixture.root.join("archive");
+        let path = crate::transcript_archive::path(&directory, Provider::Codex, &fixture.root);
+        let mut archive = Archive::empty(&fixture.root);
+        archive.files.insert(
+            fixture
+                .root
+                .join("deleted.jsonl")
+                .to_string_lossy()
+                .to_string(),
+            Kept {
+                days: BTreeMap::from([(
+                    "2026-10-01 09:00".to_string(),
+                    BTreeMap::from([(
+                        "fixture".to_string(),
+                        TokenTally {
+                            input: 155,
+                            ..Default::default()
+                        },
+                    )]),
+                )]),
+                partial: false,
+            },
+        );
+        for n in 1..MAX_FILES {
+            archive.files.insert(
+                fixture
+                    .root
+                    .join(format!("empty-{n}.jsonl"))
+                    .to_string_lossy()
+                    .to_string(),
+                Kept::default(),
+            );
+        }
+        assert_eq!(archive.files.len(), MAX_FILES);
+        archive.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        fixture.write(Path::new("current.jsonl"), 1);
+
+        let scan = scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert!(scan.partial);
+        // The deleted file's history survives, and the file the full archive
+        // could not accept is still shown by this read.
+        assert_eq!(discovered_total(&scan), 310);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!String::from_utf8_lossy(&before).contains("current.jsonl"));
+    }
+
+    #[test]
+    fn a_failed_archive_write_keeps_the_old_file_and_flags_the_read_partial() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("a.jsonl"), 1);
+        let directory = fixture.root.join("archive");
+        let first = scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert_eq!(discovered_total(&first), 155);
+        let path = crate::transcript_archive::path(&directory, Provider::Codex, &fixture.root);
+        let before = std::fs::read(&path).unwrap();
+        // A directory where the write's temporary file belongs makes the save
+        // fail after a successful load.
+        let temporary = path.with_extension("json.tmp");
+        std::fs::create_dir(&temporary).unwrap();
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(fixture.root.join("a.jsonl"))
+            .unwrap()
+            .write_all(stream_codex_count(2).as_bytes())
+            .unwrap();
+        let blocked = scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert!(blocked.partial);
+        assert_eq!(discovered_total(&blocked), 310);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        std::fs::remove_dir(&temporary).unwrap();
+        let repaired = scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        assert!(!repaired.partial);
+        assert_eq!(discovered_total(&repaired), 310);
+        assert_ne!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn corrupt_future_and_impossible_archives_are_preserved_and_reported_as_partial() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("a.jsonl"), 1);
+        let directory = fixture.root.join("archive");
+        let first = scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        let path = crate::transcript_archive::path(&directory, Provider::Codex, &fixture.root);
+        let good = std::fs::read(&path).unwrap();
+        let key = fixture.root.join("a.jsonl").to_string_lossy().to_string();
+        let mut future: serde_json::Value = serde_json::from_slice(&good).unwrap();
+        future["format"] = 99.into();
+        let mut negative: serde_json::Value = serde_json::from_slice(&good).unwrap();
+        let days = negative["files"][&key]["days"].as_object_mut().unwrap();
+        let models = days.values_mut().next().unwrap().as_object_mut().unwrap();
+        models.values_mut().next().unwrap()["input"] = (-1).into();
+        for bytes in [
+            b"{broken".to_vec(),
+            serde_json::to_vec(&future).unwrap(),
+            serde_json::to_vec(&negative).unwrap(),
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            let scan = scan_archived_at(
+                Provider::Codex,
+                &fixture.root,
+                FileCache::default(),
+                &directory,
+            );
+            assert!(scan.partial);
+            assert_eq!(scan.buckets, first.buckets);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn archive_migrates_deleted_parse_cache_entries_but_never_another_root() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("a.jsonl"), 1);
+        let first = scan_cached(Provider::Codex, &fixture.root, FileCache::default());
+        let original = first.buckets.clone();
+        std::fs::remove_file(fixture.root.join("a.jsonl")).unwrap();
+        let saved = scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            first.cache,
+            &fixture.root.join("archive"),
+        );
+        assert_eq!(saved.buckets, original);
+        let other = fixture.root.join("other-home");
+        assert!(scan_archived_at(
+            Provider::Codex,
+            &other,
+            saved.cache,
+            &fixture.root.join("archive")
+        )
+        .buckets
+        .is_empty());
+    }
+
+    #[test]
+    fn cancelled_archive_scan_never_changes_persistent_history() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new("a.jsonl"), 1);
+        let directory = fixture.root.join("archive");
+        scan_archived_at(
+            Provider::Codex,
+            &fixture.root,
+            FileCache::default(),
+            &directory,
+        );
+        let path = crate::transcript_archive::path(&directory, Provider::Codex, &fixture.root);
+        let before = std::fs::read(&path).unwrap();
+        let control = std::sync::Arc::new(crate::scan::Control::default());
+        control.cancel();
+        assert!(crate::scan::run(
+            control,
+            0,
+            |_| {},
+            || scan_archived_at(
+                Provider::Codex,
+                &fixture.root,
+                FileCache::default(),
+                &directory
+            )
+        )
+        .is_err());
+        assert_eq!(std::fs::read(path).unwrap(), before);
     }
 
     #[test]

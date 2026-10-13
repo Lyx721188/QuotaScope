@@ -284,6 +284,21 @@ mod tests {
         assert!(dir.0.join(FILES[0]).is_dir());
     }
     #[test]
+    fn cleanup_keeps_measured_archive_files_outside_the_rebuildable_whitelist() {
+        let dir = Fixture::new();
+        let archive = crate::transcript_archive::path(
+            &dir.0,
+            crate::model::Provider::Codex,
+            Path::new("C:/synthetic-home"),
+        );
+        std::fs::write(&archive, b"{}").unwrap();
+        dir.put(FILES[0], b"old");
+        let cleared = prune_at(&dir.0, 0);
+        assert_eq!(cleared.removed_files, 1);
+        assert_eq!(std::fs::read(&archive).unwrap(), b"{}");
+    }
+
+    #[test]
     fn cleanup_removes_zero_length_and_interrupted_writes() {
         let dir = Fixture::new();
         dir.put(FILES[1], b"");

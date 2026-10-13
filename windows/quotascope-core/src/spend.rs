@@ -372,6 +372,44 @@ impl Snapshot {
         sort: Sort,
         descending: bool,
     ) -> Analysis {
+        self.analyze_matching(
+            |date| span.contains(date, today),
+            source,
+            model,
+            group,
+            sort,
+            descending,
+        )
+    }
+
+    pub fn analyze_range(
+        &self,
+        range: std::ops::RangeInclusive<NaiveDate>,
+        source: Option<&str>,
+        model: Option<&str>,
+        group: Group,
+        sort: Sort,
+        descending: bool,
+    ) -> Analysis {
+        self.analyze_matching(
+            |date| range.contains(&date),
+            source,
+            model,
+            group,
+            sort,
+            descending,
+        )
+    }
+
+    fn analyze_matching(
+        &self,
+        includes: impl Fn(NaiveDate) -> bool,
+        source: Option<&str>,
+        model: Option<&str>,
+        group: Group,
+        sort: Sort,
+        descending: bool,
+    ) -> Analysis {
         let mut out = Analysis::default();
         let mut rows = BTreeMap::<String, Row>::new();
         let mut daily = BTreeMap::<NaiveDate, Measures>::new();
@@ -383,12 +421,7 @@ impl Snapshot {
             if !crate::scan::checkpoint() {
                 return Analysis::default();
             }
-            for day in agent
-                .ledger
-                .days
-                .iter()
-                .filter(|d| span.contains(d.date, today))
-            {
+            for day in agent.ledger.days.iter().filter(|d| includes(d.date)) {
                 if !crate::scan::checkpoint() {
                     return Analysis::default();
                 }
