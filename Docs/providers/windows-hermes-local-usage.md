@@ -28,7 +28,7 @@
 
 ## 验证状态
 
-13 项合成数据库回归与一项通用未分类聚合回归、整仓 821 passed / 6 ignored、fmt、普通 Clippy（233 项已有诊断，无新增）及隔离 Debug Token 页已通过。实际 portable Release CI 仍待独立核对。界面脚本使用空账户、独立 Hermes 目录与合成数据库，不代表真实账号或真实历史对账。
+13 项合成数据库回归与一项通用未分类聚合回归、整仓 821 passed / 6 ignored、fmt、普通 Clippy（233 项已有诊断，无新增）及隔离 Debug Token 页已通过。[828889b 的实际 portable Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37215875709) 已通过，Hermes、ZCode、DSH、账户及服务状态五份 UI 结果使用同一个 Release 程序。界面脚本使用空账户、独立 Hermes 目录与合成数据库，不代表真实账号或真实历史对账。
 
 ```powershell
 # 在 windows/ 中，程序需带 WinUI 运行时资源

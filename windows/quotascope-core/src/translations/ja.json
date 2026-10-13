@@ -824,5 +824,6 @@
   "No status history data.": "状態履歴のデータがありません。",
   "Official uptime: {value}%": "公式の稼働率：{value}%",
   "No data": "データなし",
-  "Tokens without public prices:": "価格を計算できないトークン："
+  "Tokens without public prices:": "価格を計算できないトークン：",
+  "When enabled, check daily and when About opens. Download and installation are your choice.": "有効にすると毎日と「このアプリについて」を開いた時に確認します。ダウンロードとインストールは自分で選べます。"
 }

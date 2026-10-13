@@ -1,6 +1,6 @@
 # 上游功能移植进度
 
-更新日期：2026-10-04。当前公开路线图见[下一轮计划](next-upstream-plan-2026-10-04.md)，依赖和验收标准见[实施任务](release-acceptance-2026-10-04.md)。
+更新日期：2026-10-05。当前公开路线图见[下一轮计划](next-upstream-plan-2026-10-04.md)，依赖和验收标准见[实施任务](release-acceptance-2026-10-04.md)。
 
 第二轮新增上游参考：Pulse 1.7.2 `b570dd7`。Windows 已接入 Codex、Claude Code、DeepSeek 当前官方状态、独立故障通知开关及持久化去重，验证与范围见[服务状态说明](providers/windows-service-status.md)。官网约 90 天历史条与公布的可用率已实现；缺损历史单独提示，缺少可用率保留未知。
 
@@ -10,7 +10,9 @@
 
 原生会话发现已增加 64 层、10 万目录项、1 万 JSONL 和 8 MiB 估计路径容量上限，缺口每次重新核对。新增 7 项定向与整仓 773 passed / 6 ignored、fmt/普通 Clippy（无新增告警）通过；账户深层目录提示/修复与 40 万行（68,800,061 字节）的流式、续读、暖缓存、筛选及取消 Debug UI 通过。三个脚本使用相同程序；[34a454d 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37199456283) 已通过，三份 UI 使用同一 Release 程序。Claude 原生整数/文件容量/原子回复状态及缓存 6 已实现，新增 7 项回归、整仓 780 passed / 6 ignored、fmt/普通 Clippy（无新增告警）、扩展 Token Debug UI 的 150 Token 保留/提示/修复/筛选/新缓存/重开通过；[bd1f19d 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37200397474) 已通过。规则见 [Claude 本机计数](providers/windows-claude-local-counts.md)。缓存字段缺省的完整性仍需独立设计。规则见[原生会话发现](providers/windows-native-transcript-discovery.md)。
 
-Hermes 已从仅标准导入升级为原生 SQLite 会话／模型／profile 读取，计数、覆盖与缓存规则见[说明](providers/windows-hermes-local-usage.md)。本地整仓 821 passed / 6 ignored、普通 Clippy 无新增及隔离 Debug Token 页通过，Release CI 待核对。
+Hermes 已从仅标准导入升级为原生 SQLite 会话／模型／profile 读取，计数、覆盖与缓存规则见[说明](providers/windows-hermes-local-usage.md)。整仓 821 passed / 6 ignored、普通 Clippy 无新增、隔离 Debug Token 页及 [828889b Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37215875709) 均通过。
+
+关于页已增加默认关闭、开启后静默探测的更新检查，复用五分钟内的成功或失败结果，手动重试始终可用，检查使用软件代理。本地整仓 824 passed / 6 ignored、普通 Clippy 无新增及隔离 Debug UI 已通过；实际 Release CI 待核对。规则见[关于页更新检查](windows-about-updates.md)。
 
 ## main 新增能力（尚未发布）
 
@@ -48,7 +50,7 @@ Windows 1.3.1 将 Kiro 替换为专用 ACP 读取器，补齐严格解析、稳�
 | Codex 缓存 | GPT-5.6 及后续型号显示官方最短 30 分钟复用期，不保证命中 | 型号/缓存计数回归；旧型号不套用期限 |
 | OpenCode 官网 | Go 额度、跨设备请求账单、实际美元费用；官网会话与 API key 分别加密保存 | 分页去重、循环游标、不完整页面、认证失败样本；真实账号未验证 |
 | OpenCode 2 / Kilo SQLite | 新旧消息表兼容、助手记录过滤、重复 ID 合并 | 临时只读数据库回归 |
-| Token 来源与小时图 | 54 项目录；34 项已知格式读取（含导出缓存），20 项仅支持标准导入 | DSH 分叉/重放、导入 schema/ID、计数和筛选；不宣称 54 项全部原生支持 |
+| Token 来源与小时图 | 54 项目录；36 项已知格式读取（含导出缓存），18 项仅支持标准导入 | DSH 分叉/重放、导入 schema/ID、计数和筛选；不宣称 54 项全部原生支持 |
 | 后台统计 | 默认关闭；单份 5 分钟快照、30 秒扫描期限；关闭选项取消释放；前台扫描取消后台扫描 | 取消/关闭/缓存回归；不保留完整对话文本 |
 | 十个额度路由 | Kiro、Ollama Cloud、Grok Bot、Volcengine、Devin、Alibaba Token Plan、Gemini、JetBrains AI、Windsurf、Nous Portal | 上游额度 fixtures、独立火山签名向量、非法数据样本；真实账号未逐一验证 |
 | Chromium localStorage | 有界只读 LevelDB；只读当前 manifest/指定网站及键；CRC/Snappy/版本/删除校验 | 日志、manifest、过期文件、跨域、损坏记录回归 |
@@ -65,7 +67,7 @@ Windows 1.3.1 将 Kiro 替换为专用 ACP 读取器，补齐严格解析、稳�
 ## 未完全移植
 
 - 附加账户的交互式 OAuth 登录/续期；Codex 附加账户独立 app-server 登录。
-- 19 项来源的原生格式：CodeBuddy、WorkBuddy、Cherry Studio、Command Code、OpenCodeReview、Hermes、Goose、Zed、Kiro、Crush、Unsloth、Antigravity CLI、MiMo Code、Devin Desktop、Freebuff、Trae、Warp、MiniMax Code、GitHub Copilot。仅接受标准导入；缺少 Token 的来源保持未知。
+- 18 项来源的原生格式：CodeBuddy、WorkBuddy、Cherry Studio、Command Code、OpenCodeReview、Goose、Zed、Kiro、Crush、Unsloth、Antigravity CLI、MiMo Code、Devin Desktop、Freebuff、Trae、Warp、MiniMax Code、GitHub Copilot。仅接受标准导入；缺少 Token 的来源保持未知。
 - 1.3.0/1.3.1 的 DSH 仅读取纯文本 JSONL；main 已补入有界 Zstandard 解压，详见上方 N4a。
 - Devin 仅本机缓存套餐，未覆盖全部在线/跨账户路线；JetBrains 不推算 ISO duration 周期；Alibaba 不展开任意字符串嵌套的 JSON 包装。
 - 完整 BotMark 动画、所有 Windows 专有文字的繁中/日/韩翻译。

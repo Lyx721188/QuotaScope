@@ -39,6 +39,7 @@ pub enum SettingsAction {
     OpenUrl(String),
     OpenFolder(std::path::PathBuf),
     CheckUpdates,
+    ProbeUpdates,
     SkipUpdate(String),
 }
 
@@ -1211,6 +1212,7 @@ struct SettingsApp {
     shared: Arc<Shared>,
     hwnd: Option<windows::Win32::Foundation::HWND>,
     page: Page,
+    about_visible: bool,
     spend_group: quotascope_core::spend::Group,
     spend_sort: quotascope_core::spend::Sort,
     spend_descending: bool,
@@ -1254,6 +1256,7 @@ impl Component for SettingsApp {
             } else {
                 Page::General
             },
+            about_visible: false,
             spend_group: Default::default(),
             spend_sort: Default::default(),
             spend_descending: true,
@@ -1333,6 +1336,7 @@ impl Component for SettingsApp {
                 }
                 self.status = self.shared.read_status();
                 self.refresh_visible_service_status();
+                self.refresh_visible_about();
             }
             Message::Nav(tag) => {
                 let previous = self.page;
@@ -1351,6 +1355,7 @@ impl Component for SettingsApp {
                         .request_maintenance(MaintenanceOperation::Inspect);
                 }
                 self.refresh_visible_service_status();
+                self.refresh_visible_about();
                 self.revealed_keys.clear();
             }
             Message::SpendRefresh => self.shared.request_spend(true),
@@ -1625,6 +1630,9 @@ impl Component for SettingsApp {
                 Self::apply_toggle(key, value);
                 if key == ToggleKey::TokenSpend && !value {
                     self.shared.release_account_details();
+                }
+                if key == ToggleKey::CheckUpdates && value && self.page == Page::About {
+                    self.shared.send(SettingsAction::ProbeUpdates);
                 }
                 if key != ToggleKey::CheckUpdates {
                     self.shared.send(SettingsAction::Changed);
@@ -4302,6 +4310,14 @@ impl SettingsApp {
         ))
     }
 
+    fn refresh_visible_about(&mut self) {
+        let visible = self.page == Page::About && self.shared.alive.load(Ordering::SeqCst);
+        if visible && !self.about_visible {
+            self.shared.send(SettingsAction::ProbeUpdates);
+        }
+        self.about_visible = visible;
+    }
+
     fn about_view(&self, context: &ViewContext<Self>) -> View {
         StackPanel::new()
             .spacing(10.0)
@@ -4391,7 +4407,7 @@ impl SettingsApp {
                     context,
                 ),
                 self.muted(t(
-                    "Check once a day when enabled. Download and installation are your choice.",
+                    "When enabled, check daily and when About opens. Download and installation are your choice.",
                 )),
                 TextBlock::new()
                     .text(text)

@@ -824,5 +824,6 @@
   "No status history data.": "暫無狀態歷史資料。",
   "Official uptime: {value}%": "官方可用率：{value}%",
   "No data": "無資料",
-  "Tokens without public prices:": "未能計價的 Token："
+  "Tokens without public prices:": "未能計價的 Token：",
+  "When enabled, check daily and when About opens. Download and installation are your choice.": "開啟後每天檢查，開啟關於頁也會檢查。下載和安裝由你決定。"
 }

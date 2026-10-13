@@ -40,7 +40,10 @@ pub enum AppMsg {
         HashMap<Provider, quotascope_core::prompt_cache::CacheReading>,
     ),
     CodexDetails(u64, quotascope_core::codex_account::AccountDetails),
-    UpdateChecked(bool, quotascope_core::updates::CheckResult),
+    UpdateChecked(
+        quotascope_core::updates::Trigger,
+        quotascope_core::updates::CheckResult,
+    ),
     ServiceChecked(u64, Vec<(StatusPage, Result<ServiceReading, ServiceError>)>),
 }
 
@@ -73,6 +76,7 @@ pub struct App {
     codex_details_running: bool,
     codex_details_at: Option<std::time::Instant>,
     update_check_running: bool,
+    update_result_at: Option<std::time::Instant>,
     update_notified: Option<String>,
     outage_memory: OutageMemory,
     outage_pages: std::collections::HashSet<StatusPage>,
@@ -227,6 +231,7 @@ impl App {
             codex_details_running: false,
             codex_details_at: None,
             update_check_running: false,
+            update_result_at: None,
             update_notified: None,
             outage_memory: OutageMemory::load(
                 &quotascope_core::data_dir().join("status-alerts.json"),
@@ -318,14 +323,15 @@ impl App {
                         self.rebuild_entries();
                     }
                 }
-                AppMsg::UpdateChecked(manual, result) => {
+                AppMsg::UpdateChecked(trigger, result) => {
                     self.update_check_running = false;
+                    self.update_result_at = Some(std::time::Instant::now());
                     if let quotascope_core::updates::CheckResult::Available(release) = &result {
                         let remind = quotascope_core::settings::with(|s| {
                             s.checks_for_updates
                                 && s.skipped_update_version.as_deref() != Some(&release.version)
                         });
-                        if !manual
+                        if trigger == quotascope_core::updates::Trigger::Daily
                             && remind
                             && self.update_notified.as_deref() != Some(&release.version)
                         {
@@ -484,7 +490,12 @@ impl App {
             }
             SettingsAction::OpenUrl(url) => open_in_browser(&url),
             SettingsAction::OpenFolder(path) => open_in_browser(&path.to_string_lossy()),
-            SettingsAction::CheckUpdates => self.check_updates(true),
+            SettingsAction::CheckUpdates => {
+                self.check_updates(quotascope_core::updates::Trigger::Manual)
+            }
+            SettingsAction::ProbeUpdates => {
+                self.check_updates(quotascope_core::updates::Trigger::About)
+            }
             SettingsAction::SkipUpdate(version) => {
                 quotascope_core::settings::mutate(|s| s.skipped_update_version = Some(version));
                 self.settings.refresh();
@@ -573,7 +584,7 @@ impl App {
                 s.reads_token_spend
             }));
         }
-        self.check_updates(false);
+        self.check_updates(quotascope_core::updates::Trigger::Daily);
         self.maybe_check_services();
     }
 
@@ -627,14 +638,18 @@ impl App {
         });
     }
 
-    fn check_updates(&mut self, manual: bool) {
+    fn check_updates(&mut self, trigger: quotascope_core::updates::Trigger) {
         let now = quotascope_core::timeutil::now_ms();
         let due = quotascope_core::settings::with(|s| {
-            s.checks_for_updates
-                && s.last_update_check_at
-                    .is_none_or(|at| now < at || now.saturating_sub(at) >= 24 * 60 * 60 * 1000)
+            quotascope_core::updates::should_check(
+                trigger,
+                s.checks_for_updates,
+                s.last_update_check_at,
+                now,
+                self.update_result_at.map(|at| at.elapsed()),
+            )
         });
-        if self.update_check_running || (!manual && !due) {
+        if self.update_check_running || !due {
             return;
         }
         self.update_check_running = true;
@@ -643,7 +658,7 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = quotascope_core::updates::check(env!("CARGO_PKG_VERSION"));
-            let _ = tx.send(AppMsg::UpdateChecked(manual, result));
+            let _ = tx.send(AppMsg::UpdateChecked(trigger, result));
         });
     }
 

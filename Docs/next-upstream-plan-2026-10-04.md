@@ -1,6 +1,6 @@
 # 下一轮上游跟进计划
 
-更新日期：2026-10-04（Asia/Shanghai）。本页记录公开开发计划、已实现行为和验收边界。功能状态见[移植进度](upstream-implementation-status.md)，具体任务见[发布验收与下一轮实施任务](release-acceptance-2026-10-04.md)。
+更新日期：2026-10-05（Asia/Shanghai）。本页记录公开开发计划、已实现行为和验收边界。功能状态见[移植进度](upstream-implementation-status.md)，具体任务见[发布验收与下一轮实施任务](release-acceptance-2026-10-04.md)。
 
 第二轮已重新拉取上游，新增参考为 Pulse 1.7.2 `b570dd7`。优先补用户可直接使用的上游功能：三家官方服务状态与独立故障通知、官网历史状态条、原生 Token 来源，再继续账户与 Windows 体验；缓存字段缺省的完整性契约仍保留为数据正确性任务。当前状态和通知的实现范围见[说明](providers/windows-service-status.md)，历史条与官网可用率已通过本地验证及 [edae9e6 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37212105208)。
 
@@ -10,7 +10,9 @@
 
 原生会话发现已增加 64 层、10 万目录项、1 万 JSONL 和 8 MiB 估计路径容量上限，缺口每次重新核对。新增 7 项定向与整仓 773 passed / 6 ignored、fmt/普通 Clippy（无新增告警）通过；账户深层目录提示/修复与 40 万行（68,800,061 字节）的流式、续读、暖缓存、筛选及取消 Debug UI 通过。三个脚本使用相同程序；[34a454d 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37199456283) 已通过，三份 UI 使用同一 Release 程序。Claude 原生整数/文件容量/原子回复状态及缓存 6 已实现，新增 7 项回归、整仓 780 passed / 6 ignored、fmt/普通 Clippy（无新增告警）、扩展 Token Debug UI 的 150 Token 保留/提示/修复/筛选/新缓存/重开通过；[bd1f19d 的 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37200397474) 已通过。规则见 [Claude 本机计数](providers/windows-claude-local-counts.md)。缓存字段缺省的完整性仍需独立设计。规则见[原生会话发现](providers/windows-native-transcript-discovery.md)。
 
-Hermes 已从仅标准导入升级为原生 SQLite 会话／模型／profile 读取，计数、覆盖与缓存规则见[说明](providers/windows-hermes-local-usage.md)。本地整仓 821 passed / 6 ignored、普通 Clippy 无新增及隔离 Debug Token 页通过，Release CI 待核对。
+Hermes 已从仅标准导入升级为原生 SQLite 会话／模型／profile 读取，计数、覆盖与缓存规则见[说明](providers/windows-hermes-local-usage.md)。整仓 821 passed / 6 ignored、普通 Clippy 无新增、隔离 Debug Token 页及 [828889b Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37215875709) 均通过。
+
+关于页已增加默认关闭、开启后静默探测的更新检查，复用五分钟内的成功或失败结果，手动重试始终可用，检查使用软件代理。本地整仓 824 passed / 6 ignored、普通 Clippy 无新增及隔离 Debug UI 已通过；实际 Release CI 待核对。规则见[关于页更新检查](windows-about-updates.md)。接下来继续逐项核对并移植 Goose 等原生用量来源。
 
 ## 1. 已完成的功能
 

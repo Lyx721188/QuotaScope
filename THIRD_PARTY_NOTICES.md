@@ -10,6 +10,11 @@ shared request cooldown and an independent tray-notification setting.
 
 The Hermes cumulative-session reader adapts `Sources/Pulse/Usage/Readers/HermesReader.swift`
 from the same Pulse 1.7.2 commit, Copyright (c) 2026 qunqin24, Apache-2.0.
+
+The quiet About update probe adapts the behavior of `Sources/Pulse/App/AppUpdate.swift`
+and `Sources/Pulse/Settings/SettingsView.swift` from that Pulse 1.7.2 commit,
+Copyright (c) 2026 qunqin24, Apache-2.0. Windows retains its own opt-in setting,
+bounded public GitHub release request and manual installation choice.
 Windows adds bounded read-only SQLite snapshots, strict counters, named-profile
 discovery and memory-only cache invalidation.
 

@@ -7,6 +7,8 @@ inherited macOS history and do not establish Windows feature availability.
 
 ## Unreleased (Windows)
 
+- **Quiet About update checks.** With automatic checks enabled, opening About requests the current Windows release silently. Recent answers and failures are reused for five minutes, explicit retry remains available with automatic checks off, and requests follow the app's proxy setting. Download and installation remain the user's choice. See [the update rules](Docs/windows-about-updates.md).
+
 - **Official service status.** Expanded Codex, Claude Code and DeepSeek accounts show their official public component status, roughly 90 days of daily history, published uptime, check time and an explicit unreadable state. History gaps retain current status, and missing uptime is never inferred from coloured bars. Optional service outage notifications are independent from quota alerts, watch enabled providers every five minutes and persist outage/worsening/recovery deduplication. Pane and monitor share bounded public requests without sending account credentials. See [the status-page rules](Docs/providers/windows-service-status.md).
 
 - **Native Hermes usage.** The Token page reads cumulative SQLite sessions and named profiles, preferring per-model rows without adding session totals again. Cache/input ambiguity retains measured tokens with their actual model as unclassified and unpriced; reasoning is not added twice. Bounded read-only WAL snapshots, memory cache, strict counters and standard imports support refresh, repair and filtering. See [the local count rules](Docs/providers/windows-hermes-local-usage.md).

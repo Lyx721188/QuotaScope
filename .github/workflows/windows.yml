@@ -167,6 +167,7 @@ jobs:
           ./quotascope-win/tests/hermes_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
           ./quotascope-win/tests/codex_signals_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
           ./quotascope-win/tests/service_status_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
+          ./quotascope-win/tests/about_updates_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
 
       - name: Upload synthetic Token validation evidence
         if: always()

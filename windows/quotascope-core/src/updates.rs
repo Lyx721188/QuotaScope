@@ -8,6 +8,33 @@ const API: &str = "https://api.github.com/repos/Lyx721188/QuotaScope/releases?pe
 pub const RELEASES_PAGE: &str = "https://github.com/Lyx721188/QuotaScope/releases";
 const MAX_REPLY: u64 = 2 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    Daily,
+    About,
+    Manual,
+}
+
+/// About needs an answer in this process, rather than only a persisted attempt
+/// time. Recent successes and failures both cool down; manual retry is explicit.
+pub fn should_check(
+    trigger: Trigger,
+    enabled: bool,
+    last_attempt: Option<i64>,
+    now: i64,
+    result_age: Option<Duration>,
+) -> bool {
+    match trigger {
+        Trigger::Manual => true,
+        Trigger::About => enabled && result_age.is_none_or(|age| age >= Duration::from_secs(300)),
+        Trigger::Daily => {
+            enabled
+                && last_attempt
+                    .is_none_or(|at| now < at || now.saturating_sub(at) >= 24 * 60 * 60 * 1000)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
     pub version: String,
@@ -55,19 +82,14 @@ pub fn check(current: &str) -> CheckResult {
 }
 
 fn check_inner(current: &str) -> Option<CheckResult> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!(
-            "QuotaScope/",
-            env!("CARGO_PKG_VERSION"),
-            " (Windows)"
-        ))
-        .build()
-        .ok()?;
+    let client = crate::http::HttpClient::new().client_for_login();
     let response = client
         .get(API)
+        .timeout(Duration::from_secs(20))
+        .header(
+            "User-Agent",
+            concat!("QuotaScope/", env!("CARGO_PKG_VERSION"), " (Windows)"),
+        )
         .header("Accept", "application/vnd.github+json")
         .send()
         .ok()?
@@ -177,5 +199,59 @@ mod tests {
         let copy: crate::settings::AppSettings =
             serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
         assert_eq!(copy, settings);
+    }
+
+    #[test]
+    fn about_and_daily_checks_respect_opt_in_while_manual_retry_is_explicit() {
+        for trigger in [Trigger::About, Trigger::Daily] {
+            assert!(!should_check(trigger, false, None, 1000, None));
+        }
+        assert!(should_check(
+            Trigger::Manual,
+            false,
+            Some(1000),
+            1000,
+            Some(Duration::ZERO)
+        ));
+    }
+
+    #[test]
+    fn about_probes_a_new_process_and_reuses_both_recent_answers_and_failures() {
+        assert!(should_check(Trigger::About, true, Some(1000), 1000, None));
+        assert!(!should_check(
+            Trigger::About,
+            true,
+            Some(1000),
+            1000,
+            Some(Duration::from_secs(299))
+        ));
+        assert!(should_check(
+            Trigger::About,
+            true,
+            Some(1000),
+            1000,
+            Some(Duration::from_secs(300))
+        ));
+    }
+
+    #[test]
+    fn daily_schedule_retains_its_persisted_day_boundary_and_clock_rollback_rule() {
+        let day = 24 * 60 * 60 * 1000;
+        assert!(!should_check(
+            Trigger::Daily,
+            true,
+            Some(1000),
+            1000 + day - 1,
+            None
+        ));
+        assert!(should_check(
+            Trigger::Daily,
+            true,
+            Some(1000),
+            1000 + day,
+            None
+        ));
+        assert!(should_check(Trigger::Daily, true, Some(1000), 999, None));
+        assert!(should_check(Trigger::Daily, true, None, 1000, None));
     }
 }

@@ -265,6 +265,7 @@ const TABLE: &[Entry] = &[
     Entry { key: "Updates", en: "Updates", zh: "更新" },
     Entry { key: "Check for updates automatically", en: "Check for updates automatically", zh: "自动检查更新" },
     Entry { key: "Check for updates", en: "Check for updates", zh: "检查更新" },
+    Entry { key: "When enabled, check daily and when About opens. Download and installation are your choice.", en: "When enabled, check daily and when About opens. Download and installation are your choice.", zh: "开启后每天检查，打开关于页也会检查。下载和安装由你决定。" },
     Entry { key: "Check once a day when enabled. Download and installation are your choice.", en: "Check once a day when enabled. Download and installation are your choice.", zh: "开启后每天检查一次。是否下载和安装由你选择。" },
     Entry { key: "Updates are installed only when you choose.", en: "Updates are installed only when you choose.", zh: "更新仅在你选择时安装。" },
     Entry { key: "Checking for updates…", en: "Checking for updates…", zh: "正在检查更新…" },
