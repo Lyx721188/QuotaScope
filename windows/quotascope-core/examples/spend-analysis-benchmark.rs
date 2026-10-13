@@ -1,5 +1,5 @@
 //! Synthetic immutable-snapshot probe, with no disk or account reads.
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use quotascope_core::ledger::{self, TokenTally};
 use quotascope_core::scan::Control;
 use quotascope_core::spend::{Group, Snapshot, Sort, Source, Span};
@@ -47,6 +47,7 @@ fn main() {
         snapshot: Arc::new(snapshot),
         query: Query {
             today,
+            recap_month: NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap(),
             span: Span::All,
             source: None,
             model: None,

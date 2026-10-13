@@ -12,6 +12,8 @@
 //! changes.
 
 use std::collections::HashMap;
+#[path = "spend_history_view.rs"]
+mod spend_history_view;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -1162,6 +1164,11 @@ enum Message {
     SpendDrill(String),
     SpendRefresh,
     SpendCancel,
+    ActivityMode(Option<usize>),
+    ActivityDate(String),
+    RecapMonth(Option<usize>),
+    RecapBudget(String),
+    RecapToggle,
     Maintenance(MaintenanceOperation),
     OpenDiagnosticsFolder,
     Nav(Option<String>),
@@ -1219,6 +1226,11 @@ struct SettingsApp {
     spend_page: usize,
     spend_source: Option<String>,
     spend_model: Option<String>,
+    activity_mode: usize,
+    activity_date: Option<chrono::NaiveDate>,
+    recap_month: Option<chrono::NaiveDate>,
+    recap_budget: String,
+    recap_open: bool,
     dark: bool,
     /// Draft key text per provider raw, until Saved.
     keys: HashMap<String, String>,
@@ -1263,6 +1275,11 @@ impl Component for SettingsApp {
             spend_page: 0,
             spend_source: None,
             spend_model: None,
+            activity_mode: 0,
+            activity_date: None,
+            recap_month: None,
+            recap_budget: String::new(),
+            recap_open: false,
             // XAML follows the system appearance; the muted ink follows it
             // too, read once here — a reopened window re-reads.
             dark: crate::theme::panel::is_dark(),
@@ -1423,6 +1440,22 @@ impl Component for SettingsApp {
                 self.spend_page = 0;
             }
             Message::SpendChoice(_, None) => {}
+            Message::ActivityMode(index) => self.activity_mode = index.unwrap_or(0).min(2),
+            Message::ActivityDate(text) => {
+                self.activity_date = chrono::NaiveDate::parse_from_str(&text, "%Y-%m-%d").ok()
+            }
+            Message::RecapMonth(index) => {
+                let state = self.shared.snapshot.lock().unwrap();
+                self.recap_month = state.spend.as_ref().and_then(|snapshot| {
+                    index.and_then(|i| {
+                        quotascope_core::recap::months(snapshot, chrono::Local::now().date_naive())
+                            .get(i)
+                            .copied()
+                    })
+                });
+            }
+            Message::RecapBudget(text) => self.recap_budget = text,
+            Message::RecapToggle => self.recap_open = !self.recap_open,
             Message::ExpandAccount(index) => {
                 if !self.expanded_accounts.insert(index) {
                     self.expanded_accounts.remove(&index);
@@ -2396,6 +2429,9 @@ impl SettingsApp {
             query: AnalysisQuery {
                 span: settings.spend_span,
                 today: chrono::Local::now().date_naive(),
+                recap_month: self.recap_month.unwrap_or_else(|| {
+                    quotascope_core::recap::month_start(chrono::Local::now().date_naive())
+                }),
                 source: self.spend_source.clone(),
                 model: self.spend_model.clone(),
                 group: self.spend_group,
@@ -2499,6 +2535,8 @@ impl SettingsApp {
             }
         };
         let analysis = &summary.analysis;
+        content.push(self.token_activity_view(&summary.activity, context));
+        content.push(self.monthly_recap_view(&summary.recap, &summary.months, context));
         let total = analysis.total;
         let summary_grid = Grid::new()
             .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
@@ -4433,6 +4471,7 @@ mod tests {
             query: quotascope_core::spend_analysis::Query {
                 span: Span::Week,
                 today: chrono::NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
+                recap_month: chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
                 source: None,
                 model: None,
                 group: Group::Agents,

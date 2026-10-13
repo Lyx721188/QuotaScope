@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub struct Query {
     pub span: Span,
     pub today: NaiveDate,
+    pub recap_month: NaiveDate,
     pub source: Option<String>,
     pub model: Option<String>,
     pub group: Group,
@@ -21,6 +22,7 @@ impl Query {
     fn same_aggregation(&self, other: &Self) -> bool {
         self.span == other.span
             && self.today == other.today
+            && self.recap_month == other.recap_month
             && self.source == other.source
             && self.model == other.model
             && self.group == other.group
@@ -49,6 +51,9 @@ pub struct Summary {
     pub coverage: BTreeMap<String, bool>,
     pub partial_sources: Vec<String>,
     pub reused_aggregation: bool,
+    pub activity: crate::token_activity::TokenActivity,
+    pub recap: crate::recap::MonthlyRecap,
+    pub months: Vec<NaiveDate>,
 }
 
 impl Summary {
@@ -78,6 +83,9 @@ impl Summary {
                         coverage: old.coverage.clone(),
                         partial_sources: old.partial_sources.clone(),
                         reused_aggregation: true,
+                        activity: old.activity.clone(),
+                        recap: old.recap.clone(),
+                        months: old.months.clone(),
                     };
                 }
 
@@ -123,6 +131,20 @@ impl Summary {
                     coverage.insert(source.id.clone(), has_tokens);
                 }
                 let bins = calendar_bins(&analysis.days);
+                let activity = crate::token_activity::TokenActivity::build(
+                    snapshot,
+                    query.today,
+                    query.source.as_deref(),
+                    query.model.as_deref(),
+                );
+                let recap = crate::recap::MonthlyRecap::build(
+                    snapshot,
+                    query.recap_month,
+                    query.today,
+                    query.source.as_deref(),
+                    query.model.as_deref(),
+                );
+                let months = crate::recap::months(snapshot, query.today);
                 Self {
                     request,
                     analysis,
@@ -132,6 +154,9 @@ impl Summary {
                     coverage,
                     partial_sources,
                     reused_aggregation: false,
+                    activity,
+                    recap,
+                    months,
                 }
             },
         )
@@ -248,6 +273,7 @@ mod tests {
             query: Query {
                 span: Span::Week,
                 today: NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
+                recap_month: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
                 source: None,
                 model: None,
                 group: Group::Agents,
