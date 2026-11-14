@@ -10,6 +10,7 @@
 //! rather than worked around.
 
 use super::{KeyRing, ProviderService};
+use crate::http::ObserveRequest as _;
 use crate::http::{number, string_field, HttpClient};
 use crate::model::{AccountKey, Kind, Provider, ProviderUsage, Unavailability, UsageWindow};
 use std::sync::Arc;
@@ -110,7 +111,7 @@ impl GrokService {
             .header("x-xai-token-auth", "xai-grok-cli")
             .header("Accept", "application/json")
             .timeout(std::time::Duration::from_secs(4));
-        let response = request.send().ok()?;
+        let response = request.observed_send().ok()?;
         if response.status().as_u16() != 200 {
             return None;
         }

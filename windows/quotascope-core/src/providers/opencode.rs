@@ -56,6 +56,7 @@ impl ProviderService for OpenCodeService {
                     if matches!(
                         reason,
                         Unavailability::ApiKeyRefused
+                            | Unavailability::NoPlan
                             | Unavailability::Unreachable
                             | Unavailability::ServerError
                             | Unavailability::UnreadableReply

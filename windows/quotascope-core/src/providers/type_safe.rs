@@ -30,6 +30,7 @@
 
 use super::{pasted_or_none, KeyRing, ProviderService, SessionSpec};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, CreditAmount, Provider, ProviderUsage, Unavailability};
 use std::sync::{Arc, Mutex};
 
@@ -160,7 +161,7 @@ impl TypeSafeService {
             .header("Cookie", cookie)
             .header("Accept", "text/html")
             .timeout(std::time::Duration::from_secs(15))
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         let page = response
@@ -189,7 +190,7 @@ impl TypeSafeService {
                 .client_for_login()
                 .get(&chunk)
                 .timeout(std::time::Duration::from_secs(5))
-                .send()
+                .observed_send()
             else {
                 continue;
             };
@@ -226,7 +227,7 @@ impl TypeSafeService {
             .header("Content-Type", "application/json")
             .body("[]")
             .timeout(std::time::Duration::from_secs(15))
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         let body = response

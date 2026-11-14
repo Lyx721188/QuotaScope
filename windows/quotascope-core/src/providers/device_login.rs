@@ -10,6 +10,7 @@
 //! official integration.
 
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use std::time::Duration;
 
 /// The Copilot plugin's public client. Not a secret — it is in every copy of
@@ -75,7 +76,7 @@ fn post(
         .post(url)
         .headers(to_header_map(&header_refs))
         .json(body)
-        .send();
+        .observed_send();
 
     let response = text.map_err(|_| {
         DeviceLoginError::Refused(crate::localization::t("The service didn't respond.").to_string())

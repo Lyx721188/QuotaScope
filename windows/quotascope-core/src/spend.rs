@@ -2,7 +2,7 @@
 //! subscription estimate is substituted for a missing transcript counter.
 use crate::ledger::{TokenCost, TokenTally, UsageLedger};
 use crate::model::Provider;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -15,15 +15,35 @@ pub enum Span {
     Month,
     Quarter,
     All,
+    ThisMonth,
+    LastMonth,
+    ThisYear,
+    Custom {
+        start: NaiveDate,
+        end: NaiveDate,
+    },
 }
 impl Span {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 9] = [
         Self::Today,
         Self::Week,
         Self::Month,
         Self::Quarter,
         Self::All,
+        Self::ThisMonth,
+        Self::LastMonth,
+        Self::ThisYear,
+        Self::Custom {
+            start: NaiveDate::MIN,
+            end: NaiveDate::MIN,
+        },
     ];
+    pub fn selection_index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|s| std::mem::discriminant(s) == std::mem::discriminant(&self))
+            .unwrap_or(1)
+    }
     pub fn contains(self, date: NaiveDate, today: NaiveDate) -> bool {
         let age = today.signed_duration_since(date).num_days();
         age >= 0
@@ -33,6 +53,15 @@ impl Span {
                 Self::Month => age < 30,
                 Self::Quarter => age < 90,
                 Self::All => true,
+                Self::ThisMonth => date.year() == today.year() && date.month() == today.month(),
+                Self::LastMonth => {
+                    let last = today.with_day(1).unwrap().pred_opt();
+                    last.is_some_and(|last| {
+                        date.year() == last.year() && date.month() == last.month()
+                    })
+                }
+                Self::ThisYear => date.year() == today.year(),
+                Self::Custom { start, end } => date >= start && date <= end,
             }
     }
 }

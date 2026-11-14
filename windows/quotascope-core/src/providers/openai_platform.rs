@@ -21,6 +21,7 @@
 
 use super::{pasted_or_none, KeyRing, ProviderService};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, CreditAmount, Provider, ProviderUsage, State, Unavailability};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -112,7 +113,7 @@ impl OpenAiPlatformService {
             .header("Authorization", format!("Bearer {key}"))
             .header("Accept", "application/json")
             .timeout(Duration::from_secs(15))
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         let status = crate::http::status_of(&response);
         if !(200..300).contains(&status) {

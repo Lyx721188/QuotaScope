@@ -1,6 +1,7 @@
 //! Windows equivalents of the remaining upstream routes. Saved client
 //! credentials are read only; only provider-owned percentages become rings.
 use super::{KeyRing, ProviderService, SessionSpec};
+use crate::http::ObserveRequest as _;
 use crate::http::{number, HttpClient, Method};
 use crate::model::{
     AccountKey, CreditAmount, Kind, Provider, ProviderUsage, Unavailability, UsageWindow,
@@ -252,7 +253,7 @@ impl Service {
             .get("https://ollama.com/settings")
             .header("Cookie", cookie)
             .header("Accept-Language", "en-US,en;q=0.9")
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         if !reply.status().is_success() {
             return Err(match reply.status().as_u16() {
@@ -339,7 +340,7 @@ impl Service {
         body.extend([16, 1]);
         let response = request
             .body(body)
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         if !response.status().is_success() {
             return Err(Unavailability::SessionExpired);

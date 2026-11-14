@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
 pub enum HistoryRead {
+    Credits(crate::qoder_history::Credits),
     NotConfigured,
     Failed(Unavailability),
     Answered {
@@ -29,6 +30,7 @@ pub fn read(provider: Provider) -> HistoryRead {
             currency: None,
         },
         Provider::OpenCodeGo => crate::opencode_console::history(),
+        Provider::Qoder => crate::qoder_history::read(&crate::model::AccountKey::primary(provider)),
         Provider::DeepSeek => read_account(&crate::model::AccountKey::primary(provider)),
         Provider::Zai | Provider::GlmCoding => {
             let key = crate::secrets::key_for(provider.raw())
@@ -55,11 +57,121 @@ pub fn read(provider: Provider) -> HistoryRead {
                 Err(reason) => HistoryRead::Failed(reason),
             }
         }
+        _ if local_source(provider).is_some() => {
+            if !crate::settings::with(|s| s.reads_token_spend) {
+                return HistoryRead::NotConfigured;
+            }
+            let id = local_source(provider).unwrap();
+            let root = crate::additional_spend::CATALOG
+                .iter()
+                .find(|r| r.0 == id)
+                .map(|r| r.2)
+                .unwrap_or("");
+            let mut ledger =
+                crate::additional_spend::read(id, &crate::additional_spend::roots(id, root));
+            if provider == Provider::Devin {
+                ledger = merge_local(vec![
+                    ledger,
+                    crate::ledger::pi_ledger_for_provider(crate::ledger::PiClient::Omp, "devin"),
+                ]);
+            }
+            HistoryRead::Answered {
+                ledger,
+                account_wide: false,
+                actual_costs: false,
+                currency: None,
+            }
+        }
         _ => HistoryRead::NotConfigured,
     }
 }
 
+pub fn local_source(provider: Provider) -> Option<&'static str> {
+    match provider {
+        Provider::Minimax | Provider::MinimaxCn => Some("mcode"),
+        Provider::KimiCode => Some("kimi"),
+        Provider::CommandCode => Some("commandcode"),
+        Provider::Grok => Some("grok"),
+        Provider::Devin => Some("devin-cli"),
+        Provider::Cursor => Some("cursor"),
+        Provider::Copilot => Some("copilot"),
+        _ => None,
+    }
+}
+/// Combine disjoint clients without repricing the records or changing currencies.
+fn merge_local(ledgers: Vec<UsageLedger>) -> UsageLedger {
+    let mut out = UsageLedger::empty();
+    let mut days = BTreeMap::new();
+    let mut slots = BTreeMap::new();
+    for ledger in ledgers {
+        out.has_partial_records |= ledger.has_partial_records;
+        out.unpriced_models.extend(ledger.unpriced_models);
+        out.model_names.extend(ledger.model_names);
+        for day in ledger.days {
+            let old = days
+                .entry(day.date)
+                .or_insert_with(|| crate::ledger::LedgerDay {
+                    date: day.date,
+                    tokens: 0,
+                    cost: 0.0,
+                    unpriced_tokens: 0,
+                    models: BTreeMap::new(),
+                    tally: TokenTally::default(),
+                    model_tallies: BTreeMap::new(),
+                    model_costs: BTreeMap::new(),
+                });
+            old.tokens += day.tokens;
+            old.cost += day.cost;
+            old.unpriced_tokens += day.unpriced_tokens;
+            old.tally += day.tally;
+            for (k, v) in day.models {
+                *old.models.entry(k).or_default() += v;
+            }
+            for (k, v) in day.model_tallies {
+                *old.model_tallies.entry(k).or_default() += v;
+            }
+            for (k, v) in day.model_costs {
+                *old.model_costs.entry(k).or_default() += v;
+            }
+        }
+        for slot in ledger.slots {
+            let old = slots
+                .entry(slot.start_ms)
+                .or_insert_with(|| crate::ledger::Slot {
+                    start_ms: slot.start_ms,
+                    tokens: 0,
+                    cost: 0.0,
+                    unpriced_tokens: 0,
+                    models: BTreeMap::new(),
+                    unclassified_models: BTreeMap::new(),
+                    costs: BTreeMap::new(),
+                });
+            old.tokens += slot.tokens;
+            old.cost += slot.cost;
+            old.unpriced_tokens += slot.unpriced_tokens;
+            for (k, v) in slot.models {
+                *old.models.entry(k).or_default() += v;
+            }
+            for (k, v) in slot.unclassified_models {
+                *old.unclassified_models.entry(k).or_default() += v;
+            }
+            for (k, v) in slot.costs {
+                *old.costs.entry(k).or_default() += v;
+            }
+        }
+    }
+    out.days = days.into_values().collect();
+    out.slots = slots.into_values().collect();
+    out.earliest = out.days.first().map(|d| d.date);
+    out.unpriced_models.sort();
+    out.unpriced_models.dedup();
+    out
+}
+
 pub fn read_account(account: &crate::model::AccountKey) -> HistoryRead {
+    if account.provider == Provider::Qoder {
+        return crate::qoder_history::read(account);
+    }
     if account.provider == Provider::DeepSeek {
         let currency = crate::settings::with(|s| s.deepseek_currency.clone());
         return crate::deepseek_history::read(account, currency.as_deref());

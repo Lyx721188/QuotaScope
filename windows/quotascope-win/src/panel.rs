@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
 use quotascope_core::model::{usage_tint, AccountKey, ProviderUsage, UsageWindow};
-use windows::core::w;
+use windows::core::{w, Interface};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
@@ -58,6 +58,7 @@ pub enum PanelEvent {
 #[derive(Clone)]
 pub struct RailEntry {
     pub account: AccountKey,
+    pub group: Option<String>,
     pub title: String,
     pub monogram: String,
     pub ring: RingModel,
@@ -126,12 +127,31 @@ impl RailEntry {
         let refreshing_shown = false;
 
         let ring = RingModel {
+            pulse: settings.panel_appearance == "pulse",
+            warning_at: usage_tint::warning_fraction(settings.warning_threshold),
+            chosen_tint: settings.ring_tints.get(&account_id).and_then(|value| {
+                let hex = value.strip_prefix('#')?;
+                if hex.len() != 6 {
+                    return None;
+                }
+                u32::from_str_radix(hex, 16)
+                    .ok()
+                    .map(crate::d2d::Rgba::from_hex)
+            }),
+            second_spent: usage_tint::is_spent(second.as_ref()),
+            robot: crate::robot::style(&account_id, settings),
             used_fraction: headline.as_ref().map(|w| w.used_fraction),
             has_reading: headline.is_some() || usage.credit_balance.is_some(),
             is_spent: usage_tint::is_spent(headline.as_ref()),
             shows_remaining,
             monogram: usage.provider().monogram().to_string(),
-            icon: Some(usage.provider().raw().to_string()),
+            icon: Some(
+                if usage.provider() == quotascope_core::model::Provider::Extension {
+                    usage.account.id()
+                } else {
+                    usage.provider().raw().to_string()
+                },
+            ),
             is_busy: false,
             is_refreshing: refreshing_shown,
             halo: 0.0,
@@ -141,6 +161,7 @@ impl RailEntry {
 
         RailEntry {
             account: usage.account.clone(),
+            group: None,
             title,
             monogram: usage.provider().monogram().to_string(),
             ring,
@@ -155,14 +176,23 @@ impl RailEntry {
         }
     }
 
+    pub fn visual_id(&self) -> String {
+        self.group
+            .as_ref()
+            .map(|g| format!("{}:{g}", self.account.id()))
+            .unwrap_or_else(|| self.account.id())
+    }
+
     pub fn placeholder(
         provider: quotascope_core::model::Provider,
         settings: &quotascope_core::settings::AppSettings,
     ) -> RailEntry {
         let account = AccountKey::primary(provider);
         let mut ring = RingModel::unavailable(provider.monogram());
+        ring.pulse = settings.panel_appearance == "pulse";
         ring.icon = Some(provider.raw().to_string());
         RailEntry {
+            group: None,
             title: account_title(provider, &account, settings),
             account,
             monogram: provider.monogram().to_string(),
@@ -214,6 +244,9 @@ pub struct PanelWindow {
     card: Option<Box<Flyout>>,
     pub entries: Vec<RailEntry>,
     m: Metrics,
+    pulse_backdrop: bool,
+    glass_capture_enabled: bool,
+    glass_capture: crate::liquid_glass::DesktopGlass,
     edge: Edge,
     docked: bool,
     /// The rings' arrival spring, 0 → 1 and a little past it — the port of
@@ -250,12 +283,18 @@ pub struct PanelWindow {
     /// The card content's entrance fade, 0 → 1 on the same spring family.
     card_alpha: f64,
     card_alpha_v: f64,
+    closing_card: bool,
+    rail_opened_at: i64,
+    content_fade_from: f64,
+    content_fade_started_at: i64,
     /// The idle retreat: false docked out in the open, true slid almost
     /// fully off-screen. `recede` is the spring between the two — 0 at
     /// rest, 1 hidden, allowed to overshoot a little on the way.
     hidden: bool,
     recede: f64,
     recede_v: f64,
+    dock_offset: (f64, f64),
+    dock_velocity: (f64, f64),
     hide_at: Option<i64>,
     base_pos: (i32, i32),
     hidden_pos: (i32, i32),
@@ -294,6 +333,9 @@ impl PanelWindow {
             card: None,
             entries: Vec::new(),
             m: Metrics::from_settings(&quotascope_core::settings::with(|s| s.clone())),
+            pulse_backdrop: false,
+            glass_capture_enabled: false,
+            glass_capture: Default::default(),
             edge: Edge::Right,
             docked: true,
             presence: 0.0,
@@ -311,9 +353,15 @@ impl PanelWindow {
             card_target: None,
             card_alpha: 0.0,
             card_alpha_v: 0.0,
+            closing_card: false,
+            rail_opened_at: quotascope_core::timeutil::now_ms(),
+            content_fade_from: 1.0,
+            content_fade_started_at: 0,
             hidden: false,
             recede: 0.0,
             recede_v: 0.0,
+            dock_offset: (0.0, 0.0),
+            dock_velocity: (0.0, 0.0),
             hide_at: None,
             base_pos: (0, 0),
             hidden_pos: (0, 0),
@@ -371,6 +419,34 @@ impl PanelWindow {
     pub fn reload_settings(&mut self) {
         let settings = quotascope_core::settings::with(|s| s.clone());
         self.m = Metrics::from_settings(&settings);
+        if self.glass_capture_enabled != self.m.glass {
+            let bar_ok = crate::liquid_glass::exclude_from_duplication(self.hwnd, self.m.glass);
+            let card_ok = self.card.as_ref().is_some_and(|card| {
+                crate::liquid_glass::exclude_from_duplication(card.hwnd, self.m.glass)
+            });
+            self.glass_capture_enabled = self.m.glass && bar_ok && card_ok;
+            if !self.glass_capture_enabled {
+                let _ = crate::liquid_glass::exclude_from_duplication(self.hwnd, false);
+                if let Some(card) = self.card.as_mut() {
+                    let _ = crate::liquid_glass::exclude_from_duplication(card.hwnd, false);
+                }
+                self.glass_capture.clear();
+                crate::liquid_glass::clear_shared();
+            }
+            if let Some(card) = self.card.as_mut() {
+                card.set_glass_capture(self.glass_capture_enabled);
+            }
+        }
+        if self.pulse_backdrop != self.m.pulse {
+            // Recreate the composition tree when DWM changes the material.
+            self.canvas = None;
+            self.pulse_backdrop = self.m.pulse;
+            if self.m.pulse {
+                winutil::apply_pulse_backdrop(self.hwnd);
+            } else {
+                winutil::restore_panel_backdrop(self.hwnd, theme_panel::is_dark());
+            }
+        }
         self.edge = Edge::from_name(&settings.dock_side);
         self.docked = !settings.floating;
         // A setting that forbids retreating also summons a retreated bar
@@ -379,7 +455,10 @@ impl PanelWindow {
             self.set_hidden(false);
             self.hide_at = None;
         } else if !self.tracking_mouse && !self.card_shown() && !self.hidden {
-            self.hide_at = Some(quotascope_core::timeutil::now_ms() + RETREAT_DELAY_MS);
+            self.hide_at = Some(
+                quotascope_core::timeutil::now_ms()
+                    + if self.m.pulse { 320 } else { RETREAT_DELAY_MS },
+            );
         }
         self.compute_window_size();
         self.place();
@@ -400,7 +479,10 @@ impl PanelWindow {
     /// opens — the rule the macOS app learned the hard way.
     pub fn place(&mut self) {
         let settings = quotascope_core::settings::with(|s| s.clone());
-        let (monitor_rect, work) = monitor_for_settings(&settings);
+        let (monitor_rect, mut work) = monitor_for_settings(&settings);
+        if settings.floating {
+            work = monitor_rect;
+        }
 
         // Per-monitor DPI: a panel drawn at the wrong scale is a panel
         // drawn wrong.
@@ -441,7 +523,11 @@ impl PanelWindow {
         // docks to — a dock, not a strip glued to the glass. Floating: the
         // stored ratio of the display, clamped inside it with the same
         // margin.
-        let margin = (dock::EDGE_MARGIN * dpi_scale) as i32;
+        let margin = if settings.floating || self.m.pulse {
+            0
+        } else {
+            (dock::EDGE_MARGIN * dpi_scale) as i32
+        };
         let (mut px, mut py) = match (self.docked, self.edge) {
             (true, Edge::Right) => (
                 work.right - physical.0 - margin,
@@ -472,6 +558,17 @@ impl PanelWindow {
                 )
             }
         };
+        if self.m.pulse && self.docked {
+            if self.edge.is_vertical() {
+                py = work.top
+                    + ((work.height() - physical.1).max(0) as f64
+                        * settings.pulse_dock_y.clamp(0.0, 1.0)) as i32;
+            } else {
+                px = work.left
+                    + ((work.width() - physical.0).max(0) as f64
+                        * settings.pulse_dock_x.clamp(0.0, 1.0)) as i32;
+            }
+        }
         // Clamp into the work area whatever happened.
         px = px.clamp(
             work.left + margin,
@@ -501,9 +598,13 @@ impl PanelWindow {
     /// Sets the window's rect for the retreat spring's current value — a
     /// plain interpolation between the resting place and the hidden one.
     fn apply_position(&mut self) {
-        let t = self.recede;
-        let x = self.base_pos.0 as f64 + (self.hidden_pos.0 - self.base_pos.0) as f64 * t;
-        let y = self.base_pos.1 as f64 + (self.hidden_pos.1 - self.base_pos.1) as f64 * t;
+        let t = if self.m.pulse { 0.0 } else { self.recede };
+        let x = self.base_pos.0 as f64
+            + (self.hidden_pos.0 - self.base_pos.0) as f64 * t
+            + self.dock_offset.0;
+        let y = self.base_pos.1 as f64
+            + (self.hidden_pos.1 - self.base_pos.1) as f64 * t
+            + self.dock_offset.1;
         unsafe {
             let _ = SetWindowPos(
                 self.hwnd,
@@ -529,9 +630,18 @@ impl PanelWindow {
         if self.hidden == hidden {
             return;
         }
+        let now = quotascope_core::timeutil::now_ms();
+        self.content_fade_from = crate::pulse_rail::content_opacity(
+            self.hidden,
+            self.content_fade_from,
+            now.saturating_sub(self.content_fade_started_at),
+        );
+        self.content_fade_started_at = now;
         self.hidden = hidden;
         if hidden {
             self.hide_card();
+        } else {
+            self.rail_opened_at = quotascope_core::timeutil::now_ms();
         }
     }
 
@@ -543,9 +653,9 @@ impl PanelWindow {
         // sunk, and let the rings bounce in again — the arrival the launch
         // eased through.
         self.set_hidden(false);
-        self.hide_at = self
-            .can_retreat()
-            .then(|| quotascope_core::timeutil::now_ms() + RETREAT_DELAY_MS);
+        self.hide_at = self.can_retreat().then(|| {
+            quotascope_core::timeutil::now_ms() + if self.m.pulse { 320 } else { RETREAT_DELAY_MS }
+        });
         self.presence = 0.0;
         self.presence_v = 0.0;
         self.place();
@@ -553,7 +663,7 @@ impl PanelWindow {
     }
 
     pub fn hide(&mut self) {
-        self.hide_card();
+        self.finish_hide_card();
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
@@ -579,7 +689,7 @@ impl PanelWindow {
         self.arc_springs = entries
             .iter()
             .map(|e| {
-                let id = e.account.id();
+                let id = e.visual_id();
                 let seed = old.get(&id).copied().unwrap_or((0.0, 0.0, 0.0, 0.0));
                 (id, seed)
             })
@@ -588,11 +698,42 @@ impl PanelWindow {
         self.emphasis = entries
             .iter()
             .map(|e| {
-                let id = e.account.id();
+                let id = e.visual_id();
                 let seed = old.get(&id).copied().unwrap_or((0.0, 0.0));
                 (id, seed)
             })
             .collect();
+        let mut entries = entries;
+        let now = quotascope_core::timeutil::now_ms();
+        for entry in &mut entries {
+            let visual_id = entry.visual_id();
+            if let Some(style) = entry.ring.robot.as_mut() {
+                if let Some(old) = self.entries.iter().find(|old| old.visual_id() == visual_id) {
+                    let reset = old
+                        .headline
+                        .as_ref()
+                        .zip(entry.headline.as_ref())
+                        .is_some_and(|(a, b)| {
+                            a.id == b.id
+                                && a.resets_at.zip(b.resets_at).is_some_and(|(a, b)| b > a)
+                                && b.used_fraction < a.used_fraction
+                        });
+                    if reset
+                        || (old.ring.is_busy
+                            && !entry.ring.is_busy
+                            && quotascope_core::settings::with(|s| {
+                                s.reads_token_spend && s.animates_ring_activity
+                            }))
+                    {
+                        style.gesture = if reset { 1 } else { 2 };
+                        style.gesture_at = now;
+                    } else if let Some(previous) = &old.ring.robot {
+                        style.gesture = previous.gesture;
+                        style.gesture_at = previous.gesture_at;
+                    }
+                }
+            }
+        }
         self.entries = entries;
         self.emphasis_target = self.emphasis_weights();
         if count_changed {
@@ -604,7 +745,7 @@ impl PanelWindow {
             .map(|s| s >= self.entries.len())
             .unwrap_or(false)
         {
-            self.hide_card();
+            self.finish_hide_card();
         } else if self.card_slot.is_some() {
             // A background history read or a detailed-card toggle changes
             // the height even when the pointer has not moved.
@@ -615,6 +756,9 @@ impl PanelWindow {
 
     /// The ring's model, updated in place so an animation state survives
     /// the snapshot swap.
+    pub fn activity_visible(&self) -> bool {
+        self.is_visible() && !self.hidden
+    }
     pub fn entries_mut(&mut self) -> &mut Vec<RailEntry> {
         &mut self.entries
     }
@@ -626,6 +770,12 @@ impl PanelWindow {
         self.set_frame_interval(30);
         let Some(canvas) = self.canvas.as_ref() else {
             return;
+        };
+
+        let backdrop = if self.glass_capture_enabled {
+            self.glass_capture.frame(self.hwnd, &canvas.rt)
+        } else {
+            None
         };
 
         canvas.begin();
@@ -645,6 +795,65 @@ impl PanelWindow {
 
         // The rail is the window: Mica behind it all, ink only here.
         let rail = (0.0, 0.0, self.window_units.0, self.window_units.1);
+        if self.m.pulse {
+            let surface = quotascope_core::settings::with(|settings| {
+                let threshold = usage_tint::warning_fraction(settings.warning_threshold);
+                self.entries
+                    .iter()
+                    .filter_map(|entry| entry.headline.as_ref())
+                    .max_by(|a, b| a.used_fraction.total_cmp(&b.used_fraction))
+                    .filter(|window| {
+                        self.hidden
+                            && settings.dock_shows_alert_color
+                            && (window.is_exhausted || window.used_fraction >= threshold)
+                    })
+                    .map(|window| {
+                        crate::d2d::Rgba::from(usage_tint::color_with(
+                            window.used_fraction,
+                            window.is_exhausted,
+                            threshold,
+                        ))
+                    })
+                    .unwrap_or_else(|| {
+                        if self.m.glass {
+                            crate::d2d::Rgba::new(0.05, 0.07, 0.09, 0.22)
+                        } else {
+                            crate::d2d::Rgba::rgb(0.0, 0.0, 0.0)
+                        }
+                    })
+            });
+            if let (Ok(shape), Ok(brush)) = (
+                crate::pulse_rail::shape(
+                    engine,
+                    rail.2,
+                    rail.3,
+                    self.m.scale,
+                    self.edge,
+                    self.docked,
+                    if self.docked { 1.0 - self.recede } else { 1.0 },
+                ),
+                painter.brush(surface),
+            ) {
+                if let Some(bitmap) = backdrop.as_ref() {
+                    if let Ok(mask) = shape.cast() {
+                        crate::liquid_glass::paint_masked(
+                            &painter,
+                            bitmap,
+                            &mask,
+                            rail.2 as f32,
+                            rail.3 as f32,
+                            1.0,
+                        );
+                    }
+                }
+                painter.fill_geometry(&shape, &brush);
+                if self.m.glass {
+                    if let Ok(rim) = painter.brush(crate::d2d::Rgba::new(1.0, 1.0, 1.0, 0.20)) {
+                        painter.draw_geometry(&shape, &rim, self.m.s(1.0) as f32, true);
+                    }
+                }
+            }
+        }
         // The arrival spring drives both the fade and the ring's size, so
         // the overshoot reads as a bounce, not as a flicker. Each ring's
         // own emphasis spring is the focus gesture — halo brightness in
@@ -652,33 +861,84 @@ impl PanelWindow {
         // a smooth function of where the pointer is, so the focus flows
         // across the rail instead of switching.
         let arrive = self.presence.clamp(0.0, 1.0);
-        let ring_scale = 0.55 + 0.45 * self.presence;
-        if arrive > 0.0 && count > 0 {
+        let ring_scale = if self.m.pulse {
+            1.0
+        } else {
+            0.55 + 0.45 * self.presence
+        };
+        let ring_opacity = if self.m.pulse && self.docked {
+            crate::pulse_rail::content_opacity(
+                self.hidden,
+                self.content_fade_from,
+                (now_ms as i64).saturating_sub(self.content_fade_started_at),
+            )
+        } else {
+            1.0
+        };
+        if arrive > 0.0 && count > 0 && ring_opacity > 0.0 {
+            use windows::Win32::Graphics::Direct2D::{
+                ID2D1Layer, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_LAYER_OPTIONS_NONE,
+                D2D1_LAYER_PARAMETERS,
+            };
+            let layer = D2D1_LAYER_PARAMETERS {
+                contentBounds: crate::d2d::rect(0.0, 0.0, rail.2 as f32, rail.3 as f32),
+                geometricMask: std::mem::ManuallyDrop::new(None),
+                maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform: crate::d2d::identity_matrix(),
+                opacity: ring_opacity as f32,
+                opacityBrush: std::mem::ManuallyDrop::new(None),
+                layerOptions: D2D1_LAYER_OPTIONS_NONE,
+            };
+            unsafe {
+                painter.rt.PushLayer(&layer, None::<&ID2D1Layer>);
+            }
             let label_shows = if self.edge.is_vertical() {
                 self.m.side_percentages
             } else {
                 self.m.top_percentages
             };
-            let ink = theme_panel::palette().text_primary;
+            let ink = if self.m.pulse {
+                theme_panel::DARK.text_primary
+            } else {
+                theme_panel::palette().text_primary
+            };
             for (index, entry) in self.entries.iter().enumerate() {
                 let wake = self
                     .emphasis
-                    .get(&entry.account.id())
+                    .get(&entry.visual_id())
                     .map(|s| s.0)
                     .unwrap_or(0.0);
                 let mut model = entry.ring.clone();
                 model.halo = wake;
+                if let Some(spring) = self.arc_springs.get(&entry.visual_id()) {
+                    if model.used_fraction.is_some() {
+                        model.used_fraction = Some(spring.0.clamp(0.0, 1.0));
+                    }
+                    if model.second_fraction.is_some() {
+                        model.second_fraction = Some(spring.2.clamp(0.0, 1.0));
+                    }
+                }
                 let base = ring_center(&self.m, index, rail, self.edge);
-                let center = magnetic_lean(base, self.cursor, wake);
+                let center = if self.m.pulse {
+                    base
+                } else {
+                    magnetic_lean(base, self.cursor, wake)
+                };
                 // The mark leans further than the ring around it: the same
                 // pull at 60% strength, measured from the tipped centre, so
                 // the icon reads as the attracted thing inside.
-                let mark = magnetic_lean(center, self.cursor, wake * 0.6);
+                let mark = if self.m.pulse {
+                    center
+                } else {
+                    magnetic_lean(center, self.cursor, wake * 0.6)
+                };
                 let _ = draw_ring(
                     &painter,
                     center,
                     mark,
-                    self.m.s(dock::RING_DIAMETER) * ring_scale * (1.0 + 0.1 * wake),
+                    self.m.s(dock::RING_DIAMETER)
+                        * ring_scale
+                        * (1.0 + if self.m.pulse { 0.06 } else { 0.1 } * wake),
                     self.m.s(dock::RING_LINE_WIDTH),
                     self.m.scale,
                     &model,
@@ -691,8 +951,14 @@ impl PanelWindow {
                     } else {
                         entry.figure.clone()
                     };
-                    let color = if entry.headline.is_none() && entry.figure == "—" {
-                        theme_panel::palette().text_disabled
+                    let color = if self.m.pulse && entry.ring.is_spent {
+                        crate::d2d::Rgba::from(usage_tint::EXHAUSTED)
+                    } else if entry.headline.is_none() && entry.figure == "—" {
+                        if self.m.pulse {
+                            theme_panel::DARK.text_disabled
+                        } else {
+                            theme_panel::palette().text_disabled
+                        }
                     } else {
                         ink
                     }
@@ -700,7 +966,7 @@ impl PanelWindow {
                     let brush = painter.brush(color).unwrap();
                     let text_w = self.m.s(dock::PERCENT_TEXT_WIDTH);
                     let text_h = self.m.s(dock::PERCENT_TEXT_HEIGHT);
-                    let gap = self.m.s(dock::RING_TO_TEXT);
+                    let gap = dock::text_gap(&self.m);
                     let (tx, ty) = if self.m.label_leads {
                         (
                             center.X - text_w as f32 / 2.0,
@@ -723,6 +989,9 @@ impl PanelWindow {
                     );
                 }
             }
+            unsafe {
+                painter.rt.PopLayer();
+            }
         }
 
         canvas.present();
@@ -732,7 +1001,21 @@ impl PanelWindow {
         if self.card_shown() {
             if let Some(slot) = self.card_slot {
                 if let Some((data, _)) = self.card_payload(slot) {
+                    let centre = ring_center(
+                        &self.m,
+                        slot,
+                        (0.0, 0.0, self.window_units.0, self.window_units.1),
+                        self.edge,
+                    );
+                    let pointer = if self.edge.is_vertical() {
+                        (self.base_pos.1 as f64 + centre.Y as f64 * self.dpi - self.card_y)
+                            / self.dpi
+                    } else {
+                        (self.base_pos.0 as f64 + centre.X as f64 * self.dpi - self.card_x)
+                            / self.dpi
+                    };
                     if let Some(flyout) = self.card.as_mut() {
+                        flyout.configure(self.m.pulse, self.edge, pointer);
                         flyout.draw(&data, &self.m, self.card_alpha.min(1.0) as f32);
                     }
                 }
@@ -763,7 +1046,13 @@ impl PanelWindow {
             usage: usage.clone(),
             title: entry.title.clone(),
             monogram: entry.monogram.clone(),
-            icon: Some(usage.provider().raw().to_string()),
+            icon: Some(
+                if usage.provider() == quotascope_core::model::Provider::Extension {
+                    usage.account.id()
+                } else {
+                    usage.provider().raw().to_string()
+                },
+            ),
             shows_remaining: quotascope_core::settings::with(|s| s.shows_remaining),
             shows_forecast: forecast,
             warning_fraction: quotascope_core::settings::with(|s| {
@@ -790,11 +1079,12 @@ impl PanelWindow {
     /// First appearance lands in place and fades up on the spring; a move
     /// between rings slides on the position spring.
     fn place_card(&mut self) {
+        self.closing_card = false;
         let Some(slot) = self.card_slot else {
             self.hide_card();
             return;
         };
-        let Some((data, (cw, ch))) = self.card_payload(slot) else {
+        let Some((data, (body_w, body_h))) = self.card_payload(slot) else {
             self.hide_card();
             return;
         };
@@ -807,13 +1097,20 @@ impl PanelWindow {
         let (wx, wy) = self.base_pos;
         let (ww, wh) = self.phys_size;
         let (_, work) = winutil::monitor_work_at(wx + ww / 2, wy + wh / 2);
-        let ch = ch.min((work.height() as f64 / self.dpi - 24.0).max(120.0));
+        let extra = if self.m.pulse { self.m.s(20.0) } else { 0.0 };
+        let cw = body_w + if self.edge.is_vertical() { extra } else { 0.0 };
+        let ch = (body_h + if self.edge.is_vertical() { 0.0 } else { extra })
+            .min((work.height() as f64 / self.dpi - 24.0).max(120.0));
         let dpi = self.dpi;
         let rail = (0.0, 0.0, self.window_units.0, self.window_units.1);
         let center = ring_center(&self.m, slot, rail, self.edge);
         let ring_x = wx as f64 + center.X as f64 * dpi;
         let ring_y = wy as f64 + center.Y as f64 * dpi;
-        let gap = self.m.s(card::HORIZONTAL_GAP) * dpi;
+        let gap = self.m.s(if self.m.pulse {
+            8.0
+        } else {
+            card::HORIZONTAL_GAP
+        }) * dpi;
         let w = cw * dpi;
         let h = ch * dpi;
 
@@ -837,6 +1134,12 @@ impl PanelWindow {
             // resize in place at wherever the slide has reached.
             self.card_target = Some((tx as i32, ty as i32));
             let flyout = self.card.as_mut().expect("panel flyout");
+            let pointer = if self.edge.is_vertical() {
+                (ring_y - self.card_y) / dpi
+            } else {
+                (ring_x - self.card_x) / dpi
+            };
+            flyout.configure(self.m.pulse, self.edge, pointer);
             flyout.show_at(self.card_x as i32, self.card_y as i32, (cw, ch), dpi);
         } else {
             // First appearance lands where it belongs, empty, and the
@@ -849,6 +1152,12 @@ impl PanelWindow {
             self.card_alpha_v = 0.0;
             self.card_target = Some((tx as i32, ty as i32));
             let flyout = self.card.as_mut().expect("panel flyout");
+            let pointer = if self.edge.is_vertical() {
+                (ring_y - ty) / dpi
+            } else {
+                (ring_x - tx) / dpi
+            };
+            flyout.configure(self.m.pulse, self.edge, pointer);
             flyout.show_at(tx as i32, ty as i32, (cw, ch), dpi);
         }
         let flyout = self.card.as_mut().expect("panel flyout");
@@ -856,9 +1165,20 @@ impl PanelWindow {
     }
 
     fn hide_card(&mut self) {
+        if self.m.pulse && self.card_shown() && self.card_slot.is_some() {
+            self.closing_card = true;
+            self.hover_slot = None;
+            self.emphasis_target.clear();
+            return;
+        }
+        self.finish_hide_card();
+    }
+
+    fn finish_hide_card(&mut self) {
         if let Some(flyout) = self.card.as_mut() {
             flyout.hide();
         }
+        self.closing_card = false;
         self.card_slot = None;
         self.hover_slot = None;
         self.emphasis_target.clear();
@@ -911,14 +1231,14 @@ impl PanelWindow {
             dt,
         );
         for (i, entry) in self.entries.iter().enumerate() {
-            let Some(s) = self.emphasis.get_mut(&entry.account.id()) else {
+            let Some(s) = self.emphasis.get_mut(&entry.visual_id()) else {
                 continue;
             };
             let target = self.emphasis_target.get(i).copied().unwrap_or(0.0);
             spring_step(&mut s.0, &mut s.1, target, 0.34, 0.82, dt);
         }
         for entry in &self.entries {
-            let Some(s) = self.arc_springs.get_mut(&entry.account.id()) else {
+            let Some(s) = self.arc_springs.get_mut(&entry.visual_id()) else {
                 continue;
             };
             if let Some(target) = entry.ring.used_fraction {
@@ -934,28 +1254,15 @@ impl PanelWindow {
                 s.3 = 0.0;
             }
         }
-        // The springs write their displayed values straight onto the
-        // models, so drawing stays a read.
-        for entry in &mut self.entries {
-            if let Some(s) = self.arc_springs.get(&entry.account.id()) {
-                if entry.ring.used_fraction.is_some() {
-                    entry.ring.used_fraction = Some(s.0.clamp(0.0, 1.0));
-                }
-                if entry.ring.second_fraction.is_some() {
-                    entry.ring.second_fraction = Some(s.2.clamp(0.0, 1.0));
-                }
-            }
-        }
-
         let emphasis_moving = self.entries.iter().enumerate().any(|(i, e)| {
             let target = self.emphasis_target.get(i).copied().unwrap_or(0.0);
             self.emphasis
-                .get(&e.account.id())
+                .get(&e.visual_id())
                 .is_some_and(|s| !settled(s.0, s.1, target))
         });
         let moving = !(settled(self.presence, self.presence_v, 1.0) && !emphasis_moving)
             || self.entries.iter().any(|e| {
-                let Some(s) = self.arc_springs.get(&e.account.id()) else {
+                let Some(s) = self.arc_springs.get(&e.visual_id()) else {
                     return false;
                 };
                 e.ring.used_fraction.is_some_and(|t| !settled(s.0, s.1, t))
@@ -971,16 +1278,16 @@ impl PanelWindow {
                 &mut self.card_x,
                 &mut self.card_vx,
                 tx as f64,
-                0.34,
-                0.82,
+                if self.m.pulse { 0.28 } else { 0.34 },
+                if self.m.pulse { 0.84 } else { 0.82 },
                 dt,
             );
             spring_step(
                 &mut self.card_y,
                 &mut self.card_vy,
                 ty as f64,
-                0.34,
-                0.82,
+                if self.m.pulse { 0.28 } else { 0.34 },
+                if self.m.pulse { 0.84 } else { 0.82 },
                 dt,
             );
             if !(settled(self.card_x, self.card_vx, tx as f64)
@@ -992,15 +1299,20 @@ impl PanelWindow {
                 moving = true;
             }
             // The content's fade-up after (or during) the slide.
-            if self.card_alpha < 1.0 {
+            let alpha_target = if self.closing_card { 0.0 } else { 1.0 };
+            if !settled(self.card_alpha, self.card_alpha_v, alpha_target) {
                 spring_step(
                     &mut self.card_alpha,
                     &mut self.card_alpha_v,
-                    1.0,
-                    0.32,
-                    0.86,
+                    alpha_target,
+                    if self.m.pulse { 0.28 } else { 0.32 },
+                    if self.m.pulse { 0.84 } else { 0.86 },
                     dt,
                 );
+                moving = true;
+            }
+            if self.closing_card && self.card_alpha <= 0.01 {
+                self.finish_hide_card();
                 moving = true;
             }
         }
@@ -1041,20 +1353,57 @@ impl PanelWindow {
                 &mut self.recede,
                 &mut self.recede_v,
                 recede_target,
-                0.45,
-                0.8,
+                if self.m.pulse { 0.32 } else { 0.45 },
+                if self.m.pulse { 0.86 } else { 0.8 },
                 dt,
             );
             self.apply_position();
             moving = true;
         }
+        if self.m.pulse
+            && self.docked
+            && now.saturating_sub(self.content_fade_started_at)
+                < if self.hidden { 100 } else { 300 }
+        {
+            moving = true;
+        }
 
+        if self.drag.is_none()
+            && (!settled(self.dock_offset.0, self.dock_velocity.0, 0.0)
+                || !settled(self.dock_offset.1, self.dock_velocity.1, 0.0))
+        {
+            spring_step(
+                &mut self.dock_offset.0,
+                &mut self.dock_velocity.0,
+                0.0,
+                0.36,
+                0.72,
+                dt,
+            );
+            spring_step(
+                &mut self.dock_offset.1,
+                &mut self.dock_velocity.1,
+                0.0,
+                0.36,
+                0.72,
+                dt,
+            );
+            self.apply_position();
+            moving = true;
+        }
         // Any busy ring keeps the frame clock alive.
         let busy = self
-            .entries
-            .iter()
-            .any(|e| e.ring.is_busy || e.ring.is_refreshing);
-        if moving || busy || card_changed {
+            .card
+            .as_ref()
+            .is_some_and(|card| card.is_transitioning())
+            || self.entries.iter().any(|e| {
+                e.ring.is_busy
+                    || e.ring.is_refreshing
+                    || (e.ring.has_reading
+                        && !e.ring.is_spent
+                        && e.ring.robot.as_ref().is_some_and(|s| s.animated))
+            }) && (!self.hidden || self.card_shown());
+        if moving || busy || card_changed || self.glass_capture_enabled {
             self.redraw();
         }
         moving || busy || self.leave_at.is_some() || self.hide_at.is_some()
@@ -1063,6 +1412,20 @@ impl PanelWindow {
     pub fn on_mouse_move(&mut self, x: i32, y: i32) {
         if self.drag.is_some() {
             self.drag_move(x, y);
+            return;
+        }
+        let mut actual = POINT::default();
+        let mut bounds = RECT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut actual);
+            let _ = GetWindowRect(self.hwnd, &mut bounds);
+        }
+        if actual.x < bounds.left
+            || actual.x >= bounds.right
+            || actual.y < bounds.top
+            || actual.y >= bounds.bottom
+        {
+            self.on_mouse_leave();
             return;
         }
         self.leave_at = None;
@@ -1083,10 +1446,15 @@ impl PanelWindow {
             _ => uy - rail.1,
         };
         let slot = geometry::dock::slot_at(&self.m, along, self.edge.axis(), count);
+        if self.m.pulse {
+            self.emphasis_target = (0..count)
+                .map(|i| if Some(i) == slot { 1.0 } else { 0.0 })
+                .collect();
+        }
         if slot != self.hover_slot {
             self.hover_slot = slot;
-            self.card_slot = slot;
-            if slot.is_some() {
+            if let Some(slot) = slot {
+                self.card_slot = Some(slot);
                 self.place_card();
             } else {
                 self.hide_card();
@@ -1112,7 +1480,10 @@ impl PanelWindow {
         // And if it stays gone, the dock sinks back off-screen — unless a
         // setting or a free-floating panel says it has nowhere to go.
         if self.can_retreat() {
-            self.hide_at = Some(quotascope_core::timeutil::now_ms() + RETREAT_DELAY_MS);
+            self.hide_at = Some(
+                quotascope_core::timeutil::now_ms()
+                    + if self.m.pulse { 320 } else { RETREAT_DELAY_MS },
+            );
         }
     }
 
@@ -1137,12 +1508,16 @@ impl PanelWindow {
     /// linger as leaving the bar, in case the pointer is heading back.
     pub fn on_card_pointer(&mut self, entered: bool) {
         if entered {
+            self.closing_card = false;
             self.leave_at = None;
             self.hide_at = None;
         } else {
             self.leave_at = Some(quotascope_core::timeutil::now_ms() + CARD_LINGER_MS);
             if self.can_retreat() {
-                self.hide_at = Some(quotascope_core::timeutil::now_ms() + RETREAT_DELAY_MS);
+                self.hide_at = Some(
+                    quotascope_core::timeutil::now_ms()
+                        + if self.m.pulse { 320 } else { RETREAT_DELAY_MS },
+                );
             }
         }
     }
@@ -1164,17 +1539,38 @@ impl PanelWindow {
             _ => uy - rail.1,
         };
         if let Some(slot) = geometry::dock::slot_at(&self.m, along, self.edge.axis(), count) {
-            if let Some(entry) = self.entries.get(slot) {
-                let _ = self
-                    .events
-                    .send(PanelEvent::RefreshAccount(entry.account.clone()));
-                // Immediate visible feedback; the store's answer lands
-                // through the usual channel.
-                if let Some(e) = self.entries.get_mut(slot) {
-                    e.ring.is_refreshing = true;
+            if self.m.pulse {
+                let c = ring_center(&self.m, slot, rail, self.edge);
+                let dx = ux - f64::from(c.X);
+                let dy = uy - f64::from(c.Y);
+                let radius = self.m.s(dock::RING_DIAMETER / 2.0 * 1.08);
+                if dx * dx + dy * dy > radius * radius {
+                    // Labels and the spaces between rings remain drag handles.
+                } else if quotascope_core::timeutil::now_ms() - self.rail_opened_at < 300 {
+                    return;
+                } else if let Some(entry) = self.entries.get(slot) {
+                    let _ = self
+                        .events
+                        .send(PanelEvent::RefreshAccount(entry.account.clone()));
+                    if let Some(e) = self.entries.get_mut(slot) {
+                        e.ring.is_refreshing = true;
+                    }
+                    self.redraw();
+                    return;
                 }
-                self.redraw();
-                return;
+            } else {
+                if let Some(entry) = self.entries.get(slot) {
+                    let _ = self
+                        .events
+                        .send(PanelEvent::RefreshAccount(entry.account.clone()));
+                    // Immediate visible feedback; the store's answer lands
+                    // through the usual channel.
+                    if let Some(e) = self.entries.get_mut(slot) {
+                        e.ring.is_refreshing = true;
+                    }
+                    self.redraw();
+                    return;
+                }
             }
         }
 
@@ -1200,7 +1596,22 @@ impl PanelWindow {
             }
             // Re-place through the settings so a fused edge lands exactly
             // flush, measured against what the window was granted.
+            let mut before = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(self.hwnd, &mut before);
+            }
             self.reload_settings_preserving_openness();
+            if drag.moved && quotascope_core::settings::with(|s| s.liquid_docking) {
+                let cap = 96.0 * self.dpi;
+                self.dock_offset = (
+                    (before.left - self.base_pos.0) as f64,
+                    (before.top - self.base_pos.1) as f64,
+                );
+                self.dock_offset.0 = self.dock_offset.0.clamp(-cap, cap);
+                self.dock_offset.1 = self.dock_offset.1.clamp(-cap, cap);
+                self.dock_velocity = (0.0, 0.0);
+                self.apply_position();
+            }
         }
     }
 
@@ -1209,7 +1620,7 @@ impl PanelWindow {
         self.reload_settings();
     }
 
-    fn drag_move(&mut self, x: i32, y: i32) {
+    fn drag_move(&mut self, _x: i32, _y: i32) {
         let Some(drag) = self.drag.as_mut() else {
             return;
         };
@@ -1218,11 +1629,19 @@ impl PanelWindow {
 
         // The pointer's monitor is the one that matters: clamping against
         // the window's own screen would make a second monitor unreachable.
-        let cursor = POINT { x, y };
+        let settings = quotascope_core::settings::with(Clone::clone);
+        let mut cursor = POINT::default();
+        if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+            return;
+        }
         let (monitor_rect, work) = winutil::monitor_work_at(cursor.x, cursor.y);
         let dpi_scale = work_dpi(&monitor_rect).max(0.5);
         let phys_w = (self.window_units.0 * dpi_scale) as i32;
-        let margin = (dock::EDGE_MARGIN * dpi_scale) as i32;
+        let margin = if self.m.pulse {
+            0
+        } else {
+            (dock::EDGE_MARGIN * dpi_scale) as i32
+        };
 
         let want_x = cursor.x - (gx * dpi_scale) as i32;
         let want_y = cursor.y - (gy * dpi_scale) as i32;
@@ -1231,27 +1650,23 @@ impl PanelWindow {
         // decided from the cursor first, then the size is recomputed for
         // it, then the bar is placed against that size.
         let fuse = self.m.s(FUSE_DISTANCE) as i32;
-        let dist_right = (work.right - margin - (want_x + phys_w)).abs();
-        let dist_left = (want_x - margin - work.left).abs();
-        let dist_top = (want_y - margin - work.top).abs();
-
-        let new_edge = if dist_right <= fuse {
-            Some(Edge::Right)
-        } else if dist_left <= fuse {
-            Some(Edge::Left)
-        } else if dist_top <= fuse {
-            Some(Edge::Top)
-        } else if (work.bottom - want_y - (self.window_units.1 * dpi_scale) as i32).abs() <= fuse {
-            Some(Edge::Bottom)
-        } else {
-            None
-        };
-        let new_docked = new_edge.is_some();
-        let new_edge = new_edge.unwrap_or(self.edge);
+        let snaps = settings.snaps_to_edges;
+        let desired_h = (self.window_units.1 * dpi_scale) as i32;
+        let (new_edge, new_docked) = geometry::dock_for_drag(
+            self.edge,
+            self.docked,
+            (cursor.x, cursor.y),
+            (want_x, want_y, want_x + phys_w, want_y + desired_h),
+            (work.left, work.top, work.right, work.bottom - margin),
+            monitor_rect.bottom,
+            snaps,
+            fuse,
+        );
 
         if new_edge != self.edge || new_docked != self.docked {
             self.edge = new_edge;
             self.docked = new_docked;
+            self.m.docked = new_docked;
             self.compute_window_size();
         }
         let phys_w = (self.window_units.0 * dpi_scale) as i32;
@@ -1260,9 +1675,20 @@ impl PanelWindow {
         let (nx, ny) = match (self.docked, self.edge) {
             (true, Edge::Right) => (
                 work.right - phys_w - margin,
-                work.top + (work.height() - phys_h) / 2,
+                if self.m.pulse {
+                    want_y.clamp(work.top, (work.bottom - phys_h).max(work.top))
+                } else {
+                    work.top + (work.height() - phys_h) / 2
+                },
             ),
-            (true, Edge::Left) => (work.left + margin, work.top + (work.height() - phys_h) / 2),
+            (true, Edge::Left) => (
+                work.left + margin,
+                if self.m.pulse {
+                    want_y.clamp(work.top, (work.bottom - phys_h).max(work.top))
+                } else {
+                    work.top + (work.height() - phys_h) / 2
+                },
+            ),
             (true, Edge::Top) => {
                 let x = want_x.clamp(
                     work.left + margin,
@@ -1278,13 +1704,20 @@ impl PanelWindow {
                 (x, work.bottom - phys_h - margin)
             }
             _ => {
+                let bounds = if snaps { work } else { monitor_rect };
+                let gap_x = if snaps && self.edge.is_vertical() {
+                    margin
+                } else {
+                    0
+                };
+                let gap_y = if snaps { margin } else { 0 };
                 let x = want_x.clamp(
-                    work.left + margin,
-                    (work.right - phys_w - margin).max(work.left + margin),
+                    bounds.left + gap_x,
+                    (bounds.right - phys_w - gap_x).max(bounds.left + gap_x),
                 );
                 let y = want_y.clamp(
-                    work.top + margin,
-                    (work.bottom - phys_h - margin).max(work.top + margin),
+                    bounds.top + gap_y,
+                    (bounds.bottom - phys_h - gap_y).max(bounds.top + gap_y),
                 );
                 (x, y)
             }
@@ -1292,7 +1725,12 @@ impl PanelWindow {
 
         // Keep the DPI canvas in step when the drag crossed to another
         // monitor.
-        if (self.dpi - dpi_scale).abs() > 0.01 {
+        if (self.dpi - dpi_scale).abs() > 0.01
+            || self
+                .canvas
+                .as_ref()
+                .is_some_and(|canvas| canvas.width != phys_w || canvas.height != phys_h)
+        {
             self.dpi = dpi_scale;
             if let Some(canvas) = self.canvas.as_mut() {
                 let _ = canvas.resize(
@@ -1302,6 +1740,18 @@ impl PanelWindow {
             }
         }
 
+        let (nx, ny) = if settings.liquid_docking {
+            let mut positioned = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(self.hwnd, &mut positioned);
+            }
+            (
+                (positioned.left as f64 + (nx - positioned.left) as f64 * 0.72) as i32,
+                (positioned.top as f64 + (ny - positioned.top) as f64 * 0.72) as i32,
+            )
+        } else {
+            (nx, ny)
+        };
         unsafe {
             let _ = SetWindowPos(
                 self.hwnd,
@@ -1322,7 +1772,8 @@ impl PanelWindow {
         unsafe {
             let _ = GetCursorPos(&mut pt);
         }
-        let (_, work) = winutil::monitor_work_at(pt.x, pt.y);
+        let (screen, usable) = winutil::monitor_work_at(pt.x, pt.y);
+        let work = if self.docked { usable } else { screen };
         let mut rect = RECT::default();
         unsafe {
             let _ = GetWindowRect(self.hwnd, &mut rect);
@@ -1333,7 +1784,13 @@ impl PanelWindow {
         let x = ((rect.left - work.left) as f64 / work_w).clamp(0.0, 1.0);
         let y = ((rect.top - work.top) as f64 / work_h).clamp(0.0, 1.0);
 
-        let name = winutil::monitor_name(winutil::monitor_from_hwnd(self.hwnd));
+        let monitor = unsafe {
+            windows::Win32::Graphics::Gdi::MonitorFromPoint(
+                pt,
+                windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST,
+            )
+        };
+        let name = winutil::monitor_name(monitor);
         quotascope_core::settings::mutate(|s| {
             s.floating = !self.docked;
             s.dock_side = match self.edge {
@@ -1342,8 +1799,13 @@ impl PanelWindow {
                 Edge::Top => "top".into(),
                 Edge::Bottom => "bottom".into(),
             };
-            s.float_x = x;
-            s.float_y = y;
+            if self.m.pulse && self.docked {
+                s.pulse_dock_x = x;
+                s.pulse_dock_y = y;
+            } else {
+                s.float_x = x;
+                s.float_y = y;
+            }
             s.display = name;
         });
     }
@@ -1519,8 +1981,8 @@ unsafe extern "system" fn panel_wndproc(
 
     match msg {
         WM_MOUSEMOVE => {
-            let x = (lparam.0 & 0xFFFF) as u16 as i32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i32;
+            let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
             panel.on_mouse_move(x, y);
             LRESULT(0)
         }
@@ -1532,20 +1994,26 @@ unsafe extern "system" fn panel_wndproc(
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
-            let x = (lparam.0 & 0xFFFF) as u16 as i32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i32;
+            let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
             panel.on_l_button_down(x, y);
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let x = (lparam.0 & 0xFFFF) as u16 as i32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i32;
+            let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
             panel.on_l_button_up(x, y);
             LRESULT(0)
         }
         WM_TIMER => {
             let moving = panel.tick();
-            panel.set_frame_interval(if moving { 30 } else { 250 });
+            panel.set_frame_interval(if moving {
+                30
+            } else if panel.glass_capture_enabled {
+                125
+            } else {
+                250
+            });
             LRESULT(0)
         }
         // The flyout's pointer traffic, folded into the same linger logic.
@@ -1573,7 +2041,63 @@ unsafe extern "system" fn panel_wndproc(
             LRESULT(0)
         }
         WM_DESTROY => LRESULT(0),
-        WM_NCHITTEST => LRESULT(HTCLIENT as isize),
+        WM_NCHITTEST => {
+            if panel.m.pulse {
+                let mut rect = RECT::default();
+                if GetWindowRect(hwnd, &mut rect).is_ok() {
+                    let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+                    let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+                    if let Ok(shape) = crate::pulse_rail::shape(
+                        global_engine(),
+                        panel.window_units.0,
+                        panel.window_units.1,
+                        panel.m.scale,
+                        panel.edge,
+                        panel.docked,
+                        if panel.docked {
+                            1.0 - panel.recede
+                        } else {
+                            1.0
+                        },
+                    ) {
+                        let point = crate::d2d::point(
+                            (x - rect.left) as f32 / panel.dpi as f32,
+                            (y - rect.top) as f32 / panel.dpi as f32,
+                        );
+                        let hit_sliver = panel.hidden && panel.docked && {
+                            let ux = (x - rect.left) as f64 / panel.dpi;
+                            let uy = (y - rect.top) as f64 / panel.dpi;
+                            let band = 20.0 * panel.m.scale;
+                            let along = 48.0 * panel.m.scale + 8.0;
+                            match panel.edge {
+                                Edge::Right => {
+                                    ux >= panel.window_units.0 - band
+                                        && (uy - panel.window_units.1 / 2.0).abs() <= along
+                                }
+                                Edge::Left => {
+                                    ux <= band && (uy - panel.window_units.1 / 2.0).abs() <= along
+                                }
+                                Edge::Top => {
+                                    uy <= band && (ux - panel.window_units.0 / 2.0).abs() <= along
+                                }
+                                Edge::Bottom => {
+                                    uy >= panel.window_units.1 - band
+                                        && (ux - panel.window_units.0 / 2.0).abs() <= along
+                                }
+                            }
+                        };
+                        if !hit_sliver
+                            && shape
+                                .FillContainsPoint(point, None, 0.25)
+                                .is_ok_and(|inside| !inside.as_bool())
+                        {
+                            return LRESULT(HTTRANSPARENT as isize);
+                        }
+                    }
+                }
+            }
+            LRESULT(HTCLIENT as isize)
+        }
         // The frame is all client: no title bar, no resize borders — the
         // styles exist only so DWM treats the window as framed and paints
         // its backdrop, border and corners.
@@ -1628,3 +2152,49 @@ impl RectExt for RECT {
 // GetMonitorInfoW is imported for the settings window's monitor lookup.
 #[allow(unused_imports)]
 use windows::Win32::Graphics::Gdi::GetMonitorInfoW as _;
+
+pub fn split_entry(
+    entry: RailEntry,
+    settings: &quotascope_core::settings::AppSettings,
+) -> Vec<RailEntry> {
+    if entry.account.provider != quotascope_core::model::Provider::Antigravity
+        || !settings.split_accounts.contains(&entry.account.id())
+    {
+        return vec![entry];
+    }
+    let Some(usage) = &entry.usage else {
+        return vec![entry];
+    };
+    let groups: std::collections::BTreeSet<_> = usage
+        .windows
+        .iter()
+        .filter_map(|w| w.scope.clone())
+        .collect();
+    if groups.is_empty() || groups.len() > 3 {
+        return vec![entry];
+    }
+    let mut out = Vec::new();
+    for group in groups {
+        if settings
+            .shown_model_groups
+            .get(&entry.account.id())
+            .is_some_and(|chosen| !chosen.contains(&group))
+        {
+            continue;
+        }
+        let mut reading = usage.clone();
+        reading.windows.retain(|w| w.scope.as_ref() == Some(&group));
+        let mut one = RailEntry::from_reading(&reading, settings, settings.shows_remaining);
+        one.title = format!("{} · {}", entry.title, group);
+        one.group = Some(group);
+        one.value_lines = entry.value_lines.clone();
+        one.history = entry.history.clone();
+        one.ring.is_refreshing = entry.ring.is_refreshing;
+        out.push(one);
+    }
+    if out.is_empty() {
+        vec![entry]
+    } else {
+        out
+    }
+}

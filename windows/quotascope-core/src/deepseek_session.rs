@@ -2,6 +2,7 @@
 //! Transport keeps HTTP refusal distinct from authentication expiration.
 use crate::deepseek_console::{self as protocol, Range};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, Unavailability};
 use serde_json::Value;
 use std::io::Read;
@@ -109,7 +110,7 @@ fn fetch(
         .get(url)
         .bearer_auth(token)
         .header("Accept", "application/json")
-        .send()
+        .observed_send()
         .map_err(|_| Unavailability::Unreachable)?;
     if let Some(problem) = status_problem(response.status().as_u16()) {
         return Err(problem);

@@ -32,7 +32,12 @@ impl HttpClient {
             // VPN or corporate proxy reaches these endpoints through it.
             .use_native_tls()
             .build()
-            .unwrap_or_else(|_| Client::new());
+            .unwrap_or_else(|_| {
+                ClientBuilder::new()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .expect("initialize the credential-safe HTTP client")
+            });
         HttpClient { client }
     }
 
@@ -109,15 +114,41 @@ impl HttpClient {
 
         let response = match request.send() {
             Ok(r) => r,
-            Err(_) => return Err(Outcome::Stumble(Unavailability::Unreachable)),
+            Err(_) => {
+                crate::connection_diagnostics::record(
+                    method_name(method),
+                    url,
+                    None,
+                    "",
+                    "Network request failed",
+                    headers,
+                    body,
+                );
+                return Err(Outcome::Stumble(Unavailability::Unreachable));
+            }
         };
 
         let status = response.status();
+        let text = response_text(response, method_name(method), url, headers, body)
+            .map_err(|_| Outcome::Unavailable(Unavailability::UnreadableReply))?;
         if status.as_u16() == 404 {
             return Err(Outcome::NotFound);
         }
         if !status.is_success() {
             let reason = match status.as_u16() {
+                403 if url == "https://opencode.ai/zen/go/v1/usage"
+                    && serde_json::from_str::<serde_json::Value>(&text)
+                        .ok()
+                        .and_then(|v| {
+                            v.pointer("/error/type")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_owned)
+                        })
+                        .as_deref()
+                        == Some("EntitlementError") =>
+                {
+                    Unavailability::NoPlan
+                }
                 401 | 403 => Unavailability::ApiKeyRefused,
                 300..=399 => Unavailability::ApiKeyRefused,
                 429 => Unavailability::RateLimited,
@@ -128,10 +159,6 @@ impl HttpClient {
             return Err(Outcome::Unavailable(reason));
         }
 
-        let text = match response.text() {
-            Ok(t) => t,
-            Err(_) => return Err(Outcome::Unavailable(Unavailability::UnreadableReply)),
-        };
         serde_json::from_str(&text)
             .map_err(|_| Outcome::Unavailable(Unavailability::UnreadableReply))
     }
@@ -189,4 +216,158 @@ pub fn array_field<'a>(value: &'a serde_json::Value, key: &str) -> &'a [serde_js
 
 pub fn object_field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
     value.get(key).filter(|v| v.is_object())
+}
+
+fn method_name(method: Method) -> &'static str {
+    match method {
+        Method::Get => "GET",
+        Method::Post => "POST",
+    }
+}
+pub fn response_text(
+    response: Response,
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<&serde_json::Value>,
+) -> Result<String, Unavailability> {
+    use std::io::Read;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let mut bytes = Vec::new();
+    response
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Unavailability::UnreadableReply)?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        crate::connection_diagnostics::record(
+            method,
+            url,
+            Some(status),
+            &content_type,
+            "[Response exceeds 4 MiB limit]",
+            headers,
+            body,
+        );
+        return Err(Unavailability::UnreadableReply);
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    crate::connection_diagnostics::record(
+        method,
+        url,
+        Some(status),
+        &content_type,
+        &text,
+        headers,
+        body,
+    );
+    Ok(text)
+}
+
+/// Provider-specific routes retain metadata and bytes while sending a masked
+/// copy to a user-initiated diagnostics capture.
+pub trait ObserveRequest {
+    fn observed_send(self) -> Result<ObservedResponse, Unavailability>;
+}
+impl ObserveRequest for reqwest::blocking::RequestBuilder {
+    fn observed_send(self) -> Result<ObservedResponse, Unavailability> {
+        use std::io::Read;
+        let (client, request) = self.build_split();
+        let request = request.map_err(|_| Unavailability::Unreachable)?;
+        let method = request.method().as_str().to_string();
+        let address = request.url().to_string();
+        let headers: Vec<(String, String)> = request
+            .headers()
+            .iter()
+            .filter_map(|(key, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (key.to_string(), value.to_string()))
+            })
+            .collect();
+        let refs: Vec<_> = headers
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let body = request
+            .body()
+            .and_then(|body| body.as_bytes())
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
+        let mut inner = client.execute(request).map_err(|_| {
+            crate::connection_diagnostics::record(
+                &method,
+                &address,
+                None,
+                "",
+                "Network request failed",
+                &refs,
+                body.as_ref(),
+            );
+            Unavailability::Unreachable
+        })?;
+        let mut bytes = Vec::new();
+        (&mut inner)
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Unavailability::UnreadableReply)?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            crate::connection_diagnostics::record(
+                &method,
+                &address,
+                Some(inner.status().as_u16()),
+                "",
+                "[Response exceeds 16 MiB limit]",
+                &refs,
+                body.as_ref(),
+            );
+            return Err(Unavailability::UnreadableReply);
+        }
+        let content_type = inner
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        crate::connection_diagnostics::record(
+            &method,
+            &address,
+            Some(inner.status().as_u16()),
+            content_type,
+            &String::from_utf8_lossy(&bytes),
+            &refs,
+            body.as_ref(),
+        );
+        Ok(ObservedResponse {
+            inner,
+            bytes: std::io::Cursor::new(bytes),
+        })
+    }
+}
+pub struct ObservedResponse {
+    inner: Response,
+    bytes: std::io::Cursor<Vec<u8>>,
+}
+impl std::ops::Deref for ObservedResponse {
+    type Target = Response;
+    fn deref(&self) -> &Response {
+        &self.inner
+    }
+}
+impl std::io::Read for ObservedResponse {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.bytes.read(buffer)
+    }
+}
+impl ObservedResponse {
+    pub fn text(self) -> Result<String, Unavailability> {
+        Ok(String::from_utf8_lossy(self.bytes.get_ref()).into_owned())
+    }
+    pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Unavailability> {
+        serde_json::from_slice(self.bytes.get_ref()).map_err(|_| Unavailability::UnreadableReply)
+    }
 }

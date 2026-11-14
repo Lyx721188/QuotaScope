@@ -3,7 +3,7 @@
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    GetMonitorInfoW, MonitorFromPoint, HMONITOR, MONITORINFO, MONITORINFOEXW,
     MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -95,10 +95,6 @@ pub fn monitor_name(monitor: HMONITOR) -> String {
             &info.szDevice[..info.szDevice.iter().position(|c| *c == 0).unwrap_or(0)],
         )
     }
-}
-
-pub fn monitor_from_hwnd(hwnd: HWND) -> HMONITOR {
-    unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }
 }
 
 /// One-shot single-instance check. A second launch reports and exits.
@@ -257,6 +253,53 @@ pub fn apply_system_backdrop(hwnd: HWND, dark: bool) {
             std::mem::size_of::<i32>() as u32,
         );
     }
+}
+
+/// Leave the composition surface transparent so the Pulse silhouette owns it.
+///
+/// The client area must also be out of DWM's frame extension. With
+/// `DWMSBT_NONE` still inside an extended frame, DWM fills the glass layer
+/// with opaque white before compositing the swap chain, so transparent
+/// pixels read as white and the translucent fill settles on a fixed grey —
+/// the surface can never show the desktop through it.
+pub fn apply_pulse_backdrop(hwnd: HWND) {
+    unsafe {
+        let margins = windows::Win32::UI::Controls::MARGINS::default();
+        let _ = windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea(hwnd, &margins);
+        let none: i32 = 1; // DWMSBT_NONE; DWMWCP_DONOTROUND
+        let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            windows::Win32::Graphics::Dwm::DWMWA_SYSTEMBACKDROP_TYPE,
+            &none as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+        let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            windows::Win32::Graphics::Dwm::DWMWA_WINDOW_CORNER_PREFERENCE,
+            &none as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+        let border: u32 = 0xFFFF_FFFE; // DWMWA_COLOR_NONE
+        let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            windows::Win32::Graphics::Dwm::DWMWA_BORDER_COLOR,
+            &border as *const u32 as *const core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
+pub fn restore_panel_backdrop(hwnd: HWND, dark: bool) {
+    unsafe {
+        let border: u32 = 0xFFFF_FFFF; // DWMWA_COLOR_DEFAULT
+        let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+            hwnd,
+            windows::Win32::Graphics::Dwm::DWMWA_BORDER_COLOR,
+            &border as *const u32 as *const core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+    apply_system_backdrop(hwnd, dark);
 }
 
 /// Updates only the dark-mode flag of the backdrop. Re-applying the whole

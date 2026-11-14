@@ -31,6 +31,7 @@ pub enum Command {
     /// it is switched off.
     RefreshAccount(AccountKey),
     SettingsChanged,
+    ForgetAccount(AccountKey),
     Shutdown,
 }
 
@@ -127,6 +128,11 @@ fn worker(cmd_rx: Receiver<Command>, upd_tx: Sender<Update>) {
                     Some(vec![account]),
                 );
                 next_pass_at = schedule_next(&state);
+            }
+            Ok(Command::ForgetAccount(account)) => {
+                cache.forget(&account);
+                state.remove(&account.id());
+                next_pass_at = crate::timeutil::now_ms();
             }
             Ok(Command::SettingsChanged) => {
                 keys = KeyRing::load();
@@ -272,6 +278,9 @@ fn run_pass(
     let mut handles = Vec::new();
     for account in &accounts {
         let ring = keys.for_account(account);
+        let credential_context = (account.provider.uses_api_key()
+            || !account.is_primary() && account.provider != Provider::Extension)
+            .then(|| ring.credential_context(account));
         let account = account.clone();
         let added_key = if account.is_primary() {
             None
@@ -289,6 +298,7 @@ fn run_pass(
         };
         handles.push((
             account.clone(),
+            credential_context,
             std::thread::spawn(move || {
                 if !account.is_primary()
                     && account.provider != Provider::Extension
@@ -318,7 +328,9 @@ fn run_pass(
                     return services.deepseek.fetch_for_account(&ring, &basis, &account);
                 }
                 match services.for_provider(account.provider) {
-                    Some(service) => service.fetch(&ring),
+                    Some(service) => service
+                        .fetch_account(&ring, &account)
+                        .unwrap_or_else(|| service.fetch(&ring)),
                     None => ProviderUsage::unavailable(
                         account,
                         crate::model::Unavailability::NotOnWindows,
@@ -329,7 +341,7 @@ fn run_pass(
     }
 
     let mut results: Vec<ProviderUsage> = Vec::new();
-    for (account, handle) in handles {
+    for (account, credential_context, handle) in handles {
         let fetched = handle.join().unwrap_or_else(|_| {
             ProviderUsage::unavailable(account.clone(), crate::model::Unavailability::Unreachable)
         });
@@ -338,6 +350,13 @@ fn run_pass(
         // before the cache banks it: the denominator is a setting, so the
         // reading carries it wherever it goes next.
         let mut fetched = fetched;
+        if credential_context
+            .as_deref()
+            .is_some_and(|context| context != crate::provider_sites::current_context(&account))
+        {
+            continue;
+        }
+        fetched.credential_context = credential_context;
         fetched.account = account.clone();
         crate::balance_ring::apply(&mut fetched, peaks);
 
@@ -411,13 +430,13 @@ fn readings_insert(
 /// What the panel paints the moment it opens, before the first round trip.
 pub fn initial_readings_from_cache() -> Vec<ProviderUsage> {
     let mut cache = UsageCache::new();
-    crate::settings::with(|settings| {
-        settings
-            .ordered_enabled()
-            .into_iter()
-            .filter_map(|account| cache.reading(&account))
-            .collect()
-    })
+    // Cache validation reads the current credential context, including settings.
+    // Release the settings lock before asking the cache for an account.
+    let accounts = crate::settings::with(|settings| settings.ordered_enabled());
+    accounts
+        .into_iter()
+        .filter_map(|account| cache.reading(&account))
+        .collect()
 }
 
 #[cfg(test)]

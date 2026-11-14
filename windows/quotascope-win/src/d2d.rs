@@ -336,15 +336,18 @@ impl SwapchainCanvas {
     /// Clears to transparent — whatever is not drawn is backdrop.
     pub fn begin(&self) {
         unsafe {
-            let _ = self.rt.BeginDraw();
-            let _ = self.rt.Clear(None);
+            // Both are void in the windows crate; only EndDraw reports errors.
+            self.rt.BeginDraw();
+            self.rt.Clear(None);
         }
     }
 
     /// Commits the frame to the screen.
     pub fn present(&self) {
         unsafe {
-            let _ = self.rt.EndDraw(None, None);
+            if let Err(error) = self.rt.EndDraw(None, None) {
+                eprintln!("quotascope: EndDraw failed: {error:?}");
+            }
             // Vsync'd: this surface changes a few times a minute at most,
             // and one frame of wait is nothing against tearing.
             let _ = self.swap_chain.Present(1, DXGI_PRESENT(0));
@@ -480,6 +483,32 @@ impl<'a> Painter<'a> {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
+        }
+    }
+    /// Constrain long detail-card labels to their allocated horizontal space.
+    pub fn text_clipped(
+        &self,
+        text: &str,
+        r: D2D_RECT_F,
+        size_px: f32,
+        weight: DWRITE_FONT_WEIGHT,
+        brush: &ID2D1SolidColorBrush,
+        halign: u32,
+        valign: u32,
+    ) {
+        let clip = D2D_RECT_F {
+            left: r.left,
+            top: r.top - 1.0,
+            right: r.right,
+            bottom: r.bottom + 1.0,
+        };
+        unsafe {
+            self.rt
+                .PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+        self.text(text, r, size_px, weight, brush, halign, valign);
+        unsafe {
+            self.rt.PopAxisAlignedClip();
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Two-language string table (English and Simplified Chinese), read at
+//! Localized string tables, read at
 //! display time so text follows the language setting rather than freezing at
 //! whichever language was current when the reading was taken.
 
@@ -11,6 +11,7 @@ pub enum Language {
     TraditionalChinese,
     Japanese,
     Korean,
+    Russian,
 }
 
 static LANGUAGE: AtomicU8 = AtomicU8::new(0);
@@ -23,6 +24,7 @@ pub fn set_language(language: Language) {
             Language::TraditionalChinese => 2,
             Language::Japanese => 3,
             Language::Korean => 4,
+            Language::Russian => 5,
         },
         Ordering::Relaxed,
     );
@@ -34,6 +36,7 @@ pub fn current() -> Language {
         2 => Language::TraditionalChinese,
         3 => Language::Japanese,
         4 => Language::Korean,
+        5 => Language::Russian,
         _ => Language::English,
     }
 }
@@ -53,6 +56,7 @@ pub fn detect_from_system() {
         0x04 => Language::Chinese,
         0x11 => Language::Japanese,
         0x12 => Language::Korean,
+        0x19 => Language::Russian,
         _ => Language::English,
     });
 }
@@ -75,6 +79,32 @@ struct Entry {
 }
 
 const TABLE: &[Entry] = &[
+    Entry { key: "Panel appearance", en: "Panel appearance", zh: "侧边栏外观" },
+    Entry { key: "Translucent glass (experimental)", en: "Translucent glass (experimental)", zh: "半透明玻璃（实验性）" },
+    Entry { key: "For the Pulse appearance. Shows the desktop through a tinted surface; Windows blur and refraction are not applied.", en: "For the Pulse appearance. Shows the desktop through a tinted surface; Windows blur and refraction are not applied.", zh: "用于 Pulse 外观。通过带色透明表面显示桌面，不包含 Windows 模糊或折射。" },
+    Entry { key: "For Pulse: experimental live desktop blur and edge refraction, with a translucent fallback when capture is unavailable. The rail and card are excluded from desktop duplication while enabled.", en: "For Pulse: experimental live desktop blur and edge refraction, with a translucent fallback when capture is unavailable. The rail and card are excluded from desktop duplication while enabled.", zh: "用于 Pulse 外观：实验性的实时桌面模糊和边缘折射。无法采集时回退为半透明效果；启用期间轨道和卡片不会出现在桌面复制画面中。" },
+    Entry { key: "Colour the collapsed rail when a limit is low", en: "Colour the collapsed rail when a limit is low", zh: "额度不足时为收起的侧边栏着色" },
+    Entry { key: "Sign in at open-design.ai and import its browser session, or sign in to the Open Design desktop app. Model API keys cannot read usage.", en: "Sign in at open-design.ai and import its browser session, or sign in to the Open Design desktop app. Model API keys cannot read usage.", zh: "在 open-design.ai 登录后导入浏览器会话，或先登录 Open Design 桌面应用。模型 API Key 无法查询用量。" },
+    Entry { key: "Uses dim usage --json with the CLI's existing login. Sign in with dim auth login first.", en: "Uses dim usage --json with the CLI's existing login. Sign in with dim auth login first.", zh: "通过 dim usage --json 读取 CLI 已有登录，请先运行 dim auth login。" },
+    Entry { key: "Antigravity CLI (agy) is not installed.", en: "Antigravity CLI (agy) is not installed.", zh: "未安装 Antigravity CLI（agy）。" },
+    Entry { key: "Update agy to 1.1.11 or newer to read usage safely.", en: "Update agy to 1.1.11 or newer to read usage safely.", zh: "请将 agy 更新到 1.1.11 或更新版本后再读取额度。" },
+    Entry { key: "Read usage from", en: "Read usage from", zh: "用量来源" },
+    Entry { key: "Desktop app", en: "Desktop app", zh: "桌面应用" },
+    Entry { key: "Automatic tries the desktop, then agy CLI. agy 1.1.11 or newer is required; its saved login stays with the CLI.", en: "Automatic tries the desktop, then agy CLI. agy 1.1.11 or newer is required; its saved login stays with the CLI.", zh: "自动模式先读取桌面端，再尝试 agy CLI。需要 agy 1.1.11 或更新版本；登录凭据由 CLI 自行管理。" },
+    Entry { key: "Browser sessions", en: "Browser sessions", zh: "浏览器会话" },
+    Entry { key: "Browser for session import", en: "Browser for session import", zh: "导入会话所用浏览器" },
+    Entry { key: "Default browser", en: "Default browser", zh: "默认浏览器" },
+    Entry { key: "All browsers", en: "All browsers", zh: "所有浏览器" },
+    Entry { key: "Default browser reads only the browser used for links. Select a browser explicitly when signed in elsewhere.", en: "Default browser reads only the browser used for links. Select a browser explicitly when signed in elsewhere.", zh: "默认浏览器只读取系统打开链接所用的浏览器。如果登录在其他浏览器中，请手动选择。" },
+    Entry { key: "Uses a browser session. Importing reads the site's cookies from the browser selected in General. A pasted Cookie header works too.", en: "Uses a browser session. Importing reads the site's cookies from the browser selected in General. A pasted Cookie header works too.", zh: "使用浏览器会话。导入时只读取「通用」中所选浏览器的对应站点 Cookie，也可以手动粘贴 Cookie 请求头。" },
+    Entry { key: "This month", en: "This month", zh: "本月" },
+    Entry { key: "Last month", en: "Last month", zh: "上月" },
+    Entry { key: "This year", en: "This year", zh: "今年" },
+    Entry { key: "Custom range", en: "Custom range", zh: "自定义范围" },
+    Entry { key: "From (YYYY-MM-DD)", en: "From (YYYY-MM-DD)", zh: "开始日期（YYYY-MM-DD）" },
+    Entry { key: "To (YYYY-MM-DD)", en: "To (YYYY-MM-DD)", zh: "结束日期（YYYY-MM-DD）" },
+    Entry { key: "Apply range", en: "Apply range", zh: "应用范围" },
+    Entry { key: "Enter dates as YYYY-MM-DD, with start no later than end and end no later than today.", en: "Enter dates as YYYY-MM-DD, with start no later than end and end no later than today.", zh: "请使用 YYYY-MM-DD 格式，开始日期不能晚于结束日期，结束日期不能晚于今天。" },
     Entry { key: "Token activity", en: "Token activity", zh: "Token 活动" },
     Entry { key: "The past year; follows agent and model filters, independently of the time-range picker.", en: "The past year; follows agent and model filters, independently of the time-range picker.", zh: "展示过去一年，跟随工具和模型筛选，不受统计时段选择影响。" },
     Entry { key: "No local records in this selection.", en: "No local records in this selection.", zh: "这个范围没有本机记录。" },
@@ -1332,10 +1362,18 @@ const TABLE: &[Entry] = &[
 pub fn t(key: &str) -> &'static str {
     use std::sync::OnceLock;
     type Strings = std::collections::HashMap<String, String>;
+    static RUSSIAN: OnceLock<Strings> = OnceLock::new();
+    static SIMPLIFIED: OnceLock<Strings> = OnceLock::new();
     static TRADITIONAL: OnceLock<Strings> = OnceLock::new();
     static JAPANESE: OnceLock<Strings> = OnceLock::new();
     static KOREAN: OnceLock<Strings> = OnceLock::new();
     let translations = match current() {
+        Language::Chinese => Some(SIMPLIFIED.get_or_init(|| {
+            serde_json::from_str(include_str!("translations/zh-Hans.json")).unwrap_or_default()
+        })),
+        Language::Russian => Some(RUSSIAN.get_or_init(|| {
+            serde_json::from_str(include_str!("translations/ru.json")).unwrap_or_default()
+        })),
         Language::TraditionalChinese => Some(TRADITIONAL.get_or_init(|| {
             serde_json::from_str(include_str!("translations/zh-Hant.json")).unwrap_or_default()
         })),
@@ -1359,7 +1397,13 @@ pub fn t(key: &str) -> &'static str {
     // A miss is a bug in this file, but falling through to the key keeps
     // new call sites visible instead of blank. The keys are code literals,
     // so the leak is a finite, tiny set.
-    Box::leak(key.to_string().into_boxed_str())
+    static MISSING: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, &'static str>>,
+    > = std::sync::OnceLock::new();
+    let mut missing = MISSING.get_or_init(Default::default).lock().unwrap();
+    missing
+        .entry(key.into())
+        .or_insert_with(|| Box::leak(key.to_string().into_boxed_str()))
 }
 
 /// Interpolates `{xxx}`-style placeholders. Values are passed as strings so
@@ -1471,6 +1515,8 @@ pub fn provider_raw(provider: crate::model::Provider) -> &'static str {
         Replicate => "replicate",
         TypeSafe => "typeSafe",
         VercelAiGateway => "vercelAIGateway",
+        OpenDesign => "openDesign",
+        DimAgent => "dimAgent",
         Extension => "extension",
     }
 }

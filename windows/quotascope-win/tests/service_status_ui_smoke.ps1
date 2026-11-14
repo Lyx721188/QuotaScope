@@ -1,4 +1,4 @@
-# Isolated public-status failure handling and independent notification switch.
+﻿# Isolated public-status failure handling and independent notification switch.
 # The loopback proxy closes connections: no official status or account request leaves the profile.
 param([Parameter(Mandatory=$true)][string]$Executable,[string]$OutputDirectory='target/service-status-ui-validation',[switch]$ProbePublicPages)
 $ErrorActionPreference='Stop'
@@ -20,6 +20,8 @@ New-Item -ItemType Directory -Force -Path $data,(Join-Path $profile 'home') | Ou
 $proxy=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
 $proxy.Start()
 $settings=@{hasRun=$true;enabledAccounts=@();language='zh';readsTokenSpend=$false;checksForUpdates=$false;wantsAlerts=$false;alertsOnOutage=$false;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
+$fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
+$settings.notices=@{lastVersion=$fixtureVersion}
 if($ProbePublicPages){$settings.proxyMode='disabled';$settings.proxyUrl=''}
 [IO.File]::WriteAllText((Join-Path $data 'settings.json'),($settings|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 $info=[Diagnostics.ProcessStartInfo]::new([IO.Path]::GetFullPath($Executable))
@@ -76,7 +78,7 @@ function Page([string]$name) {
     $node.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
 }
 function Configure([string]$provider) {
-    Page '账户'
+    Page '账号'
     $until=[DateTime]::UtcNow.AddSeconds(15)
     do {
         $search=Nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Edit -and $_.Current.ClassName -eq 'TextBox'}|Select-Object -First 1
@@ -142,7 +144,7 @@ try {
                 if($uptimes.Count -gt 0){$uptimePages+=$provider}
             } else {
                 $unreadable+=$provider
-                Wait-Text '运行正常' -Absent
+                Wait-Text '正常' -Absent
             }
             Write-Output "Public page checked: $provider (current=$hasCurrent)"
         }
@@ -166,7 +168,7 @@ try {
     $phase='codex-failed-read'
     Configure 'Codex'
     Wait-Text $failure
-    Wait-Text '运行正常' -Absent
+    Wait-Text '正常' -Absent
     Wait-Text '打开官方状态页'
     $before=$connections
     $phase='manual-retry'
@@ -175,7 +177,7 @@ try {
     if($connections -le $before){throw 'Manual refresh reused failed reading'}
     $phase='leave-during-request'
     Click '刷新服务状态'
-    Page '常规'
+    Page '通用'
     Wait-Text '服务状态' -Absent
     Configure 'Codex'
     Wait-Text $failure

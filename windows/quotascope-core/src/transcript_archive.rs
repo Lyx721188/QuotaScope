@@ -236,6 +236,39 @@ fn within_root(name: &str, root: &Path) -> bool {
         .all(|part| !matches!(part, Component::ParentDir | Component::CurDir))
         && Path::new(&normalized).starts_with(root)
 }
+/// Codex's rollout filename carries its session id. Legacy duplicate archive
+/// entries remain on disk, but only the copy with most measured tokens counts.
+pub(crate) fn rollout_buckets(files: &BTreeMap<String, Kept>) -> Buckets {
+    let mut selected = BTreeMap::<String, (&String, &Kept, i64)>::new();
+    for (name, kept) in files {
+        if !crate::scan::checkpoint() {
+            break;
+        }
+        let base = Path::new(name)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let total = kept
+            .days
+            .values()
+            .flat_map(|models| models.values())
+            .map(TokenTally::total)
+            .fold(0i64, i64::saturating_add);
+        if selected
+            .get(&base)
+            .is_none_or(|(old, _, sum)| total > *sum || total == *sum && name < *old)
+        {
+            selected.insert(base, (name, kept, total));
+        }
+    }
+    let mut buckets = Buckets::new();
+    for (_, kept, _) in selected.into_values() {
+        kept.add_into(&mut buckets);
+    }
+    buckets
+}
+
 pub(crate) fn path(directory: &Path, provider: crate::model::Provider, root: &Path) -> PathBuf {
     let hash = root_key(root).bytes().fold(0xcbf29ce484222325_u64, |h, b| {
         (h ^ b as u64).wrapping_mul(0x100000001b3)

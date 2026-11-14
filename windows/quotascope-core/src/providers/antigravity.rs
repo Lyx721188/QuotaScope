@@ -29,6 +29,7 @@
 
 use super::{KeyRing, ProviderService};
 use crate::estimate::{Placement, Rule};
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, Kind, Provider, ProviderUsage, Unavailability, UsageWindow};
 use std::time::Duration;
 
@@ -67,69 +68,88 @@ impl ProviderService for AntigravityService {
     }
 
     fn fetch(&self, _keys: &KeyRing) -> ProviderUsage {
-        let account = AccountKey::primary(Provider::Antigravity);
-        let servers = locate_servers();
-        if servers.is_empty() {
-            return ProviderUsage::unavailable(account, Unavailability::AntigravityNotRunning);
+        let source = crate::settings::with(|s| s.antigravity_source.clone());
+        if source == "cli" {
+            return super::antigravity_cli::fetch();
         }
+        let server = fetch_desktop();
+        if source == "desktop" || server.state == crate::model::State::Live {
+            return server;
+        }
+        let cli = super::antigravity_cli::fetch();
+        if cli.state == crate::model::State::Live
+            || cli.state == crate::model::State::Unavailable(Unavailability::NoLimitsReported)
+        {
+            cli
+        } else {
+            server
+        }
+    }
+}
 
-        let http = loopback_client();
+fn fetch_desktop() -> ProviderUsage {
+    let account = AccountKey::primary(Provider::Antigravity);
+    let servers = locate_servers();
+    if servers.is_empty() {
+        return ProviderUsage::unavailable(account, Unavailability::AntigravityNotRunning);
+    }
 
-        // An answer with no limits in it is a real answer, but not a reason to
-        // stop: with two servers up it is what the wrong one says. Held, and
-        // reported only if nothing better turns up.
-        let mut answered_empty = false;
-        // Whether anything answered at all. A server that refused this RPC is
-        // still Antigravity running — reporting `Unreachable` for it would say
-        // the app is not there while it is, and `Unreachable` is a failure the
-        // notifications count while `AntigravityNotRunning` is not.
-        let mut something_answered = false;
+    let http = loopback_client();
 
-        for server in &servers {
-            // A server listens on more than one port and only one of them
-            // speaks this. Which is which isn't advertised, so they are tried.
-            for port in &server.ports {
-                match ask(&http, *port, &server.token) {
-                    Ok(windows) if !windows.is_empty() => {
-                        let mut usage = ProviderUsage::live_now(account, windows);
-                        usage.origin = Some(self.origin_token().to_string());
-                        // A second call, because the quota reply doesn't name
-                        // the plan. Its absence is not worth failing over.
-                        usage.plan = plan(&http, *port, &server.token);
-                        // Antigravity reports a monthly credit *allowance*,
-                        // never a balance. Putting an allowance here would
-                        // read as "this is what you have left" — the one thing
-                        // it isn't.
-                        return usage;
-                    }
-                    Ok(_) => {
-                        answered_empty = true;
-                        something_answered = true;
-                    }
-                    Err(AskError::WrongPort) => {}
-                    Err(AskError::Refused) | Err(AskError::Unreadable) => {
-                        // The other of Antigravity's two servers answers 401 to
-                        // this RPC. That is this process saying "not me", not
-                        // the account being refused — worth no more than a
-                        // closed port, and just as little reason to stop.
-                        something_answered = true;
-                    }
+    // An answer with no limits in it is a real answer, but not a reason to
+    // stop: with two servers up it is what the wrong one says. Held, and
+    // reported only if nothing better turns up.
+    let mut answered_empty = false;
+    // Whether anything answered at all. A server that refused this RPC is
+    // still Antigravity running — reporting `Unreachable` for it would say
+    // the app is not there while it is, and `Unreachable` is a failure the
+    // notifications count while `AntigravityNotRunning` is not.
+    let mut something_answered = false;
+
+    for server in &servers {
+        // A server listens on more than one port and only one of them
+        // speaks this. Which is which isn't advertised, so they are tried.
+        for port in &server.ports {
+            match ask(&http, *port, &server.token) {
+                Ok(windows) if !windows.is_empty() => {
+                    let mut usage = ProviderUsage::live_now(account, windows);
+                    usage.origin = Some("languageServer".to_string());
+                    // A second call, because the quota reply doesn't name
+                    // the plan. Its absence is not worth failing over.
+                    usage.plan = plan(&http, *port, &server.token);
+                    // Antigravity reports a monthly credit *allowance*,
+                    // never a balance. Putting an allowance here would
+                    // read as "this is what you have left" — the one thing
+                    // it isn't.
+                    return usage;
+                }
+                Ok(_) => {
+                    answered_empty = true;
+                    something_answered = true;
+                }
+                Err(AskError::WrongPort) => {}
+                Err(AskError::Refused) | Err(AskError::Unreadable) => {
+                    // The other of Antigravity's two servers answers 401 to
+                    // this RPC. That is this process saying "not me", not
+                    // the account being refused — worth no more than a
+                    // closed port, and just as little reason to stop.
+                    something_answered = true;
                 }
             }
         }
-
-        if answered_empty {
-            return ProviderUsage::unavailable(account, Unavailability::NoLimitsReported);
-        }
-        ProviderUsage::unavailable(
-            account,
-            if something_answered {
-                Unavailability::AntigravityNotAnswering
-            } else {
-                Unavailability::AntigravityNotRunning
-            },
-        )
     }
+
+    if answered_empty {
+        return ProviderUsage::unavailable(account, Unavailability::NoLimitsReported);
+    }
+    ProviderUsage::unavailable(
+        account,
+        if something_answered {
+            Unavailability::AntigravityNotAnswering
+        } else {
+            Unavailability::AntigravityNotRunning
+        },
+    )
 }
 
 // --- Finding it ---------------------------------------------------------
@@ -498,7 +518,7 @@ fn post(
         .header("Content-Type", "application/json")
         .header(CSRF_HEADER, token)
         .body("{}")
-        .send();
+        .observed_send();
     let response = match response {
         Ok(r) => r,
         Err(_) => return Err(AskError::WrongPort),
@@ -545,7 +565,8 @@ pub fn windows_from_reply(root: &serde_json::Value) -> Vec<UsageWindow> {
 
 fn window_from_bucket(bucket: &serde_json::Value, scope: Option<String>) -> Option<UsageWindow> {
     let id = crate::http::string_field(bucket, "bucketId")?;
-    let remaining = crate::http::number_field(bucket, "remainingFraction")?;
+    let remaining =
+        crate::http::number_field(bucket, "remainingFraction").filter(|v| v.is_finite())?;
     let (kind, seconds) = length_of(crate::http::string_field(bucket, "window")?)?;
 
     // The only provider that reports what is *left* rather than what is
@@ -579,13 +600,14 @@ fn length_of(window: &str) -> Option<(Kind, i64)> {
         _ => {}
     }
 
-    let count: i64 = window[..window.len() - 1].parse().ok()?;
+    let (tail, prefix) = window.as_bytes().split_last()?;
+    let count: i64 = std::str::from_utf8(prefix).ok()?.parse().ok()?;
     if count <= 0 {
         return None;
     }
-    match window.as_bytes()[window.len() - 1] {
+    match *tail {
         b'h' => {
-            let seconds = count * 3_600;
+            let seconds = count.checked_mul(3_600)?;
             Some((
                 if count == 5 {
                     Kind::FiveHour
@@ -596,7 +618,7 @@ fn length_of(window: &str) -> Option<(Kind, i64)> {
             ))
         }
         b'd' => {
-            let seconds = count * 86_400;
+            let seconds = count.checked_mul(86_400)?;
             Some((
                 if count == 7 {
                     Kind::Weekly
@@ -646,6 +668,7 @@ pub const ESTIMATE: Rule = Rule {
 /// Which of the plan's two allowances a model's spending counts against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Allowance {
+    Argon,
     Gemini,
     ThirdParty,
 }
@@ -656,6 +679,7 @@ fn allowance(name: &str) -> Option<Allowance> {
     let gemini = name.contains("gemini");
     let third = name.contains("claude") || name.contains("gpt");
     match (gemini, third) {
+        (true, false) if name.contains("argon") => Some(Allowance::Argon),
         (true, false) => Some(Allowance::Gemini),
         (false, true) => Some(Allowance::ThirdParty),
         // A name claiming both families, or neither, is not one this can pick

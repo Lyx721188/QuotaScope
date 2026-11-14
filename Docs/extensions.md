@@ -16,7 +16,8 @@ Place the folder at `%APPDATA%\QuotaScope\Extensions\<folder>\`. Add
   "id": "example-quota",
   "name": "Example quota",
   "executable": "reader.exe",
-  "timeoutSeconds": 20
+  "timeoutSeconds": 20,
+  "icon": "icon.png"
 }
 ```
 
@@ -26,6 +27,13 @@ name is nonempty and truncated to 60 characters. The executable must resolve
 inside its own folder. This is a direct process launch, not a shell command;
 compile a reader executable rather than putting shell arguments in this field.
 The account id is `extension#example-quota`.
+
+The optional `icon` is a PNG path relative to the extension folder. It must
+resolve inside that folder, use normal relative path components, be no larger
+than 256 KiB and have dimensions from 1 to 1024 pixels. Animated PNG is excluded.
+An absent or unreadable icon falls back to the extension's text mark. Rescan
+loads changed image bytes and invalidates the decoded image for that account.
+
 
 The working directory is the extension folder. Timeout is clamped to 1–60
 seconds, default 20. QuotaScope reads stdout with a 256 KiB limit, requires a
@@ -63,6 +71,9 @@ Balance requires a finite amount and a three-letter uppercase currency code;
 negative balances are permitted. A balance alone is valid and can receive the
 generic balance ring. A report with neither usable limits nor balance says
 that no limits were reported.
+
+PNG icons retain their original colors and alpha. Decode failures fall back to
+the extension label and are cached until the icon content changes.
 
 ## Environment and boundary
 

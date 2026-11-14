@@ -22,6 +22,7 @@
 
 use super::{pasted_or_none, KeyRing, ProviderService};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, Kind, Provider, ProviderUsage, Unavailability, UsageWindow};
 use serde_json::Value;
 use std::sync::Arc;
@@ -115,7 +116,7 @@ impl AlibabaCodingPlanService {
             .header("Referer", site.page)
             .timeout(Duration::from_secs(15))
             .json(&body)
-            .send()
+            .observed_send()
         {
             Ok(response) => response,
             Err(_) => return Answer::Final(Unavailability::Unreachable),

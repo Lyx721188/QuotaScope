@@ -105,13 +105,15 @@ pub enum Provider {
     TypeSafe,
     #[serde(rename = "vercelAIGateway")]
     VercelAiGateway,
+    OpenDesign,
+    DimAgent,
     /// Not a product but a kind of account: each extension in the
     /// Extensions folder is one account of this provider. It stays out of
     /// `ALL_PROVIDERS`, which is the built-in list.
     Extension,
 }
 
-pub const ALL_PROVIDERS: [Provider; 77] = [
+pub const ALL_PROVIDERS: [Provider; 78] = [
     Provider::ClaudeCode,
     Provider::Codex,
     Provider::Kiro,
@@ -123,7 +125,6 @@ pub const ALL_PROVIDERS: [Provider; 77] = [
     Provider::Zai,
     Provider::GlmCoding,
     Provider::Minimax,
-    Provider::MinimaxCn,
     Provider::Copilot,
     Provider::Grok,
     Provider::GrokBot,
@@ -189,6 +190,8 @@ pub const ALL_PROVIDERS: [Provider; 77] = [
     Provider::Replicate,
     Provider::TypeSafe,
     Provider::VercelAiGateway,
+    Provider::OpenDesign,
+    Provider::DimAgent,
 ];
 
 impl Provider {
@@ -200,7 +203,11 @@ impl Provider {
         ALL_PROVIDERS
             .into_iter()
             .find(|p| p.raw() == raw)
-            .or_else(|| (raw == "extension").then_some(Provider::Extension))
+            .or_else(|| match raw {
+                "extension" => Some(Provider::Extension),
+                "minimaxCN" => Some(Provider::MinimaxCn),
+                _ => None,
+            })
     }
 
     /// Product names, left untranslated.
@@ -285,6 +292,8 @@ impl Provider {
             Provider::Replicate => "Replicate",
             Provider::TypeSafe => "TypeSafe",
             Provider::VercelAiGateway => "Vercel AI Gateway",
+            Provider::OpenDesign => "Open Design",
+            Provider::DimAgent => "DimAgent",
             // A placeholder: an extension account's real name comes from its
             // manifest, carried in the settings' extension-name map.
             Provider::Extension => "Extension",
@@ -373,6 +382,8 @@ impl Provider {
             Provider::Replicate => "Re",
             Provider::TypeSafe => "TS",
             Provider::VercelAiGateway => "VA",
+            Provider::OpenDesign => "OD",
+            Provider::DimAgent => "DA",
             Provider::Extension => "E",
         }
     }
@@ -454,6 +465,8 @@ impl Provider {
                 | Provider::Qoder
                 | Provider::StepFun
                 | Provider::XiaomiMiMo
+                | Provider::OpenDesign
+                | Provider::DimAgent
                 | Provider::Extension
         )
     }
@@ -532,6 +545,7 @@ impl Provider {
             Provider::Neuralwatt => Some("https://portal.neuralwatt.com/dashboard"),
             Provider::Amp => Some("https://ampcode.com/settings"),
             Provider::TypeSafe => Some("https://console.typesafe.ai/settings/billing"),
+            Provider::OpenDesign => Some("https://open-design.ai/cloud/dashboard"),
             Provider::Mistral => Some("https://admin.mistral.ai/organization/usage"),
             Provider::XaiApi => Some("https://console.x.ai"),
             _ => None,
@@ -540,16 +554,18 @@ impl Provider {
 
     /// Whether a spending history can be shown for this provider at all.
     pub fn provides_history(&self) -> bool {
-        matches!(
-            self,
-            Provider::ClaudeCode
-                | Provider::Codex
-                | Provider::Antigravity
-                | Provider::Zai
-                | Provider::GlmCoding
-                | Provider::OpenCodeGo
-                | Provider::DeepSeek
-        )
+        crate::history::local_source(*self).is_some()
+            || matches!(
+                self,
+                Provider::Qoder
+                    | Provider::ClaudeCode
+                    | Provider::Codex
+                    | Provider::Antigravity
+                    | Provider::Zai
+                    | Provider::GlmCoding
+                    | Provider::OpenCodeGo
+                    | Provider::DeepSeek
+            )
     }
 
     /// Billing classification from upstream, independent of credential type.
@@ -584,7 +600,8 @@ impl Provider {
     pub fn reports_spendable_balance(&self) -> bool {
         matches!(
             self,
-            Provider::DeepSeek
+            Provider::XiaomiMiMo
+                | Provider::DeepSeek
                 | Provider::CommandCode
                 | Provider::Moonshot
                 | Provider::Venice
@@ -607,6 +624,7 @@ impl Provider {
 
     pub fn spending_is_watched_locally(&self) -> bool {
         !self.reports_spendable_balance()
+            && !matches!(self, Provider::OpenDesign | Provider::DimAgent)
     }
 
     /// Whether this provider keeps a credential of its own in `keys.dat`.
@@ -617,7 +635,9 @@ impl Provider {
     /// Providers Settings offers a paste field for. Ollama's would be a
     /// session cookie, and it is not ported, so it is not listed.
     pub fn uses_api_key(&self) -> bool {
-        if matches!(self, Provider::OllamaCloud | Provider::Windsurf) {
+        if crate::providers::session_spec(*self).is_some()
+            || matches!(self, Provider::OllamaCloud | Provider::Windsurf)
+        {
             return true;
         }
         matches!(
@@ -678,12 +698,17 @@ impl Provider {
             Provider::ClaudeCode => home_path(".claude").exists(),
             Provider::Codex => home_path(".codex").exists(),
             Provider::Grok => home_path(".grok").exists(),
+            Provider::OpenDesign => home_path(".amr/config.json").is_file(),
+            Provider::DimAgent => home_path(".dimcode").is_dir(),
             Provider::OpenCodeGo => opencode_stored_key().is_some(),
             Provider::GlmCoding => glm_stored_key().is_some(),
             Provider::CommandCode => commandcode_stored_key().is_some(),
             // The editor's install is the evidence: its language server only
             // exists inside one.
-            Provider::Antigravity => antigravity_install().is_some(),
+            Provider::Antigravity => {
+                antigravity_install().is_some()
+                    || crate::providers::antigravity_cli::locate().is_some()
+            }
             // The login database is both the evidence and the credential.
             Provider::Cursor => cursor_database().exists(),
             _ => false,
@@ -884,6 +909,8 @@ impl Estimate {
 /// One rate-limit window exactly as a provider reports it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amounts: Option<WindowAmounts>,
     pub id: String,
     pub kind: Kind,
     /// The model this limit is scoped to, when the provider scopes it to one.
@@ -923,6 +950,13 @@ pub struct UsageWindow {
     /// kind's name; never translated.
     #[serde(default)]
     pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowAmounts {
+    pub used: f64,
+    pub limit: f64,
+    pub remaining: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -968,6 +1002,7 @@ impl UsageWindow {
         resets_at: Option<i64>,
     ) -> Self {
         UsageWindow {
+            amounts: None,
             id: id.to_string(),
             kind,
             scope,
@@ -1192,6 +1227,7 @@ pub enum Unavailability {
     CursorSignInRequired,
     /// There is a Cursor login, and the account refused it.
     CursorLoginExpired,
+    CursorKeyRefused,
     /// Not ported to Windows yet — named once, in Settings only.
     NotOnWindows,
     ZaiNoCodingPlan,
@@ -1210,6 +1246,8 @@ pub enum Unavailability {
     /// The imported browser session no longer answers — the site's own
     /// refusal of a credential that used to work.
     SessionExpired,
+    AntigravityCliMissing,
+    AntigravityCliOutdated,
     LocalLoginMissing,
     LocalLoginExpired,
     LocalAppMissing,
@@ -1218,6 +1256,10 @@ pub enum Unavailability {
 impl Unavailability {
     pub fn message(&self) -> &'static str {
         crate::localization::t(match self {
+            Unavailability::AntigravityCliMissing => "Antigravity CLI (agy) is not installed.",
+            Unavailability::AntigravityCliOutdated => {
+                "Update agy to 1.1.11 or newer to read usage safely."
+            }
             Unavailability::LocalLoginMissing => "Sign in to the provider's CLI first.",
             Unavailability::LocalLoginExpired => {
                 "The local login expired. Sign in to the provider's CLI again."
@@ -1255,6 +1297,9 @@ impl Unavailability {
             Unavailability::AntigravityNotRunning => "Open Antigravity to see its usage.",
             Unavailability::AntigravityNotAnswering => {
                 "Antigravity is open but didn't answer. Restarting it usually helps."
+            }
+            Unavailability::CursorKeyRefused => {
+                "Windows couldn’t unlock Cursor’s saved login. Open Cursor, then refresh."
             }
             Unavailability::CursorSignInRequired => "Sign in to Cursor to see usage.",
             Unavailability::CursorLoginExpired => {
@@ -1303,6 +1348,9 @@ pub struct ProviderUsage {
     pub origin: Option<String>,
     #[serde(default)]
     pub is_cached: bool,
+    /// In-process attribution guard; never part of the JSON output contract.
+    #[serde(skip)]
+    pub credential_context: Option<String>,
 }
 
 impl ProviderUsage {
@@ -1317,6 +1365,7 @@ impl ProviderUsage {
             credit_remaining: None,
             origin: None,
             is_cached: false,
+            credential_context: None,
         }
     }
 
@@ -1331,6 +1380,7 @@ impl ProviderUsage {
             credit_remaining: None,
             origin: None,
             is_cached: false,
+            credential_context: None,
         }
     }
 

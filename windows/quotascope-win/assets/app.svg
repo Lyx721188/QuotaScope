@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#252629"/><stop offset="1" stop-color="#101113"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#64656a"/><stop offset=".12" stop-color="#303135"/>
+      <stop offset=".85" stop-color="#202125"/><stop offset="1" stop-color="#3f4044"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2=".25" y2="1">
+      <stop stop-color="#ffffff"/><stop offset="1" stop-color="#c8cbca"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#ddff72"/><stop offset="1" stop-color="#a8d93c"/>
+    </linearGradient>
+  </defs>
+  <rect x="26" y="26" width="972" height="972" rx="235" fill="url(#shell)" stroke="url(#rim)" stroke-width="12"/>
+  <!-- A Q made from an open gauge and its needle: QuotaScope's own mark. -->
+  <circle cx="512" cy="480" r="215" fill="none" stroke="#060708" stroke-opacity=".6" stroke-width="86"/>
+  <circle cx="512" cy="474" r="215" fill="none" stroke="url(#ink)" stroke-width="78"/>
+  <path d="M512 259 A215 215 0 0 1 716 542" fill="none" stroke="url(#accent)" stroke-width="78" stroke-linecap="round"/>
+  <path d="M612 595 L719 702" fill="none" stroke="#060708" stroke-opacity=".65" stroke-width="94" stroke-linecap="round"/>
+  <path d="M612 589 L719 696" fill="none" stroke="url(#accent)" stroke-width="78" stroke-linecap="round"/>
+  <circle cx="512" cy="474" r="25" fill="#e7e9e7"/>
+</svg>

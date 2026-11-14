@@ -16,6 +16,7 @@
 
 use super::{pasted_or_none, KeyRing, ProviderService, SessionSpec};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, Kind, Provider, ProviderUsage, Unavailability, UsageWindow};
 use serde_json::Value;
 use std::sync::Arc;
@@ -71,7 +72,9 @@ impl T3ChatService {
         for (name, value) in refs {
             request = request.header(name, value);
         }
-        let response = request.send().map_err(|_| Unavailability::Unreachable)?;
+        let response = request
+            .observed_send()
+            .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         let text = response
             .text()

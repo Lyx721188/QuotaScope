@@ -21,6 +21,7 @@
 
 use super::{pasted_or_none, KeyRing, ProviderService, SessionSpec};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{
     AccountKey, CreditAmount, Kind, Provider, ProviderUsage, Unavailability, UsageWindow,
 };
@@ -66,7 +67,7 @@ impl SakanaService {
             .header("Accept", "text/html,application/xhtml+xml")
             .header("Accept-Language", "en-US,en;q=0.9")
             .timeout(std::time::Duration::from_secs(15))
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         let text = response

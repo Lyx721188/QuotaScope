@@ -11,6 +11,9 @@ use crate::model::AccountKey;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
+    pub notices: crate::notices::Record,
+    pub robot_avatars: HashMap<String, RobotAvatar>,
+    pub animates_ring_activity: bool,
     /// Enabled account ids: a provider raw value for its primary account,
     /// or `<provider>#<slot>` for an independently stored additional account.
     pub enabled_accounts: HashSet<String>,
@@ -28,6 +31,13 @@ pub struct AppSettings {
     pub last_update_check_at: Option<i64>,
     /// small | standard | large
     pub panel_size: String,
+    /// windows | pulse — the rail's visual style.
+    pub panel_appearance: String,
+    /// Experimental translucent Pulse surface, off by default.
+    pub pulse_glass: bool,
+    pub dock_shows_alert_color: bool,
+    pub pulse_dock_x: f64,
+    pub pulse_dock_y: f64,
     /// compact | standard | roomy
     pub rail_spacing: String,
     pub side_rail_shows_percentages: bool,
@@ -42,6 +52,9 @@ pub struct AppSettings {
     pub shows_codex_reset_credits: bool,
     /// Account ids whose hover card includes the plan, clock and history.
     pub detailed_cards: HashSet<String>,
+    pub credit_amounts: HashSet<String>,
+    pub split_accounts: HashSet<String>,
+    pub shown_model_groups: HashMap<String, Vec<String>>,
     /// Where a card's figure turns warning-red: 60..90, the picker's steps.
     pub warning_threshold: i64,
     /// The tray icon can stand down once the panel is trusted — it comes
@@ -53,6 +66,15 @@ pub struct AppSettings {
     pub reads_token_spend: bool,
     /// Optional five-minute warm scans while Settings is closed; off by default.
     pub background_token_spend: bool,
+    /// auto | cli | desktop
+    pub antigravity_source: String,
+    /// default | all | chrome | edge | firefox | brave | vivaldi
+    pub import_browser: String,
+    pub minimax_site: String,
+    pub qoder_site: String,
+    pub stepfun_site: String,
+    pub account_sites: HashMap<String, String>,
+    pub merged_minimax_cn: bool,
     pub proxy_mode: String,
     pub proxy_url: String,
     pub global_shortcuts: bool,
@@ -62,6 +84,9 @@ pub struct AppSettings {
     pub statistics_cache_limit_mb: u32,
     pub spend_span: crate::spend::Span,
     /// Collapse to the 6pt sliver while docked and unhovered.
+    pub snaps_to_edges: bool,
+    pub liquid_docking: bool,
+    pub progress_bars: String,
     pub auto_collapse: bool,
     pub follows_active_display: bool,
     /// left | right | top | bottom; also the axis when freely placed.
@@ -77,6 +102,8 @@ pub struct AppSettings {
     pub display: String,
     /// auto | en | zh | zh-Hant | ja | ko
     pub language: String,
+    pub display_currency: String,
+    pub manual_exchange_rates: HashMap<String, f64>,
     // --- Alerts. All off by default, all silent. ---
     pub wants_alerts: bool,
     /// 75 | 80 | 90 | 95
@@ -106,9 +133,21 @@ pub struct AppSettings {
     pub offered_providers: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RobotAvatar {
+    pub enabled: bool,
+    pub color: String,
+    pub personality: String,
+    pub shape: String,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
+            notices: Default::default(),
+            robot_avatars: HashMap::new(),
+            animates_ring_activity: true,
             enabled_accounts: HashSet::new(),
             provider_order: Vec::new(),
             pinned_windows: HashMap::new(),
@@ -118,6 +157,11 @@ impl Default for AppSettings {
             skipped_update_version: None,
             last_update_check_at: None,
             panel_size: "standard".into(),
+            panel_appearance: "windows".into(),
+            pulse_glass: false,
+            dock_shows_alert_color: true,
+            pulse_dock_x: 0.5,
+            pulse_dock_y: 0.5,
             rail_spacing: "standard".into(),
             side_rail_shows_percentages: true,
             top_rail_shows_percentages: false,
@@ -129,10 +173,20 @@ impl Default for AppSettings {
             shows_second_ring: false,
             shows_codex_reset_credits: false,
             detailed_cards: HashSet::new(),
+            credit_amounts: HashSet::new(),
+            split_accounts: HashSet::new(),
+            shown_model_groups: HashMap::new(),
             warning_threshold: 75,
             hides_tray_icon: false,
             reads_token_spend: false,
             background_token_spend: false,
+            antigravity_source: "auto".into(),
+            minimax_site: "international".into(),
+            qoder_site: "international".into(),
+            stepfun_site: "china".into(),
+            account_sites: HashMap::new(),
+            merged_minimax_cn: false,
+            import_browser: "default".into(),
             proxy_mode: "system".into(),
             proxy_url: String::new(),
             global_shortcuts: false,
@@ -140,6 +194,9 @@ impl Default for AppSettings {
             next_account_slot: 1,
             statistics_cache_limit_mb: 64,
             spend_span: crate::spend::Span::default(),
+            snaps_to_edges: true,
+            liquid_docking: false,
+            progress_bars: "continuous".into(),
             auto_collapse: true,
             follows_active_display: false,
             dock_side: "right".into(),
@@ -147,6 +204,8 @@ impl Default for AppSettings {
             float_x: 0.0,
             float_y: 0.5,
             display: String::new(),
+            display_currency: "USD".into(),
+            manual_exchange_rates: HashMap::new(),
             language: "auto".into(),
             wants_alerts: false,
             alert_threshold: 75,
@@ -301,6 +360,16 @@ fn cell() -> &'static Mutex<AppSettings> {
 /// localized strings follow the stored language.
 pub fn initialize() {
     cell();
+    mutate(|s| {
+        for (id, pin) in &mut s.pinned_windows {
+            if (id == "codex" || id.starts_with("codex#"))
+                && (pin.ends_with(".primary") || pin.ends_with(".secondary"))
+            {
+                pin.push_str("_window");
+            }
+        }
+    });
+    crate::provider_sites::migrate_minimax();
     let lang = with(|s| s.language.clone());
     match lang.as_str() {
         "en" => crate::localization::set_language(crate::localization::Language::English),
@@ -310,6 +379,7 @@ pub fn initialize() {
         }
         "ja" => crate::localization::set_language(crate::localization::Language::Japanese),
         "ko" => crate::localization::set_language(crate::localization::Language::Korean),
+        "ru" => crate::localization::set_language(crate::localization::Language::Russian),
         _ => {}
     }
 }

@@ -42,19 +42,25 @@ fn intervals<T: TimeZone>(now: i64, count: u64, zone: &T) -> Result<Vec<Interval
 
 pub(crate) fn endpoint(reading: &Reading) -> Result<String, ReadError> {
     match reading.page {
-        Page::Codex => {
-            let days = intervals(reading.checked_at, 91, &Local)?;
-            let mut url = url::Url::parse(
-                "https://status.openai.com/proxy/status.openai.com/component_impacts",
-            )
-            .map_err(|_| ReadError::Unreadable)?;
+        page if page.is_incident() => {
+            let count = if matches!(page, Page::Codex | Page::OpenAiPlatform) {
+                91
+            } else {
+                90
+            };
+            let days = intervals(reading.checked_at, count, &Local)?;
+            let mut url = url::Url::parse(&format!("{}/component_impacts", page.endpoint()))
+                .map_err(|_| ReadError::Unreadable)?;
             url.query_pairs_mut()
                 .append_pair("start_at", &crate::timeutil::iso8601_utc(days[0].start))
-                .append_pair("end_at", &crate::timeutil::iso8601_utc(days[90].end));
+                .append_pair(
+                    "end_at",
+                    &crate::timeutil::iso8601_utc(days[days.len() - 1].end),
+                );
             Ok(url.into())
         }
-        Page::Claude => {
-            let mut url = url::Url::parse("https://status.claude.com/uptime_showcase")
+        page if page != Page::DeepSeek => {
+            let mut url = url::Url::parse(&format!("{}/uptime_showcase", reading.page.address()))
                 .map_err(|_| ReadError::Unreadable)?;
             url.query_pairs_mut().append_pair(
                 "components",
@@ -67,7 +73,7 @@ pub(crate) fn endpoint(reading: &Reading) -> Result<String, ReadError> {
             );
             Ok(url.into())
         }
-        Page::DeepSeek => Ok(reading.page.address().into()),
+        _ => Ok(reading.page.address().into()),
     }
 }
 
@@ -195,6 +201,8 @@ fn impact_history(
                     date: day.date,
                     state,
                     rgb: None,
+                    start_ms: None,
+                    hours: None,
                 }
             })
             .collect();
@@ -290,6 +298,8 @@ fn statuspage_history(
                 date,
                 state,
                 rgb: None,
+                start_ms: None,
+                hours: None,
             });
         }
         if parsed.windows(2).any(|rows| rows[0].date >= rows[1].date) {
@@ -333,11 +343,19 @@ fn apply_in_zone<T: TimeZone>(
     zone: &T,
 ) -> Result<(), ReadError> {
     match reading.page {
-        Page::Codex => impact_history(
+        page if page.is_incident() => impact_history(
             &feed(bytes)?,
             &mut reading.components,
             reading.checked_at,
-            &intervals(reading.checked_at, 91, zone)?,
+            &intervals(
+                reading.checked_at,
+                if matches!(reading.page, Page::Codex | Page::OpenAiPlatform) {
+                    91
+                } else {
+                    90
+                },
+                zone,
+            )?,
             false,
         ),
         Page::DeepSeek => impact_history(
@@ -347,7 +365,7 @@ fn apply_in_zone<T: TimeZone>(
             &intervals(reading.checked_at, 90, zone)?,
             true,
         ),
-        Page::Claude => {
+        _ => {
             let today = zone
                 .timestamp_millis_opt(reading.checked_at)
                 .single()
@@ -374,6 +392,7 @@ mod tests {
                 state: State::Degraded,
                 days: vec![],
                 uptime: None,
+                group: None,
             }],
             history_failed: false,
         }

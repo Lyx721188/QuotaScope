@@ -957,7 +957,7 @@ pub fn transcript_root(provider: Provider) -> Option<PathBuf> {
     }
     let written = match provider {
         Provider::ClaudeCode => ".claude/projects",
-        Provider::Codex => ".codex/sessions",
+        Provider::Codex => ".codex",
         // None of the other providers leaves a transcript this reads.
         _ => return None,
     };
@@ -1017,6 +1017,17 @@ impl Default for TranscriptLimits {
 // Only the Codex/Claude transcript path uses these limits. Other native
 // readers need their own coverage propagation before discovery is bounded.
 fn collect_transcripts(root: &Path, limits: TranscriptLimits) -> (Vec<PathBuf>, bool) {
+    if root.file_name().is_some_and(|name| name == ".codex") {
+        let (mut files, mut partial) = collect_transcripts(&root.join("sessions"), limits);
+        let (archived, other) = collect_transcripts(&root.join("archived_sessions"), limits);
+        files.extend(archived);
+        partial |= other;
+        if files.len() > limits.files {
+            files.truncate(limits.files);
+            partial = true;
+        }
+        return (files, partial);
+    }
     #[derive(Default)]
     struct Discovery {
         paths: Vec<PathBuf>,
@@ -1602,10 +1613,22 @@ fn scan_archived_at(
     use crate::transcript_archive::Archive;
     let path = crate::transcript_archive::path(directory, provider, root);
     let loaded = Archive::load(&path, root);
+    let first_codex_root = provider == Provider::Codex
+        && root.file_name().is_some_and(|name| name == ".codex")
+        && !path.exists();
     // Seed only this root's existing numbered parse cache on the first scan.
     // This also retains a file deleted immediately before the upgrade.
     let mut archive = loaded.as_ref().ok().cloned();
     let original = archive.clone();
+    if first_codex_root {
+        let old_root = root.join("sessions");
+        let old_path = crate::transcript_archive::path(directory, provider, &old_root);
+        if let (Some(archive), Ok(old)) = (&mut archive, Archive::load(&old_path, &old_root)) {
+            for (name, kept) in old.files {
+                let _ = archive.observe(name, kept);
+            }
+        }
+    }
     let mut unstored = BTreeMap::new();
     let mut incomplete = false;
     if let Some(archive) = &mut archive {
@@ -1623,9 +1646,21 @@ fn scan_archived_at(
         for (name, entry) in &scanned.cache.files {
             show_unstored(archive, name.clone(), entry, &mut unstored, &mut incomplete);
         }
-        let mut buckets = archive.buckets();
-        for kept in unstored.values() {
-            kept.add_into(&mut buckets);
+        let mut buckets = if provider == Provider::Codex {
+            let observations: BTreeMap<_, _> = archive
+                .files
+                .iter()
+                .chain(unstored.iter())
+                .map(|(name, kept)| (name.clone(), kept.clone()))
+                .collect();
+            crate::transcript_archive::rollout_buckets(&observations)
+        } else {
+            archive.buckets()
+        };
+        if provider != Provider::Codex {
+            for kept in unstored.values() {
+                kept.add_into(&mut buckets);
+            }
         }
         scanned.buckets = buckets;
         scanned.partial |= archive.files.values().any(|file| file.partial) || incomplete;
@@ -1659,8 +1694,41 @@ fn scan_cached_with_limits(
     let mut buckets: BTreeMap<String, BTreeMap<String, TokenTally>> = BTreeMap::new();
     let mut fresh: BTreeMap<String, CachedEntry> = BTreeMap::new();
     let mut changed = false;
-    let (mut files, mut partial) = collect_transcripts(root, limits);
+    let (mut files, mut partial) =
+        if provider == Provider::Codex && root.file_name().is_some_and(|name| name == ".codex") {
+            let (mut active, mut partial) = collect_transcripts(&root.join("sessions"), limits);
+            let (archived, other_partial) =
+                collect_transcripts(&root.join("archived_sessions"), limits);
+            active.extend(archived);
+            partial |= other_partial;
+            if active.len() > limits.files {
+                active.truncate(limits.files);
+                partial = true;
+            }
+            (active, partial)
+        } else {
+            collect_transcripts(root, limits)
+        };
     files.sort();
+    if provider == Provider::Codex {
+        let mut chosen = BTreeMap::<String, (PathBuf, u64)>::new();
+        for file in files {
+            let name = file
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+            let replace = chosen
+                .get(&name)
+                .is_none_or(|(old, old_size)| size > *old_size || size == *old_size && file < *old);
+            if replace {
+                chosen.insert(name, (file, size));
+            }
+        }
+        files = chosen.into_values().map(|(path, _)| path).collect();
+        files.sort();
+    }
 
     for file in files {
         if !crate::scan::checkpoint() {
@@ -2439,7 +2507,16 @@ fn pi_usage(object: &serde_json::Value) -> Option<(TokenTally, i64)> {
 /// Reads the Pi-shaped clients. Branch copies fold by response id, or by the
 /// message's own fields; Kimchi's older scheme keeps each session separate.
 pub fn pi_ledger(client: PiClient) -> UsageLedger {
-    let key = client.id();
+    pi_ledger_selected(client, None)
+}
+pub fn pi_ledger_for_provider(client: PiClient, provider: &str) -> UsageLedger {
+    pi_ledger_selected(client, Some(provider))
+}
+fn pi_ledger_selected(client: PiClient, selected: Option<&str>) -> UsageLedger {
+    let cache_key = selected
+        .map(|p| format!("{}@{p}", client.id()))
+        .unwrap_or_else(|| client.id().to_string());
+    let key = cache_key.as_str();
     {
         let guard = memory();
         if let Some((at, map)) = guard.as_ref() {
@@ -2518,6 +2595,9 @@ pub fn pi_ledger(client: PiClient) -> UsageLedger {
                         continue;
                     };
                     let provider = json_text(message, &["provider"]).unwrap_or("");
+                    if selected.is_some_and(|wanted| wanted != provider) {
+                        continue;
+                    }
                     let response_id = json_text(message, &["responseId"]).map(str::to_string);
                     let identity = if client == PiClient::Kimchi {
                         format!("{key}:{}:{}", json_text(&row, &["id"]).unwrap_or(""), at)
@@ -5359,6 +5439,30 @@ mod tests {
             assert!(self.root.is_absolute() && self.root.parent() == Some(self.temp.as_path()));
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn codex_active_and_archived_copies_count_once_after_deletion_and_restart() {
+        let fixture = DiscoveryFixture::new();
+        fixture.write(Path::new(".codex/sessions/rollout-same.jsonl"), 1);
+        fixture.write(Path::new(".codex/archived_sessions/rollout-same.jsonl"), 2);
+        let root = fixture.root.join(".codex");
+        let data = fixture.root.join("data");
+        let total = |scan: &TranscriptScan| {
+            scan.buckets
+                .values()
+                .flat_map(|m| m.values())
+                .map(TokenTally::total)
+                .sum::<i64>()
+        };
+        let first = scan_archived_at(Provider::Codex, &root, FileCache::default(), &data);
+        assert_eq!(total(&first), 310);
+        assert_eq!(first.cache.files.len(), 1);
+        std::fs::remove_dir_all(root.join("sessions")).unwrap();
+        std::fs::remove_dir_all(root.join("archived_sessions")).unwrap();
+        let restarted = scan_archived_at(Provider::Codex, &root, FileCache::default(), &data);
+        assert_eq!(total(&restarted), 310);
+        assert!(!restarted.partial);
     }
 
     #[test]

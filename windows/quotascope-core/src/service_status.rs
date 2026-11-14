@@ -33,15 +33,151 @@ pub enum Page {
     Codex,
     Claude,
     DeepSeek,
+    Cursor,
+    GrokBot,
+    Copilot,
+    Devin,
+    Windsurf,
+    Augment,
+    Factory,
+    KiloCode,
+    Minimax,
+    MinimaxCn,
+    KimiCode,
+    Moonshot,
+    Warp,
+    Manus,
+    Venice,
+    ZoomMate,
+    Replicate,
+    OpenAiPlatform,
+    JetBrainsAi,
+    Amp,
+    Aixy,
+    ElevenLabs,
+    NotionAi,
+    Perplexity,
+    Poe,
+    V0,
+    HuggingFace,
+    Chutes,
+    Synthetic,
+    DevPass,
+    RaycastAi,
+    TypeSafe,
+    Zed,
+    GitKraken,
+    AtlasCloud,
+    CommandCode,
+    ClinePass,
+    Hyper,
+    OpenCodeGo,
+    DeepInfra,
+    IbmBob,
+    Gemini,
 }
 
 impl Page {
-    pub const ALL: [Self; 3] = [Self::Codex, Self::Claude, Self::DeepSeek];
+    pub const ALL: [Self; 45] = [
+        Self::Codex,
+        Self::Claude,
+        Self::DeepSeek,
+        Self::Cursor,
+        Self::GrokBot,
+        Self::Copilot,
+        Self::Devin,
+        Self::Windsurf,
+        Self::Augment,
+        Self::Factory,
+        Self::KiloCode,
+        Self::Minimax,
+        Self::MinimaxCn,
+        Self::KimiCode,
+        Self::Moonshot,
+        Self::Warp,
+        Self::Manus,
+        Self::Venice,
+        Self::ZoomMate,
+        Self::Replicate,
+        Self::OpenAiPlatform,
+        Self::JetBrainsAi,
+        Self::Amp,
+        Self::Aixy,
+        Self::ElevenLabs,
+        Self::NotionAi,
+        Self::Perplexity,
+        Self::Poe,
+        Self::V0,
+        Self::HuggingFace,
+        Self::Chutes,
+        Self::Synthetic,
+        Self::DevPass,
+        Self::RaycastAi,
+        Self::TypeSafe,
+        Self::Zed,
+        Self::GitKraken,
+        Self::AtlasCloud,
+        Self::CommandCode,
+        Self::ClinePass,
+        Self::Hyper,
+        Self::OpenCodeGo,
+        Self::DeepInfra,
+        Self::IbmBob,
+        Self::Gemini,
+    ];
     pub fn for_provider(provider: Provider) -> Option<Self> {
         match provider {
             Provider::Codex => Some(Self::Codex),
             Provider::ClaudeCode => Some(Self::Claude),
             Provider::DeepSeek => Some(Self::DeepSeek),
+            Provider::OpenAiPlatform => Some(Self::OpenAiPlatform),
+            Provider::JetBrainsAi => Some(Self::JetBrainsAi),
+            Provider::Amp => Some(Self::Amp),
+            Provider::Aixy => Some(Self::Aixy),
+            Provider::ElevenLabs => Some(Self::ElevenLabs),
+            Provider::NotionAi => Some(Self::NotionAi),
+            Provider::Perplexity => Some(Self::Perplexity),
+            Provider::Poe => Some(Self::Poe),
+            Provider::V0 => Some(Self::V0),
+            Provider::HuggingFace => Some(Self::HuggingFace),
+            Provider::Chutes => Some(Self::Chutes),
+            Provider::Synthetic => Some(Self::Synthetic),
+            Provider::DevPass => Some(Self::DevPass),
+            Provider::RaycastAi => Some(Self::RaycastAi),
+            Provider::TypeSafe => Some(Self::TypeSafe),
+            Provider::Zed => Some(Self::Zed),
+            Provider::GitKraken => Some(Self::GitKraken),
+            Provider::AtlasCloud => Some(Self::AtlasCloud),
+            Provider::CommandCode => Some(Self::CommandCode),
+            Provider::ClinePass => Some(Self::ClinePass),
+            Provider::Hyper => Some(Self::Hyper),
+            Provider::OpenCodeGo => Some(Self::OpenCodeGo),
+            Provider::DeepInfra => Some(Self::DeepInfra),
+            Provider::IbmBob => Some(Self::IbmBob),
+            Provider::Gemini => Some(Self::Gemini),
+
+            Provider::Cursor => Some(Self::Cursor),
+            Provider::GrokBot => Some(Self::GrokBot),
+            Provider::Copilot => Some(Self::Copilot),
+            Provider::Devin => Some(Self::Devin),
+            Provider::Windsurf => Some(Self::Windsurf),
+            Provider::Augment => Some(Self::Augment),
+            Provider::Factory => Some(Self::Factory),
+            Provider::KiloCode => Some(Self::KiloCode),
+            Provider::Minimax => Some(if crate::settings::with(|s| s.minimax_site == "china") {
+                Self::MinimaxCn
+            } else {
+                Self::Minimax
+            }),
+            Provider::MinimaxCn => Some(Self::MinimaxCn),
+            Provider::KimiCode => Some(Self::KimiCode),
+            Provider::Moonshot => Some(Self::Moonshot),
+            Provider::Warp => Some(Self::Warp),
+            Provider::Manus => Some(Self::Manus),
+            Provider::Venice => Some(Self::Venice),
+            Provider::ZoomMate => Some(Self::ZoomMate),
+            Provider::Replicate => Some(Self::Replicate),
+
             _ => None,
         }
     }
@@ -50,6 +186,49 @@ impl Page {
             Self::Codex => Provider::Codex,
             Self::Claude => Provider::ClaudeCode,
             Self::DeepSeek => Provider::DeepSeek,
+            Self::OpenAiPlatform => Provider::OpenAiPlatform,
+            Self::JetBrainsAi => Provider::JetBrainsAi,
+            Self::Amp => Provider::Amp,
+            Self::Aixy => Provider::Aixy,
+            Self::ElevenLabs => Provider::ElevenLabs,
+            Self::NotionAi => Provider::NotionAi,
+            Self::Perplexity => Provider::Perplexity,
+            Self::Poe => Provider::Poe,
+            Self::V0 => Provider::V0,
+            Self::HuggingFace => Provider::HuggingFace,
+            Self::Chutes => Provider::Chutes,
+            Self::Synthetic => Provider::Synthetic,
+            Self::DevPass => Provider::DevPass,
+            Self::RaycastAi => Provider::RaycastAi,
+            Self::TypeSafe => Provider::TypeSafe,
+            Self::Zed => Provider::Zed,
+            Self::GitKraken => Provider::GitKraken,
+            Self::AtlasCloud => Provider::AtlasCloud,
+            Self::CommandCode => Provider::CommandCode,
+            Self::ClinePass => Provider::ClinePass,
+            Self::Hyper => Provider::Hyper,
+            Self::OpenCodeGo => Provider::OpenCodeGo,
+            Self::DeepInfra => Provider::DeepInfra,
+            Self::IbmBob => Provider::IbmBob,
+            Self::Gemini => Provider::Gemini,
+
+            Self::Cursor => Provider::Cursor,
+            Self::GrokBot => Provider::GrokBot,
+            Self::Copilot => Provider::Copilot,
+            Self::Devin => Provider::Devin,
+            Self::Windsurf => Provider::Windsurf,
+            Self::Augment => Provider::Augment,
+            Self::Factory => Provider::Factory,
+            Self::KiloCode => Provider::KiloCode,
+            Self::Minimax => Provider::Minimax,
+            Self::MinimaxCn => Provider::Minimax,
+            Self::KimiCode => Provider::KimiCode,
+            Self::Moonshot => Provider::Moonshot,
+            Self::Warp => Provider::Warp,
+            Self::Manus => Provider::Manus,
+            Self::Venice => Provider::Venice,
+            Self::ZoomMate => Provider::ZoomMate,
+            Self::Replicate => Provider::Replicate,
         }
     }
     pub fn address(self) -> &'static str {
@@ -57,6 +236,49 @@ impl Page {
             Self::Codex => "https://status.openai.com",
             Self::Claude => "https://status.claude.com",
             Self::DeepSeek => "https://status.deepseek.com",
+            Self::OpenAiPlatform => "https://status.openai.com",
+            Self::JetBrainsAi => "https://status.jetbrains.cloud",
+            Self::Amp => "https://ampcodestatus.com",
+            Self::Aixy => "https://status.aixy-gateway.com",
+            Self::ElevenLabs => "https://status.elevenlabs.io",
+            Self::NotionAi => "https://www.notion-status.com",
+            Self::Perplexity => "https://status.perplexity.com",
+            Self::Poe => "https://status.poe.com",
+            Self::V0 => "https://v0-status.com",
+            Self::HuggingFace => "https://status.huggingface.co",
+            Self::Chutes => "https://status.chutes.ai",
+            Self::Synthetic => "https://status.synthetic.new",
+            Self::DevPass => "https://status.llmgateway.io",
+            Self::RaycastAi => "https://status.raycast.com",
+            Self::TypeSafe => "https://status.typesafe.ai",
+            Self::Zed => "https://status.zed.dev",
+            Self::GitKraken => "https://cloud.gitkrakenstatus.com",
+            Self::AtlasCloud => "https://atlascloud.instatus.com",
+            Self::CommandCode => "https://status.commandcode.ai",
+            Self::ClinePass => "https://status.cline.bot",
+            Self::Hyper => "https://status.charm.sh",
+            Self::OpenCodeGo => "https://status.opencode.ai",
+            Self::DeepInfra => "https://status.deepinfra.com",
+            Self::IbmBob => "https://status.bob.ibm.com",
+            Self::Gemini => "https://status.cloud.google.com",
+
+            Self::Cursor => "https://status.cursor.com",
+            Self::GrokBot => "https://status.cursor.com",
+            Self::Copilot => "https://www.githubstatus.com",
+            Self::Devin => "https://www.devinstatus.com",
+            Self::Windsurf => "https://status.windsurf.com",
+            Self::Augment => "https://status.augmentcode.com",
+            Self::Factory => "https://status.factory.ai",
+            Self::KiloCode => "https://status.kilo.ai",
+            Self::Minimax => "https://status.minimax.io",
+            Self::MinimaxCn => "https://status.minimaxi.com",
+            Self::KimiCode => "https://status.moonshot.cn",
+            Self::Moonshot => "https://status.moonshot.cn",
+            Self::Warp => "https://status.warp.dev",
+            Self::Manus => "https://status.manus.im",
+            Self::Venice => "https://veniceai-status.com",
+            Self::ZoomMate => "https://www.zoomstatus.com",
+            Self::Replicate => "https://www.cloudflarestatus.com",
         }
     }
     pub fn company(self) -> &'static str {
@@ -64,20 +286,89 @@ impl Page {
             Self::Codex => "OpenAI",
             Self::Claude => "Anthropic",
             Self::DeepSeek => "DeepSeek",
+            Self::OpenAiPlatform => "OpenAI",
+            Self::JetBrainsAi => "JetBrains",
+            Self::Amp => "Amp",
+            Self::Aixy => "AIXY",
+            Self::ElevenLabs => "ElevenLabs",
+            Self::NotionAi => "Notion",
+            Self::Perplexity => "Perplexity",
+            Self::Poe => "Poe",
+            Self::V0 => "Vercel",
+            Self::HuggingFace => "Hugging Face",
+            Self::Chutes => "Chutes",
+            Self::Synthetic => "Synthetic",
+            Self::DevPass => "LLM Gateway",
+            Self::RaycastAi => "Raycast",
+            Self::TypeSafe => "TypeSafe",
+            Self::Zed => "Zed",
+            Self::GitKraken => "GitKraken",
+            Self::AtlasCloud => "Atlas Cloud",
+            Self::CommandCode => "Command Code",
+            Self::ClinePass => "Cline",
+            Self::Hyper => "Charm",
+            Self::OpenCodeGo => "OpenCode",
+            Self::DeepInfra => "DeepInfra",
+            Self::IbmBob => "IBM",
+            Self::Gemini => "Google Cloud",
+
+            Self::Cursor => "Cursor",
+            Self::GrokBot => "Cursor",
+            Self::Copilot => "GitHub",
+            Self::Devin => "Cognition",
+            Self::Windsurf => "Windsurf",
+            Self::Augment => "Augment Code",
+            Self::Factory => "Factory",
+            Self::KiloCode => "Kilo",
+            Self::Minimax => "MiniMax",
+            Self::MinimaxCn => "MiniMax",
+            Self::KimiCode => "Moonshot AI",
+            Self::Moonshot => "Moonshot AI",
+            Self::Warp => "Warp",
+            Self::Manus => "Manus",
+            Self::Venice => "Venice",
+            Self::ZoomMate => "Zoom",
+            Self::Replicate => "Cloudflare",
         }
     }
-    fn endpoint(self) -> &'static str {
+    pub(crate) fn is_incident(self) -> bool {
+        self == Self::Codex || extra::format(self) == Some(extra::Format::Incident)
+    }
+    pub(crate) fn endpoint(self) -> String {
+        if let Some(url) = extra::endpoint(self) {
+            return url;
+        }
         match self {
-            Self::Codex => "https://status.openai.com/proxy/status.openai.com",
-            Self::Claude => "https://status.claude.com/api/v2/summary.json",
-            Self::DeepSeek => "https://status.deepseek.com/",
+            Self::Codex => "https://status.openai.com/proxy/status.openai.com".into(),
+            Self::DeepSeek => "https://status.deepseek.com/".into(),
+            _ => format!("{}/api/v2/summary.json", self.address()),
         }
     }
     pub fn notifies_about(self, component: &Component) -> bool {
+        if let Some(result) = extra::notifies(self, component) {
+            return result;
+        }
         match self {
             Self::Codex => true, // The parser already selects the Codex group.
             Self::Claude => matches!(component.id.as_str(), "yyzkbfz2thpt" | "k8w3r06qmzrp"),
             Self::DeepSeek => component.name.contains("API"),
+            Self::Cursor => {
+                ["rflc60xp5jp2", "vsny1qv7v86c", "mwv1g9sc7kdh"].contains(&component.id.as_str())
+            }
+            Self::Devin => ["q72cy1kjpk4r", "d87cp5jknh1c"].contains(&component.id.as_str()),
+            Self::Augment => component.id == "1k3gvg4j889s",
+            Self::Factory => {
+                ["kfqc4mfdkrqx", "jfcmwr3grbyc", "z1frly8fm1l5"].contains(&component.id.as_str())
+            }
+            Self::KiloCode => ["kdk5t7ljzmm1", "rkvq7kvz2zlh"].contains(&component.id.as_str()),
+            Self::Minimax => component.id == "pr0d8qr59svt",
+            Self::MinimaxCn => component.id == "vwp8mgy34fck",
+            Self::Moonshot => ["8psr5dfdld0s", "pjrph68g94yr"].contains(&component.id.as_str()),
+            Self::Warp => {
+                ["z7hlxwbqx7ry", "z90zfbttkx9f", "7z5yq9wznb4f"].contains(&component.id.as_str())
+            }
+            Self::Venice => component.id == "6knqw5vybqzk",
+            _ => true,
         }
     }
 }
@@ -139,6 +430,7 @@ pub struct Component {
     pub state: State,
     pub days: Vec<Day>,
     pub uptime: Option<f64>,
+    pub group: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +438,8 @@ pub struct Day {
     pub date: chrono::NaiveDate,
     pub state: Option<State>,
     pub rgb: Option<u32>,
+    pub start_ms: Option<i64>,
+    pub hours: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -159,10 +453,26 @@ pub struct Reading {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadError {
+    Http(u16),
     Unreachable,
     Refused,
     TooLarge,
     Unreadable,
+}
+
+impl ReadError {
+    pub fn message(self) -> String {
+        use crate::localization::{t, t_fmt};
+        match self {
+            Self::Http(code) => t_fmt("Status page returned HTTP {code}.", &[&code.to_string()]),
+            Self::Unreachable => t("The status page request failed to connect.").into(),
+            Self::Refused => t("The status page refused the request.").into(),
+            Self::TooLarge => t("The status page response exceeded the read limit.").into(),
+            Self::Unreadable => {
+                t("The page contained no readable components for this provider.").into()
+            }
+        }
+    }
 }
 
 fn json(bytes: &[u8]) -> Result<Value, ReadError> {
@@ -192,6 +502,7 @@ fn component(value: &Value, id: &str, state: State) -> Option<Component> {
         state,
         days: Vec::new(),
         uptime: None,
+        group: None,
     })
 }
 
@@ -274,6 +585,37 @@ pub fn statuspage(bytes: &[u8]) -> Result<Vec<Component>, ReadError> {
             })
             .collect(),
     )
+}
+
+/// Product rows only. Supplier outages and unrelated products must not
+/// become notifications for this account. Rules follow Pulse 338c796.
+fn statuspage_for(page: Page, bytes: &[u8]) -> Result<Vec<Component>, ReadError> {
+    let mut root = json(bytes)?;
+    let rows = list(&root["components"])?;
+    let selected: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            let id = row["id"].as_str().unwrap_or("");
+            let group = row["group_id"].as_str().unwrap_or("");
+            match page {
+                Page::Cursor => id != "sm5wkcnqkvr9",
+                Page::GrokBot => id == "sm5wkcnqkvr9",
+                Page::Copilot => ["pjmpxvq2cmr2", "cnnb39dkkk82"].contains(&id),
+                Page::Devin => !["92j5h0ttqxfb", "9ydbk2b55pk1"].contains(&group),
+                Page::Windsurf => ["r5wf1ykd7y1m", "8q19cygxvshj"].contains(&id),
+                Page::Factory => group != "c9sjq8nsz2kq",
+                Page::KiloCode => group != "frgc645htq00",
+                Page::KimiCode => group == "cyrtlddz0q8c",
+                Page::Moonshot => group == "87jpctq5cp71",
+                Page::ZoomMate => id == "n1llzwc1cxtr",
+                Page::Replicate => id == "fvgfcmy66tdr",
+                _ => true,
+            }
+        })
+        .cloned()
+        .collect();
+    root["components"] = Value::Array(selected);
+    statuspage(&serde_json::to_vec(&root).map_err(|_| ReadError::Unreadable)?)
 }
 
 /// Decode Next.js Flight string literals as JSON, never as JavaScript. The
@@ -422,6 +764,8 @@ pub fn parse(page: Page, bytes: &[u8], now_ms: i64) -> Result<Reading, ReadError
         Page::Codex => incident_io(bytes)?,
         Page::Claude => statuspage(bytes)?,
         Page::DeepSeek => flashcat(bytes, now_ms)?,
+        _ if extra::format(page).is_some() => extra::parse(page, bytes, now_ms)?,
+        _ => statuspage_for(page, bytes)?,
     };
     Ok(Reading {
         page,
@@ -436,21 +780,43 @@ fn fetch_url(
     address: &str,
     html: bool,
 ) -> Result<Vec<u8>, ReadError> {
-    let response = client
-        .get(address)
-        .timeout(Duration::from_secs(15))
-        .header(
-            "Accept",
-            if html {
-                "text/html"
-            } else {
-                "application/json"
-            },
-        )
-        .send()
-        .map_err(|_| ReadError::Unreachable)?;
+    // Public status pages carry no account headers. Follow a small number of
+    // HTTPS moves, keeping the entire redirect chain inside one deadline.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut address = address.to_string();
+    let mut redirects = 0;
+    let response = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ReadError::Unreachable);
+        }
+        let response = client
+            .get(&address)
+            .timeout(remaining)
+            .header(
+                "Accept",
+                if html {
+                    "text/html"
+                } else {
+                    "application/json"
+                },
+            )
+            .send()
+            .map_err(|_| ReadError::Unreachable)?;
+        if !response.status().is_redirection() || redirects >= 3 {
+            break response;
+        }
+        let target = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|location| public_redirect(&address, location))
+            .ok_or(ReadError::Http(response.status().as_u16()))?;
+        address = target;
+        redirects += 1;
+    };
     if response.status() != reqwest::StatusCode::OK {
-        return Err(ReadError::Refused);
+        return Err(ReadError::Http(response.status().as_u16()));
     }
     if response
         .content_length()
@@ -469,12 +835,19 @@ fn fetch_url(
     Ok(bytes)
 }
 
+fn public_redirect(address: &str, location: &str) -> Option<String> {
+    let target = url::Url::parse(address).ok()?.join(location).ok()?;
+    (target.scheme() == "https" && target.username().is_empty() && target.password().is_none())
+        .then(|| target.into())
+}
+
 #[derive(Default)]
 struct Cached {
     attempt: Option<Instant>,
     result: Option<Result<Reading, ReadError>>,
     raw: Option<Vec<u8>>,
     history_attempt: Option<Instant>,
+    chart_only: bool,
 }
 
 impl Cached {
@@ -513,7 +886,7 @@ pub fn read_details(page: Page, force: bool) -> Result<Reading, ReadError> {
 }
 
 fn read_cached(page: Page, force: bool, details: bool) -> Result<Reading, ReadError> {
-    static CACHE: OnceLock<[Mutex<Cached>; 3]> = OnceLock::new();
+    static CACHE: OnceLock<[Mutex<Cached>; 45]> = OnceLock::new();
     let cache = CACHE.get_or_init(|| std::array::from_fn(|_| Mutex::default()));
     let index = Page::ALL
         .iter()
@@ -523,17 +896,22 @@ fn read_cached(page: Page, force: bool, details: bool) -> Result<Reading, ReadEr
     let mut fetched = None;
     let result = slot.read_with(force, Instant::now(), || {
         let client = crate::http::HttpClient::new().client_for_login();
-        let bytes = fetch_url(&client, page.endpoint(), page == Page::DeepSeek)?;
+        let bytes = fetch_shared(&client, &page.endpoint(), page == Page::DeepSeek, force)?;
         let result = parse(page, &bytes, crate::timeutil::now_ms());
         fetched = Some(bytes);
         result
     });
     if let Some(bytes) = fetched {
+        slot.chart_only = page.is_incident()
+            && json(&bytes)
+                .ok()
+                .is_some_and(|root| root["summary"]["display_uptime_mode"] == "chart_only");
         slot.raw = (page == Page::DeepSeek).then_some(bytes);
         slot.history_attempt = None;
     }
     let mut reading = result?;
     if details
+        && extra::format(page).is_none_or(|format| format == extra::Format::Incident)
         && (force
             || slot
                 .history_attempt
@@ -549,10 +927,45 @@ fn read_cached(page: Page, force: bool, details: bool) -> Result<Reading, ReadEr
         reading.history_failed = history
             .and_then(|bytes| crate::service_status_history::apply(&mut reading, &bytes))
             .is_err();
+        if slot.chart_only {
+            for component in &mut reading.components {
+                component.uptime = None;
+            }
+        }
         slot.history_attempt = Some(Instant::now());
         slot.result = Some(Ok(reading.clone()));
     }
     Ok(reading)
+}
+
+// Multiple products on a company's feed share one public summary request.
+// Locks are per URL, so a slow company cannot block another company's read.
+type SharedRaw = std::sync::Arc<Mutex<Option<(Instant, Result<Vec<u8>, ReadError>)>>>;
+fn fetch_shared(
+    client: &reqwest::blocking::Client,
+    address: &str,
+    html: bool,
+    force: bool,
+) -> Result<Vec<u8>, ReadError> {
+    static FEEDS: OnceLock<Mutex<std::collections::HashMap<String, SharedRaw>>> = OnceLock::new();
+    let entry = {
+        let mut feeds = FEEDS
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        feeds.entry(address.into()).or_default().clone()
+    };
+    let mut cached = entry.lock().unwrap_or_else(|e| e.into_inner());
+    if !force {
+        if let Some((at, result)) = &*cached {
+            if at.elapsed() < CHECK_INTERVAL {
+                return result.clone();
+            }
+        }
+    }
+    let result = fetch_url(client, address, html);
+    *cached = Some((Instant::now(), result.clone()));
+    result
 }
 
 /// Persisted notification transitions, separate from quota-alert memory.
@@ -677,6 +1090,29 @@ impl OutageMemory {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn public_status_moves_accept_relative_and_https_targets() {
+        assert_eq!(
+            super::public_redirect(
+                "https://status.cursor.com/api/v2/summary.json",
+                "https://status.x.ai/api/compat/summary.json"
+            )
+            .as_deref(),
+            Some("https://status.x.ai/api/compat/summary.json")
+        );
+        assert_eq!(
+            super::public_redirect("https://status.example/api/summary", "../current").as_deref(),
+            Some("https://status.example/current")
+        );
+        assert!(
+            super::public_redirect("https://status.example", "http://status.example").is_none()
+        );
+        assert!(super::public_redirect(
+            "https://status.example",
+            "https://user:secret@status.example"
+        )
+        .is_none());
+    }
     use super::*;
     use serde_json::json;
 
@@ -687,6 +1123,7 @@ mod tests {
             state,
             days: vec![],
             uptime: None,
+            group: None,
         }
     }
     #[test]
@@ -1011,7 +1448,9 @@ mod tests {
         };
         assert_eq!(
             watched_pages(&settings),
-            [Page::Codex, Page::DeepSeek].into_iter().collect()
+            [Page::Codex, Page::DeepSeek, Page::Cursor]
+                .into_iter()
+                .collect()
         );
         settings.alerts_on_outage = false;
         assert!(watched_pages(&settings).is_empty());
@@ -1043,3 +1482,6 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+#[path = "service_status_extra.rs"]
+mod extra;

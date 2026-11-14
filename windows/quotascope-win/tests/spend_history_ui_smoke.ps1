@@ -15,6 +15,8 @@ $session=Join-Path $fixtureHome '.codex/sessions/fixture.jsonl'
 New-Item -ItemType Directory -Path $data,(Split-Path $session),$OutputDirectory -Force|Out-Null
 $proxy=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$proxy.Start()
 $settings=@{hasRun=$true;enabledAccounts=@();language='en';readsTokenSpend=$true;checksForUpdates=$false;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
+$fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
+$settings.notices=@{lastVersion=$fixtureVersion}
 $settingsPath=Join-Path $data 'settings.json'
 [IO.File]::WriteAllText($settingsPath,($settings|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 $prices=@{fetched_at_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();prices=@{'fixture-priced'=@{input=10.0;output=20.0}}}
@@ -154,6 +156,24 @@ try{
     # All time brings the older month into the card.
     Select-ComboItem (Unnamed-Combo 0) 'All time'
     Wait-Name '3200'
+    # Calendar and custom spans use the same snapshot, without a new disk scan.
+    Select-ComboItem (Unnamed-Combo 0) 'This month'
+    Wait-Name '1700'
+    Select-ComboItem (Unnamed-Combo 0) 'Last month'
+    Wait-Name '1500'
+    Select-ComboItem (Unnamed-Combo 0) 'This year'
+    if($olderDay.Year -eq $today.Year){Wait-Name '3200'}else{Wait-Name '1700'}
+    Select-ComboItem (Unnamed-Combo 0) 'Custom range'
+    Wait-Name 'Custom range start'
+    foreach($field in @('Custom range start','Custom range end')){
+        $edit=Nodes|Where-Object {$_.Current.Name -eq $field -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::Edit}|Select-Object -First 1
+        $edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($today.ToString('yyyy-MM-dd'))
+    }
+    Press 'Apply range'
+    Wait-Name '1700'
+    Wait-Text 'activity-total' '3200 tokens'
+    Select-ComboItem (Unnamed-Combo 0) 'All time'
+    Wait-Name '3200'
     # Three chart modes on the same data.
     Select-ComboItem (Combo 'Activity chart') 'Weekly bars'
     Wait-Match '\d{4}-\d{2}-\d{2} — \d{4}-\d{2}-\d{2} · 1500$'
@@ -176,25 +196,50 @@ try{
     Wait-Name ("$($yesterday.ToString('yyyy-MM-dd')) · 0 tokens")
     # Monthly recap: current month first, then the completed one.
     Press 'Show monthly recap'
+    Select-ComboItem (Combo 'Recap month') $today.ToString('yyyy-MM')
     Wait-Text 'recap-total' '1700 tokens'
     Wait-Name ("recap-day-$($today.ToString('yyyy-MM-dd'))")
     Wait-Text ("recap-day-$($today.ToString('yyyy-MM-dd'))") '1700'
-    Wait-Match 'Month in progress'
+    Wait-Match 'Period in progress'
     Wait-Match 'Unpriced tokens: 200'
     # A partial source is excluded from the four-hour rhythm, not averaged in.
     Wait-Match 'Excluded from timing:'
-    Wait-Match 'No reliable hourly records in this month.'
+    Wait-Match 'No reliable hourly records in this period.'
     Select-ComboItem (Combo 'Recap month') $olderDay.ToString('yyyy-MM')
     Wait-Text 'recap-total' '1500 tokens'
     Wait-Name ("recap-day-$($olderDate.ToString('yyyy-MM-dd'))")
     Wait-Text ("recap-day-$($olderDate.ToString('yyyy-MM-dd'))") '1500'
-    Wait-Match 'Completed calendar month'
+    Wait-Match 'Completed period'
     # A subscription price is compared, never assumed.
     $budget=Nodes|Where-Object {$_.Current.Name -eq 'Monthly subscription price (USD)' -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::Edit}|Select-Object -First 1
     if(-not $budget){throw 'Missing history subscription input'}
     $budget.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue('10')
     Wait-Match 'Prorated price'
     if($connections -ne 0){throw 'History page opened an outbound connection'}
+    Select-ComboItem (Combo 'Recap month') $today.ToString('yyyy-MM')
+    Wait-Text 'recap-total' '1700 tokens'
+    Select-ComboItem (Combo 'Recap period') 'Daily'
+    Wait-Text 'recap-total' '1700 tokens'
+    Press 'Previous'
+    Wait-Text 'recap-total' '0 tokens'
+    Press 'Next'
+    Wait-Text 'recap-total' '1700 tokens'
+    Select-ComboItem (Combo 'Recap period') 'Weekly'
+    Wait-Text 'recap-total' '1700 tokens'
+    Select-ComboItem (Combo 'Recap period') 'Yearly'
+    Wait-Text 'recap-total' $(if($olderDay.Year -eq $today.Year){'3200 tokens'}else{'1700 tokens'})
+    Press 'Save PNG'
+    $export=Join-Path $data 'Exports'
+    $until=[DateTime]::UtcNow.AddSeconds(10)
+    do{$png=@(Get-ChildItem -LiteralPath $export -Filter '*.png' -ErrorAction SilentlyContinue);if($png.Count){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $until)
+    if($png.Count -ne 1){throw 'PNG share export missing'}
+    $pngBytes=[IO.File]::ReadAllBytes($png[0].FullName)
+    if([BitConverter]::ToString($pngBytes[0..7]) -ne '89-50-4E-47-0D-0A-1A-0A'){throw 'Invalid PNG share export'}
+    Press 'Save all cards'
+    $until=[DateTime]::UtcNow.AddSeconds(20)
+    do{$png=@(Get-ChildItem -LiteralPath $export -Filter '*.png');if($png.Count -gt 3){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $until)
+    if($png.Count -le 3){throw 'Share deck export incomplete'}
+    Select-ComboItem (Combo 'Recap period') 'Monthly'
     # Deleting the transcript and clearing the rebuildable parse cache must not
     # erase the measured history.
     Remove-Item -LiteralPath $session -Force
@@ -227,7 +272,7 @@ try{
     Wait-Text 'activity-total' '600 tokens'
     Wait-Name 'Total tokens'
     if((Get-FileHash -LiteralPath (Join-Path $data 'ledger-5-codex.json') -Algorithm SHA256).Hash -ne $firstHash){throw 'Reopen rescan rewrote an unchanged parse cache'}
-    [pscustomobject]@{Passed=$true;Sha256=(Get-FileHash -LiteralPath $Executable).Hash;TwoCalendarMonths=$true;ActivityIndependentOfSpan=$true;AllTimeCardTotal=3200;ChartModesChecked=@('Calendar grid','Weekly bars','Running total');ModelFilterIsolated=$true;DayInspectQuietDay=$true;CurrentMonthRecap=1700;CompletedMonthRecap=1500;MonthSwitch=$true;SubscriptionCompared=$true;UnpricedTokens=200;PartialSourceShown=$true;DeletedTranscriptKept=3200;ParseCacheCleared=$true;ReappearedTranscriptReplaced=600;CloseAndReopen=$true;WarmCacheUnchanged=$true;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'history-ui-result.json')
+    [pscustomobject]@{Passed=$true;Sha256=(Get-FileHash -LiteralPath $Executable).Hash;TwoCalendarMonths=$true;ActivityIndependentOfSpan=$true;CalendarRanges=$true;CustomInclusiveRange=$true;AllTimeCardTotal=3200;ChartModesChecked=@('Calendar grid','Weekly bars','Running total');ModelFilterIsolated=$true;DayInspectQuietDay=$true;CurrentMonthRecap=1700;CompletedMonthRecap=1500;MonthSwitch=$true;RecapPeriods=@('Daily','Weekly','Monthly','Yearly');PngExport=$true;ShareDeck=$true;SubscriptionCompared=$true;UnpricedTokens=200;PartialSourceShown=$true;DeletedTranscriptKept=3200;ParseCacheCleared=$true;ReappearedTranscriptReplaced=600;CloseAndReopen=$true;WarmCacheUnchanged=$true;ExternalRequestsBlocked=$true}|ConvertTo-Json|Tee-Object -FilePath (Join-Path $OutputDirectory 'history-ui-result.json')
 }catch{
     $originalError=$_
     try{if($window -and -not $testApp.HasExited){Nodes|ForEach-Object {[pscustomobject]@{Name=$_.Current.Name;Class=$_.Current.ClassName;Type=$_.Current.ControlType.ProgrammaticName}}|ConvertTo-Json -Depth 3|Set-Content -LiteralPath (Join-Path $OutputDirectory 'history-ui-failure.json')}}catch{}

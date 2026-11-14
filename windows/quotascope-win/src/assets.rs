@@ -44,6 +44,8 @@ const KIMI_PNG: &[u8] = include_bytes!("../assets/icons/kimi.png");
 const MINIMAX_PNG: &[u8] = include_bytes!("../assets/icons/minimax.png");
 const OLLAMA_PNG: &[u8] = include_bytes!("../assets/icons/ollama.png");
 const OPENAI_PNG: &[u8] = include_bytes!("../assets/icons/openai.png");
+const OPENDESIGN_PNG: &[u8] = include_bytes!("../assets/icons/opendesign.png");
+const DIMAGENT_PNG: &[u8] = include_bytes!("../assets/icons/dimagent.png");
 const OPENCODE_PNG: &[u8] = include_bytes!("../assets/icons/opencode.png");
 const QINGYAN_PNG: &[u8] = include_bytes!("../assets/icons/qingyan.png");
 const VOLCENGINE_PNG: &[u8] = include_bytes!("../assets/icons/volcengine.png");
@@ -59,6 +61,8 @@ fn png_for(provider: &str) -> Option<&'static [u8]> {
         "antigravity" => Some(ANTIGRAVITY_PNG),
         "cursor" => Some(CURSOR_PNG),
         "openCodeGo" => Some(OPENCODE_PNG),
+        "openDesign" => Some(OPENDESIGN_PNG),
+        "dimAgent" => Some(DIMAGENT_PNG),
         "kimiCode" => Some(KIMI_PNG),
         "ollamaCloud" => Some(OLLAMA_PNG),
         "zai" => Some(ZAI_PNG),
@@ -74,7 +78,7 @@ fn png_for(provider: &str) -> Option<&'static [u8]> {
     }
 }
 
-static CACHE: OnceLock<Mutex<HashMap<String, ID2D1Bitmap>>> = OnceLock::new();
+static CACHE: OnceLock<Mutex<HashMap<String, Option<ID2D1Bitmap>>>> = OnceLock::new();
 
 /// A resource context on the shared D2D device, created once: bitmaps made
 /// here serve every window that draws through the device.
@@ -93,18 +97,39 @@ fn resource_context(engine: &D2DEngine) -> ID2D1DeviceContext {
 /// belong to the shared D2D device, so one cache serves the dock and the
 /// flyout alike.
 pub fn bitmap_for(engine: &D2DEngine, provider: &str) -> Option<ID2D1Bitmap> {
+    bitmap_for_ink(engine, provider, false)
+}
+
+pub fn bitmap_for_ink(engine: &D2DEngine, provider: &str, white: bool) -> Option<ID2D1Bitmap> {
+    let custom = quotascope_core::extension::icon_for(provider);
+    let cache_key = custom
+        .as_ref()
+        .map(|(digest, _)| format!("{provider}:{digest}"))
+        .unwrap_or_else(|| provider.into());
+    let cache_key = format!("{cache_key}|{}", if white { "white" } else { "theme" });
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache.lock().unwrap();
-    if let Some(existing) = cache.get(provider) {
-        return Some(existing.clone());
+    if let Some(existing) = cache.get(&cache_key) {
+        return existing.clone();
     }
-    let (bitmap, _size) = decode_tinted(
-        &resource_context(engine),
-        png_for(provider)?,
-        panel::palette().text_primary,
-    )?;
-    cache.insert(provider.to_string(), bitmap.clone());
-    Some(bitmap)
+    let png = if let Some((_, bytes)) = &custom {
+        bytes.as_ref()
+    } else {
+        png_for(provider)?
+    };
+    if custom.is_some() {
+        cache.retain(|key, _| !key.starts_with(&format!("{provider}:")));
+    }
+    let ink = custom.is_none().then(|| {
+        if white {
+            crate::d2d::Rgba::rgb(1.0, 1.0, 1.0)
+        } else {
+            panel::palette().text_primary
+        }
+    });
+    let bitmap = decode_tinted(&resource_context(engine), png, ink).map(|(bitmap, _)| bitmap);
+    cache.insert(cache_key, bitmap.clone());
+    bitmap
 }
 
 /// A theme change re-inks everything: drop the cache, the next frame
@@ -120,7 +145,7 @@ pub fn clear_cache() {
 fn decode_tinted(
     rt: &ID2D1DeviceContext,
     png: &[u8],
-    ink: crate::d2d::Rgba,
+    ink: Option<crate::d2d::Rgba>,
 ) -> Option<(ID2D1Bitmap, (u32, u32))> {
     ensure_com();
     unsafe {
@@ -158,8 +183,8 @@ fn decode_tinted(
         lock.GetDataPointer(&mut size, &mut data).ok()?;
         let rows = std::slice::from_raw_parts(data, size as usize);
 
-        // The source is straight-alpha white; the destination is
-        // premultiplied BGRA in the ink colour.
+        // WIC supplies premultiplied RGBA. Extension colors retain their
+        // channels; built-in template marks take the current ink.
         let mut out = vec![0u8; (w * h * 4) as usize];
         for y in 0..h as usize {
             let row = &rows[y * stride as usize..];
@@ -167,10 +192,8 @@ fn decode_tinted(
                 let i = x * 4 + 3;
                 let a = row[i];
                 let o = (y * w as usize + x) * 4;
-                out[o] = (ink.b * a as f32) as u8;
-                out[o + 1] = (ink.g * a as f32) as u8;
-                out[o + 2] = (ink.r * a as f32) as u8;
-                out[o + 3] = a;
+                let pixel = icon_pixel([row[x * 4], row[x * 4 + 1], row[x * 4 + 2], a], ink);
+                out[o..o + 4].copy_from_slice(&pixel);
             }
         }
 
@@ -207,4 +230,33 @@ fn ensure_com() {
     DONE.get_or_init(|| unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     });
+}
+
+fn icon_pixel(rgba: [u8; 4], ink: Option<crate::d2d::Rgba>) -> [u8; 4] {
+    if let Some(ink) = ink {
+        let alpha = rgba[3] as f32;
+        [
+            (ink.b * alpha) as u8,
+            (ink.g * alpha) as u8,
+            (ink.r * alpha) as u8,
+            rgba[3],
+        ]
+    } else {
+        [rgba[2], rgba[1], rgba[0], rgba[3]]
+    }
+}
+#[cfg(test)]
+mod icon_tests {
+    use super::*;
+    #[test]
+    fn extension_pixels_preserve_original_premultiplied_color() {
+        assert_eq!(icon_pixel([120, 20, 5, 128], None), [5, 20, 120, 128]);
+        assert_eq!(
+            icon_pixel(
+                [128, 128, 128, 128],
+                Some(crate::d2d::Rgba::rgb(1.0, 0.0, 0.0))
+            ),
+            [0, 0, 128, 128]
+        );
+    }
 }

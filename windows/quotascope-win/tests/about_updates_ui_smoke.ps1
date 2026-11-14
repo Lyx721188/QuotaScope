@@ -1,4 +1,4 @@
-# Isolated About update opt-in and retry. Loopback proxy rejects every connection.
+﻿# Isolated About update opt-in and retry. Loopback proxy rejects every connection.
 param([Parameter(Mandatory=$true)][string]$Executable,[string]$OutputDirectory='target/about-updates-ui-validation')
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -10,6 +10,8 @@ New-Item -ItemType Directory -Path $data,(Join-Path $profile 'home'),$OutputDire
 $proxy=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$proxy.Start()
 $seed=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $settings=@{hasRun=$true;enabledAccounts=@();language='zh';readsTokenSpend=$false;checksForUpdates=$false;lastUpdateCheckAt=$seed;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
+$fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
+$settings.notices=@{lastVersion=$fixtureVersion}
 $settingsPath=Join-Path $data 'settings.json'
 [IO.File]::WriteAllText($settingsPath,($settings|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 $info=[Diagnostics.ProcessStartInfo]::new([IO.Path]::GetFullPath($Executable))
@@ -66,7 +68,7 @@ try {
     if((Get-Content -LiteralPath $settingsPath -Raw|ConvertFrom-Json).lastUpdateCheckAt -le $seed){throw 'Persisted daily time blocked cold About result'}
     Wait-Text '当前已是最新 Windows 正式版。' -Absent
     $after=$connections
-    Page '常规';Page '关于';Settle
+    Page '通用';Page '关于';Settle
     if($connections -ne $after){throw 'Recent failure was requested again'}
     $window.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close();Settle
     if($testApp.HasExited){throw 'Update app exited on Settings close'}

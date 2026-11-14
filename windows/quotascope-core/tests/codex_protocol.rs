@@ -15,7 +15,7 @@ fn exhaustion_is_scoped_to_its_group_and_a_missing_allowance_flag_does_not_infer
         usage
             .windows
             .iter()
-            .find(|w| w.id == "model.primary")
+            .find(|w| w.id == "model.primary_window")
             .unwrap()
             .is_exhausted
     );
@@ -23,7 +23,7 @@ fn exhaustion_is_scoped_to_its_group_and_a_missing_allowance_flag_does_not_infer
         !usage
             .windows
             .iter()
-            .find(|w| w.id == "model.secondary")
+            .find(|w| w.id == "model.secondary_window")
             .unwrap()
             .is_exhausted
     );

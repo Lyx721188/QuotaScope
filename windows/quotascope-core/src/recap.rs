@@ -5,8 +5,90 @@ use crate::spend::{Analysis, Group, Row, Snapshot, Sort};
 use chrono::{Datelike, Days, NaiveDate, Timelike};
 use std::collections::BTreeSet;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Period {
+    Day,
+    Week,
+    #[default]
+    Month,
+    Year,
+}
+impl Period {
+    pub fn default_date(
+        self,
+        today: NaiveDate,
+        hour: u32,
+        earliest: Option<NaiveDate>,
+    ) -> NaiveDate {
+        let current = self.bounds(today).0;
+        let early = match self {
+            Self::Day => hour < 5,
+            Self::Week => today == current,
+            Self::Month => today.day() <= 7,
+            Self::Year => today.month() == 1 && today.day() <= 7,
+        };
+        let wanted = if early {
+            self.step(current, false)
+        } else {
+            current
+        };
+        let floor = earliest
+            .map(|first| self.bounds(first).0.min(current))
+            .unwrap_or(wanted);
+        wanted.max(floor)
+    }
+
+    pub fn bounds(self, date: NaiveDate) -> (NaiveDate, NaiveDate) {
+        let start = match self {
+            Self::Day => date,
+            Self::Week => {
+                date - Days::new(
+                    ((date.weekday().num_days_from_monday() + 7 - first_weekday()) % 7) as u64,
+                )
+            }
+            Self::Month => month_start(date),
+            Self::Year => NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap(),
+        };
+        let end = match self {
+            Self::Day => start,
+            Self::Week => start + Days::new(6),
+            Self::Month => next_month(start) - Days::new(1),
+            Self::Year => NaiveDate::from_ymd_opt(start.year(), 12, 31).unwrap(),
+        };
+        (start, end)
+    }
+    pub fn step(self, date: NaiveDate, forward: bool) -> NaiveDate {
+        let (start, end) = self.bounds(date);
+        self.bounds(if forward {
+            end + Days::new(1)
+        } else {
+            start - Days::new(1)
+        })
+        .0
+    }
+}
+fn first_weekday() -> u32 {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Globalization::*;
+        let mut value = [0u16; 4];
+        let len = unsafe {
+            GetLocaleInfoEx(
+                windows::core::PCWSTR::null(),
+                LOCALE_IFIRSTDAYOFWEEK,
+                Some(&mut value),
+            )
+        };
+        if len > 1 && (48..=54).contains(&value[0]) {
+            return (value[0] - 48) as u32;
+        }
+    }
+    0
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonthlyRecap {
+    pub period: Period,
     pub month: NaiveDate,
     pub end: NaiveDate,
     pub through: NaiveDate,
@@ -59,8 +141,17 @@ impl MonthlyRecap {
         source: Option<&str>,
         model: Option<&str>,
     ) -> Self {
-        let month = month_start(month);
-        let end = next_month(month) - Days::new(1);
+        Self::build_period(snapshot, Period::Month, month, today, source, model)
+    }
+    pub fn build_period(
+        snapshot: &Snapshot,
+        period: Period,
+        date: NaiveDate,
+        today: NaiveDate,
+        source: Option<&str>,
+        model: Option<&str>,
+    ) -> Self {
+        let (month, end) = period.bounds(date);
         let through = end.min(today);
         let activity = crate::token_activity::TokenActivity::build(snapshot, today, source, model);
         let recorded_from = activity
@@ -184,9 +275,10 @@ impl MonthlyRecap {
             .saturating_add(cache.cache_read)
             .saturating_add(cache.cache_write);
         let cache_hit_rate = (input > 0).then(|| cache.cache_read as f64 / input as f64);
-        let previous = month_start(month - Days::new(1));
-        let previous_end = (month - Days::new(1))
-            .min(previous + Days::new(through.day().saturating_sub(1) as u64));
+        let (previous, previous_last) = period.bounds(month - Days::new(1));
+        let previous_end = previous_last.min(
+            previous + Days::new(through.signed_duration_since(month).num_days().max(0) as u64),
+        );
         let prev = snapshot.analyze_range(
             previous..=previous_end,
             source,
@@ -213,6 +305,7 @@ impl MonthlyRecap {
                     - 1.0
             });
         Self {
+            period,
             month,
             end,
             through,
@@ -268,14 +361,66 @@ impl MonthlyRecap {
         if !monthly_usd.is_finite() || monthly_usd <= 0.0 || self.observed_days == 0 {
             return None;
         }
-        let price = monthly_usd * self.observed_days as f64 / self.end.day() as f64;
+        let mut weight = 0.0;
+        let mut date = self.recorded_from?;
+        while date <= self.through {
+            weight += 1.0 / (next_month(month_start(date)) - Days::new(1)).day() as f64;
+            date = date + Days::new(1);
+        }
+        let price = monthly_usd * weight;
         Some((price, self.analysis.total.cost / price))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn defaults_follow_early_period_rules_and_recording_floor() {
+        let early = NaiveDate::from_ymd_opt(2026, 1, 3).unwrap();
+        assert_eq!(
+            Period::Day.default_date(early, 4, None),
+            early - Days::new(1)
+        );
+        assert_eq!(Period::Day.default_date(early, 5, None), early);
+        assert_eq!(
+            Period::Month.default_date(early, 12, None),
+            NaiveDate::from_ymd_opt(2025, 12, 1).unwrap()
+        );
+        assert_eq!(
+            Period::Year.default_date(early, 12, None),
+            NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()
+        );
+        assert_eq!(
+            Period::Month.default_date(early, 12, Some(early)),
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+        );
+        let start = Period::Week.bounds(early).0;
+        assert_eq!(
+            Period::Week.default_date(start, 12, None),
+            start - Days::new(7)
+        );
+        assert_eq!(
+            Period::Week.default_date(start + Days::new(1), 12, None),
+            start
+        );
+    }
     use super::*;
+    #[test]
+    fn calendar_periods_keep_bounds_across_months_and_years() {
+        let mut snapshot = crate::token_activity::tests::snapshot();
+        snapshot.sources[0].title = "A&B <tool>".into();
+        let today = NaiveDate::from_ymd_opt(2026, 10, 3).unwrap();
+        let day = MonthlyRecap::build_period(&snapshot, Period::Day, today, today, None, None);
+        assert_eq!(day.analysis.total.tokens, 5);
+        assert_eq!(day.month, day.end);
+        let year = MonthlyRecap::build_period(&snapshot, Period::Year, today, today, None, None);
+        assert_eq!(year.month, NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+        assert_eq!(year.end, NaiveDate::from_ymd_opt(2026, 12, 31).unwrap());
+        assert_eq!(
+            Period::Month.step(NaiveDate::from_ymd_opt(2024, 3, 31).unwrap(), false),
+            NaiveDate::from_ymd_opt(2024, 2, 1).unwrap()
+        );
+    }
     #[test]
     fn monthly_calendar_is_not_a_rolling_thirty_day_span() {
         let snapshot = crate::token_activity::tests::snapshot();

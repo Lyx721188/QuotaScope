@@ -132,14 +132,14 @@ impl ProviderService for XiaomiMiMoService {
             return ProviderUsage::unavailable(account, worst(&failures));
         }
 
-        let Some(plan) = parse_plan(routes[0].as_ref().ok(), routes[1].as_ref().ok()) else {
-            // Not a failure: an account can buy tokens by the yuan with no
-            // plan at all. Saying so beats a ring at 0%, which would read as
-            // a full month nobody has.
-            return ProviderUsage::unavailable(account, Unavailability::NoPlan);
-        };
         let balance = routes[2].as_ref().ok().and_then(parse_balance);
-        let mut found = reading(&plan, balance, account);
+        let mut found = match parse_plan(routes[0].as_ref().ok(), routes[1].as_ref().ok()) {
+            Some(plan) => reading(&plan, balance, account),
+            None => match balance {
+                Some(balance) => balance_reading(balance, account),
+                None => return ProviderUsage::unavailable(account, Unavailability::NoPlan),
+            },
+        };
         found.origin = Some(self.origin_token().into());
         found
     }
@@ -387,6 +387,15 @@ pub fn reading(plan: &Plan, balance: Option<CreditAmount>, account: AccountKey) 
     let mut usage = ProviderUsage::live_now(account, vec![window]);
     usage.plan = plan.code.clone();
     usage.credit_balance = balance.map(|money| money.rail_text());
+    usage
+}
+
+/// An account without Coding Plan can still report a real prepaid balance.
+/// The store applies the user's balance basis; no plan denominator is invented.
+pub fn balance_reading(balance: CreditAmount, account: AccountKey) -> ProviderUsage {
+    let mut usage = ProviderUsage::live_now(account, Vec::new());
+    usage.credit_balance = Some(balance.rail_text());
+    usage.credit_remaining = Some(balance);
     usage
 }
 

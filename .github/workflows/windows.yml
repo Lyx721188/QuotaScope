@@ -57,6 +57,15 @@ jobs:
       - name: Build release
         run: cargo build --release --locked
 
+      # Cargo's restored fingerprints can skip build.rs even though loose
+      # files in target/release/Fonts were not restored by rust-cache.
+      - name: Stage bundled fonts
+        shell: pwsh
+        run: |
+          $fonts = 'target/release/Fonts'
+          New-Item -ItemType Directory -Force -Path $fonts | Out-Null
+          Copy-Item -Path 'quotascope-win/assets/fonts/*' -Destination $fonts -Force
+
       # Smoke test for the status-line contract: `--json` must print a valid
       # document and exit 0 without touching the network or the keyring.
       - name: --json smoke test
@@ -155,6 +164,12 @@ jobs:
         with:
           python-version: '3.14'
 
+      - name: Pulse appearance and animation regression
+        shell: pwsh
+        run: |
+          $executable = Join-Path $env:RUNNER_TEMP 'quotascope-package-smoke/quotascope.exe'
+          ./quotascope-win/tests/pulse_appearance_ui_smoke.ps1 -Executable $executable -OutputDirectory 'target/token-ui-validation'
+
       # Run against the actual portable Release payload on the runner's own
       # desktop. All databases, transcripts, prices and profiles are synthetic.
       - name: Release Token and service-status page regression
@@ -169,13 +184,16 @@ jobs:
           ./quotascope-win/tests/service_status_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
           ./quotascope-win/tests/about_updates_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
           ./quotascope-win/tests/spend_history_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
+          ./quotascope-win/tests/upstream_features_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
 
       - name: Upload synthetic Token validation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: quotascope-token-ui-validation
-          path: windows/target/token-ui-validation/*.json
+          path: |
+            windows/target/token-ui-validation/*.json
+            windows/target/token-ui-validation/pulse-*.png
           if-no-files-found: ignore
 
       - name: Upload installer validation evidence

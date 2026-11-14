@@ -15,6 +15,7 @@ fn main() {
 
     // The bundled Windows icon plus the version strings Explorer and the
     // taskbar read.
+    println!("cargo:rerun-if-changed=assets/app.ico");
     let mut res = winresource::WindowsResource::new();
     res.set_icon("assets/app.ico");
     let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();

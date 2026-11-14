@@ -140,7 +140,7 @@ pub fn parse_app_server_response(root: &serde_json::Value) -> ProviderUsage {
                     .and_then(number)
                     .map(crate::timeutil::epoch_to_ms);
                 Some(UsageWindow::new(
-                    &format!("{key}.{slot}"),
+                    &format!("{key}.{slot}_window"),
                     seconds.map(kind_from_seconds).unwrap_or(Kind::Other(0)),
                     scope.clone(),
                     percent / 100.0,

@@ -26,12 +26,15 @@ pub fn find(
     accept: impl Fn(&BTreeMap<String, String>) -> bool,
 ) -> Option<(BTreeMap<String, String>, String)> {
     let local = std::env::var_os("LOCALAPPDATA")?;
-    for (browser, relative) in [
-        ("Edge", "Microsoft/Edge/User Data"),
-        ("Chrome", "Google/Chrome/User Data"),
-        ("Brave", "BraveSoftware/Brave-Browser/User Data"),
-        ("Vivaldi", "Vivaldi/User Data"),
-    ] {
+    for browser in crate::browser_cookies::import_browsers() {
+        use crate::browser_cookies::Browser;
+        let relative = match browser {
+            Browser::Edge => "Microsoft/Edge/User Data",
+            Browser::Chrome => "Google/Chrome/User Data",
+            Browser::Brave => "BraveSoftware/Brave-Browser/User Data",
+            Browser::Vivaldi => "Vivaldi/User Data",
+            Browser::Firefox | Browser::Connected => continue,
+        };
         let root = std::path::PathBuf::from(&local).join(relative);
         let mut named: Vec<_> = std::fs::read_dir(&root)
             .ok()
@@ -53,7 +56,7 @@ pub fn find(
             let path = profile.join("Local Storage/leveldb");
             if let Some(values) = read(&path, origin, keys) {
                 if accept(&values) {
-                    return Some((values, browser.into()));
+                    return Some((values, browser.name().into()));
                 }
             }
         }

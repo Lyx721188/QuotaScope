@@ -50,6 +50,8 @@ pub struct Extension {
     pub executable: PathBuf,
     /// How long a run may take before it is stopped.
     pub timeout_secs: f64,
+    /// Optional bounded PNG, captured during discovery rather than painting.
+    pub icon_data: Option<Vec<u8>>,
 }
 
 impl Extension {
@@ -131,6 +133,7 @@ struct Manifest {
     executable: String,
     #[serde(rename = "timeoutSeconds")]
     timeout_seconds: Option<f64>,
+    icon: Option<serde_json::Value>,
 }
 
 /// Letters, digits and `.-_`, lowercase, starting with a letter or digit.
@@ -160,7 +163,114 @@ pub fn is_valid_id(id: &str) -> bool {
 /// is switched on there — the same rule as every built-in provider, which is
 /// not fetched while it is off.
 pub fn scan() -> Scan {
-    scan_in(&folder())
+    let scan = scan_in(&folder());
+    let mut icons = icons().write().unwrap_or_else(|e| e.into_inner());
+    icons.clear();
+    for extension in &scan.extensions {
+        if let Some(bytes) = &extension.icon_data {
+            use sha2::{Digest, Sha256};
+            let digest = format!("{:x}", Sha256::digest(bytes));
+            icons.insert(
+                extension.account().id(),
+                (digest, std::sync::Arc::from(bytes.as_slice())),
+            );
+        }
+    }
+    scan
+}
+
+type Icon = (String, std::sync::Arc<[u8]>);
+fn icons() -> &'static std::sync::RwLock<HashMap<String, Icon>> {
+    static ICONS: std::sync::OnceLock<std::sync::RwLock<HashMap<String, Icon>>> =
+        std::sync::OnceLock::new();
+    ICONS.get_or_init(Default::default)
+}
+pub fn icon_for(account_id: &str) -> Option<Icon> {
+    icons()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(account_id)
+        .cloned()
+}
+
+fn icon_data(root: &std::path::Path, path: Option<&str>) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let path = path.filter(|s| !s.is_empty())?;
+    let relative = std::path::Path::new(path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let file = root.join(relative).canonicalize().ok()?;
+    if !file.starts_with(root) || !file.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(file)
+        .ok()?
+        .take(256 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 256 * 1024 || !png_shape(&bytes) {
+        return None;
+    }
+    Some(bytes)
+}
+
+// Validate the PNG container and dimensions before the UI decoder allocates.
+// The platform decoder still verifies the compressed image when first drawn.
+fn png_shape(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return false;
+    }
+    let mut at = 8usize;
+    let mut data = false;
+    while let Some(header) = bytes.get(at..at + 8) {
+        let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let Some(chunk) = bytes.get(at + 4..at + 8 + size) else {
+            return false;
+        };
+        let Some(crc) = bytes.get(at + 8 + size..at + 12 + size) else {
+            return false;
+        };
+        let mut actual = !0u32;
+        for byte in chunk {
+            actual ^= *byte as u32;
+            for _ in 0..8 {
+                actual = (actual >> 1) ^ (0xedb88320 & 0u32.wrapping_sub(actual & 1));
+            }
+        }
+        if !actual != u32::from_be_bytes(crc.try_into().unwrap()) {
+            return false;
+        }
+        let kind = &header[4..];
+        if at == 8 {
+            if kind != b"IHDR" || size != 13 {
+                return false;
+            }
+            let width = u32::from_be_bytes(chunk[4..8].try_into().unwrap());
+            let height = u32::from_be_bytes(chunk[8..12].try_into().unwrap());
+            if !(1..=1024).contains(&width) || !(1..=1024).contains(&height) {
+                return false;
+            }
+        } else if kind == b"IHDR" {
+            return false;
+        }
+        if kind == b"acTL" {
+            return false;
+        }
+        if kind == b"IDAT" {
+            data = true;
+        }
+        at += 12 + size;
+        if kind == b"IEND" {
+            return size == 0 && data && at == bytes.len();
+        }
+    }
+    false
 }
 
 pub fn scan_in(folder: &std::path::Path) -> Scan {
@@ -249,12 +359,14 @@ fn load(directory: &std::path::Path) -> Result<Extension, ProblemReason> {
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(TIMEOUT_RANGE.0, TIMEOUT_RANGE.1);
 
+    let icon_data = icon_data(&root, manifest.icon.as_ref().and_then(|v| v.as_str()));
     Ok(Extension {
         id: manifest.id,
         name: name.chars().take(60).collect(),
         directory: root,
         executable,
         timeout_secs: timeout,
+        icon_data,
     })
 }
 
@@ -636,6 +748,38 @@ impl Catalog {
 mod tests {
     use super::*;
     use crate::model::{Provider, State, Unavailability};
+
+    #[test]
+    fn optional_icons_are_bounded_local_pngs_and_never_disable_the_program() {
+        let root = std::env::temp_dir().join(format!(
+            "qs-icon-{}-{}",
+            std::process::id(),
+            crate::timeutil::now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let png = include_bytes!("../tests/fixtures/extension-icon.png");
+        std::fs::write(root.join("mark.png"), png).unwrap();
+        std::fs::write(root.join("probe.exe"), b"").unwrap();
+        let root = root.canonicalize().unwrap();
+        assert!(png_shape(png));
+        for icon in [
+            serde_json::json!("mark.png"),
+            serde_json::json!("../mark.png"),
+            serde_json::json!(123),
+        ] {
+            let good = icon == "mark.png";
+            std::fs::write(root.join(MANIFEST_NAME),serde_json::to_vec(&serde_json::json!({"schemaVersion":1,"id":"probe","name":"Probe","executable":"probe.exe","icon":icon})).unwrap()).unwrap();
+            assert_eq!(load(&root).unwrap().icon_data.is_some(), good);
+        }
+        assert!(icon_data(&root, Some("../mark.png")).is_none());
+        std::fs::write(root.join("mark.png"), vec![0u8; 256 * 1024 + 1]).unwrap();
+        assert!(icon_data(&root, Some("mark.png")).is_none());
+        let mut damaged = png.to_vec();
+        damaged[25] ^= 1;
+        assert!(!png_shape(&damaged));
+        assert!(!png_shape(b"not an image"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn account() -> AccountKey {
         AccountKey {

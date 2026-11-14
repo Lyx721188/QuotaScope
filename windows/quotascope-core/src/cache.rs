@@ -30,6 +30,7 @@ mod tests {
         let account = AccountKey::primary(Provider::Kiro);
         let now = crate::timeutil::now_ms();
         let stored = Stored {
+            credential_context: None,
             windows: vec![UsageWindow::new(
                 "credit",
                 Kind::Monthly,
@@ -72,6 +73,8 @@ mod tests {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Stored {
+    #[serde(default)]
+    credential_context: Option<String>,
     windows: Vec<crate::model::UsageWindow>,
     observed_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,7 +103,15 @@ impl UsageCache {
     /// Returns the reading worth showing: the fetched one when it carries
     /// anything, otherwise whatever was last banked — and, when both have
     /// something, whichever was actually taken later.
-    pub fn reconciled(&mut self, fetched: ProviderUsage) -> ProviderUsage {
+    pub fn reconciled(&mut self, mut fetched: ProviderUsage) -> ProviderUsage {
+        if fetched.credential_context.is_none()
+            && (fetched.provider().uses_api_key()
+                || !fetched.account.is_primary()
+                    && fetched.provider() != crate::model::Provider::Extension)
+        {
+            fetched.credential_context =
+                Some(crate::provider_sites::current_context(&fetched.account));
+        }
         if matches!(fetched.state, State::Live) && fetched.reports_something() {
             // `.live` is not the same as "newest": a route can call its own
             // capture live while an earlier reading banked later.
@@ -148,11 +159,17 @@ impl UsageCache {
         cached
     }
 
+    pub fn forget(&mut self, account: &AccountKey) {
+        let mut all = self.load().clone();
+        all.remove(&account.id());
+        self.write(all);
+    }
     fn store(&mut self, usage: &ProviderUsage) {
         let mut all = self.load().clone();
         all.insert(
             usage.account.id(),
             Stored {
+                credential_context: usage.credential_context.clone(),
                 windows: usage.windows.clone(),
                 observed_at: usage.observed_at.unwrap_or_else(crate::timeutil::now_ms),
                 plan: usage.plan.clone(),
@@ -168,6 +185,15 @@ impl UsageCache {
     /// It comes back `.stale`, so the card says when it was taken.
     pub fn reading(&mut self, account: &AccountKey) -> Option<ProviderUsage> {
         let stored = self.load().get(&account.id()).cloned()?;
+        if account.provider.uses_api_key()
+            || !account.is_primary() && account.provider != crate::model::Provider::Extension
+        {
+            if stored.credential_context.as_deref()
+                != Some(crate::provider_sites::current_context(account).as_str())
+            {
+                return None;
+            }
+        }
 
         let now = crate::timeutil::now_ms();
         if now - stored.observed_at > MAXIMUM_AGE_MS {
@@ -198,6 +224,7 @@ impl UsageCache {
             credit_remaining: stored.credit_remaining,
             origin: stored.origin,
             is_cached: true,
+            credential_context: stored.credential_context,
         })
     }
 

@@ -1,5 +1,16 @@
 # Third-Party Notices
 
+The November 2026 Windows batch adapts Open Design, DimAgent, Antigravity CLI,
+Cursor weekly/Enterprise quota and Statuspage component-selection protocols
+from Pulse commit `338c796` (2026-11-11), Copyright (c) 2026 qunqin24,
+Apache-2.0. Source paths include `Sources/Pulse/Providers/Profiled/`,
+`AntigravityCLIUsage.swift`, `CursorUsageService.swift` and `Status/StatusPage.swift`.
+The Open Design and DimAgent SVG marks are copied from that commit and
+rasterised for Windows; their names and trademarks belong to their owners.
+The extension icon contract, calendar ranges, Grok counting correction and
+documented model aliases follow the same upstream baseline.
+Source: <https://github.com/qunqin24/Pulse/tree/338c796>.
+
 The official service-status readers and outage-transition rules are adapted
 from Pulse 1.7.2, commit `b570dd7`, Copyright (c) 2026 qunqin24,
 Apache License 2.0: `Sources/Pulse/Providers/ServiceStatus.swift`,
@@ -172,4 +183,73 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+```
+
+## Agent Robot Avatar
+
+
+The robot QuotaScope can draw in a ring in place of a provider's mark is ported to
+Rust / Direct2D from [Agent Robot Avatar](https://github.com/CX-ArtLab/agent-robot-avatar)
+by CX ArtLab (v0.7.1, commit `7e637d1`): the head outline, the eye poses and
+lids, the antenna and the head-roundness variants. Native animation adapts
+these poses for idle, activity, refresh, completion, exhaustion and sleep. The files are in `windows/quotascope-win/src/robot.rs`.
+
+The Agent Robot Avatar character, including its robot appearance and visual
+identity, is an original design by CX ArtLab. Its licence covers the software;
+it does not transfer ownership of the Agent Robot Avatar name, character or
+visual identity, and QuotaScope does not present them as its own character or
+brand.
+
+```text
+MIT License
+
+Copyright (c) 2026 CX ART Lab
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## WinUI.Composition.Hlsl
+
+The Pulse GPU glass shader in `windows/quotascope-win/shaders/liquid_glass.hlsl`
+uses optical ideas adapted from [WinUI.Composition.Hlsl](https://github.com/Millennium-Science-Technology-R-D-Inst/WinUI.Composition.Hlsl),
+commit `966c8c854464c56daba6422a3e8e5ca7191e6def`.
+
+```text
+﻿MIT License
+
+Copyright (c) 2026 hoshiizumiya
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```

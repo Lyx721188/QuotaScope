@@ -15,14 +15,16 @@
 //! deliberately cannot open: a value that will not decrypt is dropped, never
 //! guessed at.
 //!
-//! **The default browser is tried first regardless**, which is a decision
+//! **The selected browser alone is read by default**, which is a decision
 //! taken deliberately over trying the free ones first. The browser the user
 //! opens links with is where they are actually signed in; the others may hold
 //! a session that is months stale, and finding *that* is worse than finding
-//! nothing. Each browser is independent: one failing tells the next nothing.
+//! nothing. Reading all browsers is an explicit alternative in Settings.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+#[path = "browser_bridge.rs"]
+mod bridge;
 
 /// The browsers this module knows how to read, in the order they are tried
 /// when none of them is the default: the two mass-market Chromium ones first,
@@ -34,6 +36,7 @@ pub enum Browser {
     Firefox,
     Brave,
     Vivaldi,
+    Connected,
 }
 
 pub const ALL: [Browser; 5] = [
@@ -52,6 +55,7 @@ impl Browser {
             Browser::Firefox => "Firefox",
             Browser::Brave => "Brave",
             Browser::Vivaldi => "Vivaldi",
+            Browser::Connected => "Connected browser (OpenCLI)",
         }
     }
 }
@@ -88,8 +92,18 @@ fn bases() -> Bases {
 /// The first browser that yields any of the wanted names wins; its answers
 /// are not merged with another browser's.
 pub fn session(hosts: &[&str], cookies: &[&str]) -> Option<Found> {
+    let choice = crate::settings::with(|s| s.import_browser.clone());
+    session_for_browser(hosts, cookies, &choice)
+}
+
+pub fn session_for_browser(hosts: &[&str], cookies: &[&str], choice: &str) -> Option<Found> {
     let bases = bases();
-    session_in(&bases, hosts, cookies)
+    let browsers = selected_browsers(present_in(&bases), preferred_browser(), choice);
+    read_from(&bases, hosts, cookies, browsers).or_else(|| {
+        (choice == "all")
+            .then(|| bridge::session(hosts, cookies))
+            .flatten()
+    })
 }
 /// User-triggered import from Claude Desktop's Electron profile. App-Bound
 /// encryption stays unsupported, just as for ordinary Chromium profiles.
@@ -121,6 +135,7 @@ pub fn claude_desktop_session() -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn session_in(bases: &Bases, hosts: &[&str], cookies: &[&str]) -> Option<Found> {
     let mut browsers = present_in(bases);
     // The default browser moves to the front rather than being sorted:
@@ -132,6 +147,35 @@ fn session_in(bases: &Bases, hosts: &[&str], cookies: &[&str]) -> Option<Found> 
         }
     }
 
+    read_from(bases, hosts, cookies, browsers)
+}
+
+pub fn import_browsers() -> Vec<Browser> {
+    let choice = crate::settings::with(|s| s.import_browser.clone());
+    selected_browsers(present(), preferred_browser(), &choice)
+}
+fn selected_browsers(
+    present: Vec<Browser>,
+    preferred: Option<Browser>,
+    choice: &str,
+) -> Vec<Browser> {
+    if choice == "all" {
+        return present;
+    }
+    let chosen = if choice == "default" {
+        preferred
+    } else {
+        ALL.into_iter()
+            .find(|b| b.name().eq_ignore_ascii_case(choice))
+    };
+    chosen.filter(|b| present.contains(b)).into_iter().collect()
+}
+fn read_from(
+    bases: &Bases,
+    hosts: &[&str],
+    cookies: &[&str],
+    browsers: Vec<Browser>,
+) -> Option<Found> {
     for host in hosts {
         for browser in &browsers {
             let pairs = match browser {
@@ -247,7 +291,7 @@ fn chromium_root(browser: Browser, local: &Path) -> Option<PathBuf> {
         Browser::Edge => "Microsoft/Edge/User Data",
         Browser::Brave => "BraveSoftware/Brave-Browser/User Data",
         Browser::Vivaldi => "Vivaldi/User Data",
-        Browser::Firefox => return None,
+        Browser::Firefox | Browser::Connected => return None,
     };
     Some(local.join(root))
 }
@@ -349,7 +393,7 @@ pub(crate) fn chromium_cookies_at(store: &Path, host: &str, key: &[u8]) -> Vec<(
 /// The AES key a Chromium browser protects its cookie values with: a DPAPI
 /// blob inside `Local State`, under `os_crypt.encrypted_key`. The blob
 /// carries a five-byte `DPAPI` marker before the encrypted payload.
-fn local_state_key(root: &Path) -> Option<Vec<u8>> {
+pub(crate) fn local_state_key(root: &Path) -> Option<Vec<u8>> {
     let data = std::fs::read(root.join("Local State")).ok()?;
     let root: Value = serde_json::from_slice(&data).ok()?;
     let encoded = root.get("os_crypt")?.get("encrypted_key")?.as_str()?;
@@ -362,7 +406,7 @@ fn local_state_key(root: &Path) -> Option<Vec<u8>> {
 /// the ciphertext with its sixteen-byte tag. `v20` is App-Bound Encryption —
 /// the value exists but this module cannot and will not open it. Anything
 /// else was never encrypted at all on older profiles.
-fn decrypt_value(encrypted: &[u8], key: &[u8]) -> Option<String> {
+pub(crate) fn decrypt_value(encrypted: &[u8], key: &[u8]) -> Option<String> {
     if encrypted.len() <= 3 {
         // Too short to carry a version prefix: plaintext, possibly empty.
         return String::from_utf8(encrypted.to_vec()).ok();
@@ -554,6 +598,25 @@ fn query_cookies<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_browser_selection_does_not_fall_through_to_another_login() {
+        let present = vec![Browser::Chrome, Browser::Edge];
+        assert_eq!(
+            selected_browsers(present.clone(), Some(Browser::Edge), "default"),
+            vec![Browser::Edge]
+        );
+        assert!(selected_browsers(present.clone(), Some(Browser::Firefox), "default").is_empty());
+        assert!(selected_browsers(present.clone(), None, "default").is_empty());
+        assert_eq!(
+            selected_browsers(present.clone(), Some(Browser::Edge), "chrome"),
+            vec![Browser::Chrome]
+        );
+        assert_eq!(
+            selected_browsers(present.clone(), Some(Browser::Edge), "all"),
+            present
+        );
+    }
     use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::{Aes256Gcm, Key, Nonce};
 

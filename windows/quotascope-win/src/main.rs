@@ -10,13 +10,16 @@ mod assets;
 mod autostart;
 mod card;
 mod clipboard;
-mod codex_signal_state;
 mod d2d;
 mod flyout;
 mod fonts;
 mod geometry;
+mod liquid_glass;
 mod panel;
+mod pulse_rail;
+mod recap_export;
 mod rings;
+mod robot;
 mod settings_app;
 mod theme;
 mod tray;
@@ -29,6 +32,7 @@ use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    quotascope_core::secrets::install_dpapi(dpapi_protect, dpapi_unprotect);
 
     if args.iter().any(|a| a == "--statusline") {
         attach_console();
@@ -38,7 +42,6 @@ fn main() {
 
     if args.iter().any(|a| a == "--json") {
         attach_console();
-        quotascope_core::settings::initialize();
         quotascope_core::report::print();
         return;
     }
@@ -85,7 +88,8 @@ fn main() {
     winutil::set_dpi_awareness();
     quotascope_core::localization::detect_from_system();
     quotascope_core::settings::initialize();
-    quotascope_core::secrets::install_dpapi(dpapi_protect, dpapi_unprotect);
+
+    quotascope_core::notices::initialize();
 
     // The renderer is built before any window exists.
     let _ = d2d::global_engine();

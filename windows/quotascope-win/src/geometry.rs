@@ -39,12 +39,118 @@ impl Edge {
     }
 }
 
+/// The pointer deliberately reaches the top or bottom. A horizontal rail's
+/// ends can reach a side long before the hand carrying it does.
+#[allow(clippy::too_many_arguments)]
+pub fn dock_for_drag(
+    current: Edge,
+    docked: bool,
+    pointer: (i32, i32),
+    rail: (i32, i32, i32, i32),
+    work: (i32, i32, i32, i32),
+    screen_bottom: i32,
+    snaps: bool,
+    reach: i32,
+) -> (Edge, bool) {
+    if !snaps {
+        return (current, false);
+    }
+    let stays_bottom = docked && current == Edge::Bottom && (work.3 - rail.3).abs() <= reach;
+    if pointer.1 - work.1 <= reach {
+        return (Edge::Top, true);
+    }
+    if stays_bottom || screen_bottom - pointer.1 <= reach {
+        return (Edge::Bottom, true);
+    }
+    if work.3 - pointer.1 <= reach {
+        return (Edge::Bottom, false);
+    }
+    let (left, right) = if current.is_vertical() {
+        (rail.0, rail.2)
+    } else {
+        (pointer.0, pointer.0)
+    };
+    if left - work.0 <= reach {
+        (Edge::Left, true)
+    } else if work.2 - right <= reach {
+        (Edge::Right, true)
+    } else {
+        (current, false)
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+    #[test]
+    fn horizontal_corner_and_disabled_snap_preserve_the_axis() {
+        let work = (0, 0, 1000, 750);
+        assert_eq!(
+            dock_for_drag(
+                Edge::Top,
+                false,
+                (700, 740),
+                (400, 710, 1000, 750),
+                work,
+                800,
+                true,
+                32
+            ),
+            (Edge::Bottom, false)
+        );
+        assert_eq!(
+            dock_for_drag(
+                Edge::Right,
+                true,
+                (500, 400),
+                (450, 200, 500, 600),
+                work,
+                800,
+                false,
+                32
+            ),
+            (Edge::Right, false)
+        );
+        assert_eq!(
+            dock_for_drag(
+                Edge::Right,
+                false,
+                (500, 400),
+                (450, 0, 500, 700),
+                work,
+                800,
+                true,
+                32
+            ),
+            (Edge::Right, false)
+        );
+        assert_eq!(
+            dock_for_drag(
+                Edge::Bottom,
+                true,
+                (700, 690),
+                (400, 700, 1000, 740),
+                work,
+                800,
+                true,
+                32
+            ),
+            (Edge::Bottom, true)
+        );
+    }
+}
+
 /// The scale every measurement is multiplied by: the panel size setting
 /// times the rail spacing setting where the two apply.
 #[derive(Debug, Clone, Copy)]
 pub struct Metrics {
     pub scale: f64,
     pub spacing: f64,
+    pub pulse: bool,
+    pub glass: bool,
+    pub docked: bool,
+    pub clock: bool,
+    pub segmented: bool,
     /// Whether the percent label sits above its ring rather than below.
     pub label_leads: bool,
     /// Whether the ring carries a percent label, per axis.
@@ -57,6 +163,11 @@ impl Metrics {
         Metrics {
             scale: settings.scale(),
             spacing: settings.spacing(),
+            pulse: settings.panel_appearance == "pulse",
+            glass: settings.panel_appearance == "pulse" && settings.pulse_glass,
+            docked: !settings.floating,
+            clock: settings.shows_window_clock,
+            segmented: settings.progress_bars == "segmented",
             label_leads: settings.label_above_ring,
             side_percentages: settings.side_rail_shows_percentages,
             top_percentages: settings.top_rail_shows_percentages,
@@ -99,12 +210,24 @@ pub mod dock {
 
     /// Height of one ring + its percent label.
     pub fn item_height(m: &Metrics) -> f64 {
-        m.s(RING_DIAMETER) + m.s(RING_TO_TEXT) + m.s(PERCENT_TEXT_HEIGHT)
+        m.s(RING_DIAMETER) + text_gap(m) + m.s(PERCENT_TEXT_HEIGHT)
+    }
+
+    pub fn text_gap(m: &Metrics) -> f64 {
+        m.s(RING_TO_TEXT + if m.pulse && m.clock { 5.0 } else { 0.0 })
     }
 
     /// The room left at each end of the rail before the first ring.
     pub fn end_padding(m: &Metrics) -> f64 {
-        m.s(VERTICAL_PADDING)
+        m.s(if m.pulse {
+            if m.docked {
+                46.0
+            } else {
+                22.0
+            }
+        } else {
+            VERTICAL_PADDING
+        })
     }
 
     /// Whether an item carries its percent label, on either axis.
@@ -118,7 +241,7 @@ pub mod dock {
         if !m.label_leads || !shows_percentages(m, axis) {
             return 0.0;
         }
-        m.s(PERCENT_TEXT_HEIGHT) + m.s(RING_TO_TEXT)
+        m.s(PERCENT_TEXT_HEIGHT) + text_gap(m)
     }
 
     /// One item's extent **along** the rail.
@@ -136,7 +259,13 @@ pub mod dock {
     /// height across the top.
     pub fn thickness(m: &Metrics, axis: Axis) -> f64 {
         if axis == Axis::Horizontal && shows_percentages(m, axis) {
-            return item_height(m) + m.s(HORIZONTAL_PADDING) * 2.0;
+            let padding = if m.pulse && !m.docked {
+                14.0
+            } else {
+                HORIZONTAL_PADDING
+            };
+            let clock_extra = if m.pulse && m.clock { 10.0 } else { 0.0 };
+            return item_height(m) + m.s(padding * 2.0 + clock_extra);
         }
         m.s(WIDTH)
     }
@@ -145,12 +274,22 @@ pub mod dock {
     /// items + the gaps between them.
     pub fn length(m: &Metrics, item_count: usize, axis: Axis) -> f64 {
         let count = item_count.max(1) as f64;
-        end_padding(m) * 2.0 + item_length(m, axis) * count + m.s(item_spacing(m)) * (count - 1.0)
+        end_padding(m) * 2.0 + item_length(m, axis) * count + gap(m, axis) * (count - 1.0)
     }
 
     /// The gap between the ring+label items, along the rail.
     pub fn item_spacing(m: &Metrics) -> f64 {
         30.0 * m.spacing
+    }
+
+    pub fn gap(m: &Metrics, axis: Axis) -> f64 {
+        m.s(
+            if m.pulse && !m.docked && axis == Axis::Horizontal && shows_percentages(m, axis) {
+                20.0 * m.spacing
+            } else {
+                item_spacing(m)
+            },
+        )
     }
 
     /// Window origin that leaves only `peek` pixels inside the work area.
@@ -184,6 +323,11 @@ pub mod dock {
 
     /// Where a ring's centre sits **across** the rail.
     pub fn ring_centre_across(m: &Metrics, axis: Axis) -> f64 {
+        if m.pulse && axis == Axis::Horizontal && shows_percentages(m, axis) {
+            let padding = if m.docked { HORIZONTAL_PADDING } else { 14.0 };
+            let extra = if m.clock && !m.label_leads { 10.0 } else { 0.0 };
+            return m.s(padding + extra + RING_DIAMETER / 2.0) + ring_offset_in_item(m, axis);
+        }
         let item = match axis {
             Axis::Vertical => m.s(RING_DIAMETER),
             Axis::Horizontal => {
@@ -213,7 +357,7 @@ pub mod dock {
 
     /// The step from one ring's centre to the next.
     pub fn ring_step(m: &Metrics, axis: Axis) -> f64 {
-        item_length(m, axis) + m.s(item_spacing(m))
+        item_length(m, axis) + gap(m, axis)
     }
 
     /// Ring centre along the rail for slot `index`.
@@ -266,12 +410,20 @@ pub mod card {
     pub const HEADER_ICON: f64 = 16.0;
     pub const ROW_TEXT_LINE_HEIGHT: f64 = 14.0;
 
+    pub fn progress_bar_height(m: &Metrics) -> f64 {
+        m.s(if m.pulse && m.segmented {
+            12.0
+        } else {
+            PROGRESS_BAR_HEIGHT
+        })
+    }
+
     /// One limit row: title, bar, percent + reset, and the forecast line
     /// when it is shown.
     pub fn row_height(m: &Metrics, with_forecast: bool) -> f64 {
         let mut height = m.s(ROW_TEXT_LINE_HEIGHT)
             + m.s(ROW_INTERNAL_SPACING)
-            + m.s(PROGRESS_BAR_HEIGHT)
+            + progress_bar_height(m)
             + m.s(ROW_INTERNAL_SPACING)
             + m.s(ROW_TEXT_LINE_HEIGHT);
         if with_forecast {
@@ -352,5 +504,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn pulse_padding_and_clock_gap_follow_docked_and_floating_layout() {
+        let mut settings = quotascope_core::settings::AppSettings {
+            panel_appearance: "pulse".into(),
+            ..Default::default()
+        };
+        let docked = Metrics::from_settings(&settings);
+        assert_eq!(dock::end_padding(&docked), 46.0);
+        assert_eq!(dock::text_gap(&docked), 6.0);
+        settings.floating = true;
+        settings.shows_window_clock = true;
+        let floating = Metrics::from_settings(&settings);
+        assert_eq!(dock::end_padding(&floating), 22.0);
+        assert_eq!(dock::text_gap(&floating), 11.0);
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            for slot in 0..3 {
+                let centre = dock::ring_centre_along(&floating, slot, edge.axis());
+                assert_eq!(dock::slot_at(&floating, centre, edge.axis(), 3), Some(slot));
+            }
+        }
+    }
+
+    #[test]
+    fn glass_is_only_active_for_pulse_appearance() {
+        let mut settings = quotascope_core::settings::AppSettings {
+            pulse_glass: true,
+            ..Default::default()
+        };
+        assert!(!Metrics::from_settings(&settings).glass);
+        settings.panel_appearance = "pulse".into();
+        assert!(Metrics::from_settings(&settings).glass);
+        settings.pulse_glass = false;
+        assert!(!Metrics::from_settings(&settings).glass);
     }
 }

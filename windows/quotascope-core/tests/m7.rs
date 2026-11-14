@@ -20,12 +20,12 @@ fn free_placement_survives_relaunch_and_preserves_axis_and_spacing() {
 }
 
 #[test]
-fn usage_pages_are_the_eighteen_known_https_pages() {
+fn usage_pages_are_the_nineteen_known_https_pages() {
     let pages: Vec<_> = ALL_PROVIDERS
         .iter()
         .filter_map(|p| p.usage_page())
         .collect();
-    assert_eq!(pages.len(), 18);
+    assert_eq!(pages.len(), 19);
     assert!(pages
         .iter()
         .all(|page| url::Url::parse(page).unwrap().scheme() == "https"));

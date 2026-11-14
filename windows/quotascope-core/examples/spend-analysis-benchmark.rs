@@ -47,6 +47,7 @@ fn main() {
         snapshot: Arc::new(snapshot),
         query: Query {
             today,
+            recap_period: quotascope_core::recap::Period::Month,
             recap_month: NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap(),
             span: Span::All,
             source: None,

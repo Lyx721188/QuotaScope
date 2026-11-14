@@ -21,6 +21,7 @@
 //! CLI routes, and can change without notice.
 
 use super::{KeyRing, ProviderService};
+use crate::http::ObserveRequest as _;
 use crate::model::{
     AccountKey, CreditAmount, Kind, Provider, ProviderUsage, Unavailability, UsageWindow,
 };
@@ -62,8 +63,9 @@ impl ProviderService for CursorService {
 
     fn fetch(&self, _keys: &KeyRing) -> ProviderUsage {
         let account = AccountKey::primary(Provider::Cursor);
-        let Some(token) = stored_token() else {
-            return ProviderUsage::unavailable(account, Unavailability::CursorSignInRequired);
+        let token = match load_token() {
+            Ok(token) => token,
+            Err(reason) => return ProviderUsage::unavailable(account, reason),
         };
         // A token that is stored but spent is a login gone stale, not an
         // absent one — so say what actually helps.
@@ -73,9 +75,9 @@ impl ProviderService for CursorService {
 
         let response = crate::proxy::client(&self.http)
             .get(ENDPOINT)
-            .header("Cookie", cookie)
+            .header("Cookie", &cookie)
             .header("Accept", "application/json")
-            .send();
+            .observed_send();
         let response = match response {
             Ok(r) => r,
             Err(_) => return ProviderUsage::unavailable(account, Unavailability::Unreachable),
@@ -107,7 +109,16 @@ impl ProviderService for CursorService {
             Err(_) => return ProviderUsage::unavailable(account, Unavailability::UnreadableReply),
         };
 
-        let windows = windows_from_reply(&reply);
+        let mut windows = windows_from_reply(&reply);
+        if let Ok(plan) = self.dashboard("get-plan-info", &cookie) {
+            if weekly_plan(&plan) {
+                let period = match self.dashboard("get-current-period-usage", &cookie) {
+                    Ok(period) => period,
+                    Err(reason) => return ProviderUsage::unavailable(account, reason),
+                };
+                windows = weekly_windows(&plan, &period, windows);
+            }
+        }
         if windows.is_empty() {
             return ProviderUsage::unavailable(account, Unavailability::NoLimitsReported);
         }
@@ -136,6 +147,68 @@ impl ProviderService for CursorService {
 
 /// Cursor is an editor built on VS Code, so its login sits in the SQLite
 /// database VS Code keeps global state in.
+impl CursorService {
+    fn dashboard(&self, endpoint: &str, cookie: &str) -> Result<serde_json::Value, Unavailability> {
+        let response = crate::proxy::client(&self.http)
+            .post(format!("https://cursor.com/api/dashboard/{endpoint}"))
+            .header("Cookie", cookie)
+            .header("Accept", "application/json")
+            .json(&serde_json::json!({}))
+            .observed_send()
+            .map_err(|_| Unavailability::Unreachable)?;
+        match response.status().as_u16() {
+            200..=299 => response.json().map_err(|_| Unavailability::UnreadableReply),
+            300..=399 | 401 | 403 => Err(Unavailability::CursorLoginExpired),
+            429 => Err(Unavailability::RateLimited),
+            _ => Err(Unavailability::ServerError),
+        }
+    }
+}
+
+pub fn weekly_plan(root: &serde_json::Value) -> bool {
+    root.pointer("/planInfo/includedUsagePeriod")
+        .is_some_and(|v| {
+            v.as_i64() == Some(2)
+                || v.as_str().is_some_and(|s| {
+                    matches!(
+                        s.to_ascii_uppercase().as_str(),
+                        "WEEKLY" | "INCLUDED_USAGE_PERIOD_WEEKLY"
+                    )
+                })
+        })
+}
+
+pub fn weekly_windows(
+    plan: &serde_json::Value,
+    period: &serde_json::Value,
+    summary: Vec<UsageWindow>,
+) -> Vec<UsageWindow> {
+    let mut windows = Vec::new();
+    if let Some(percent) = period
+        .pointer("/planUsage/totalPercentUsed")
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite())
+    {
+        let reset = plan
+            .pointer("/planInfo/includedUsageResetsAt")
+            .and_then(crate::http::number)
+            .filter(|v| v.is_finite() && *v > 0.0 && *v <= 8.64e15)
+            .map(|v| v as i64);
+        let mut window = UsageWindow::new(
+            "weekly",
+            Kind::Weekly,
+            None,
+            (percent / 100.0).clamp(0.0, 1.0),
+            604800,
+            reset,
+        );
+        window.is_exhausted = percent >= 100.0;
+        windows.push(window);
+    }
+    windows.extend(summary.into_iter().filter(|w| w.kind == Kind::Spend));
+    windows
+}
+
 fn database_path() -> Option<std::path::PathBuf> {
     Some(crate::model::cursor_database())
 }
@@ -148,6 +221,23 @@ fn database_path() -> Option<std::path::PathBuf> {
 /// writes, and opening it writable would touch a directory that isn't ours.
 /// Read-only leaves all three alone.
 pub(crate) fn stored_token() -> Option<String> {
+    load_token().ok()
+}
+fn load_token() -> Result<String, Unavailability> {
+    let stored = stored_value().ok_or(Unavailability::CursorSignInRequired)?;
+    unseal_token(&stored, |encrypted| {
+        if encrypted.starts_with(b"v10") || encrypted.starts_with(b"v11") {
+            let database = database_path()?;
+            let profile = database.ancestors().nth(3)?;
+            let key = crate::browser_cookies::local_state_key(profile)?;
+            crate::browser_cookies::decrypt_value(encrypted, &key).map(String::into_bytes)
+        } else {
+            crate::secrets::dpapi_unprotect(encrypted)
+        }
+    })
+    .ok_or(Unavailability::CursorKeyRefused)
+}
+fn stored_value() -> Option<String> {
     let path = database_path()?;
     if !path.exists() {
         return None;
@@ -161,11 +251,12 @@ pub(crate) fn stored_token() -> Option<String> {
     let mut statement = statement;
     let mut rows = statement.query(["cursorAuth/accessToken"]).ok()?;
     let row = rows.next().ok()??;
-    match row.get_ref(0).ok()? {
+    let stored = match row.get_ref(0).ok()? {
         rusqlite::types::ValueRef::Text(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
         rusqlite::types::ValueRef::Blob(bytes) => text_from_blob(bytes),
         _ => None,
-    }
+    }?;
+    Some(stored)
 }
 
 /// The row is normally text, and has been seen as a blob. When it is, it is
@@ -285,7 +376,12 @@ pub fn windows_from_reply(reply: &serde_json::Value) -> Vec<UsageWindow> {
     // different denominator and would read as a third, contradictory limit —
     // see `money` below.
     if found.is_empty() {
-        if let Some(window) = money(plan, "plan", Kind::Monthly, resets) {
+        if let Some(window) = money(
+            plan.or_else(|| reply.pointer("/individualUsage/overall")),
+            "plan",
+            Kind::Monthly,
+            resets,
+        ) {
             found.push(window);
         }
     }
@@ -318,7 +414,7 @@ pub fn windows_from_reply(reply: &serde_json::Value) -> Vec<UsageWindow> {
 /// other figure in the app — reads as 1% there. Both are true; only the
 /// rounding differs.
 fn pool(percent: Option<f64>, id: &str, scope: &str, resets: Option<i64>) -> Option<UsageWindow> {
-    let percent = percent?;
+    let percent = percent.filter(|v| v.is_finite())?;
 
     let mut window = UsageWindow::new(
         id,
@@ -356,7 +452,7 @@ fn money(
     }
     let used = crate::http::number_field(allowance, "used")?;
     let limit = crate::http::number_field(allowance, "limit")?;
-    if limit <= 0.0 {
+    if !limit.is_finite() || !used.is_finite() || used < 0.0 || limit <= 0.0 {
         return None;
     }
 
@@ -382,8 +478,11 @@ fn money(
 /// and not for Antigravity: the account says how much of the money is still
 /// there, not merely how much it started with.
 fn remaining_cents(reply: &serde_json::Value) -> Option<f64> {
-    crate::http::number_field(allowances(reply, "individualUsage")?, "remaining")
-        .or_else(|| crate::http::number_field(allowances(reply, "teamUsage")?, "remaining"))
+    allowances(reply, "individualUsage")
+        .or_else(|| allowances(reply, "teamUsage"))
+        .or_else(|| reply.pointer("/individualUsage/overall"))
+        .and_then(|v| crate::http::number_field(v, "remaining"))
+        .filter(|v| v.is_finite())
 }
 
 /// "pro_plus" → "Pro+". An unfamiliar tier is tidied and passed through
@@ -567,5 +666,78 @@ mod tests {
         let mid = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
         let cookie = session_cookie(&format!("head.{mid}.sig")).unwrap();
         assert!(cookie.starts_with("WorkosCursorSessionToken=user_abc%3A%3A"));
+    }
+}
+
+fn unseal_token(stored: &str, decrypt: impl FnOnce(&[u8]) -> Option<Vec<u8>>) -> Option<String> {
+    let Some(sealed) = stored.strip_prefix("cursor-safe-storage:v1:") else {
+        return Some(stored.to_string());
+    };
+    if sealed.len() > 65536 {
+        return None;
+    }
+    use base64::Engine;
+    let encrypted = base64::engine::general_purpose::STANDARD
+        .decode(sealed)
+        .ok()?;
+    String::from_utf8(decrypt(&encrypted)?)
+        .ok()
+        .filter(|s| !s.is_empty() && !s.chars().any(char::is_control))
+}
+#[cfg(test)]
+mod safe_storage_tests {
+    use super::*;
+    #[test]
+    fn electron_safe_storage_is_unsealed_by_the_current_windows_user() {
+        assert_eq!(
+            unseal_token("plain-token", |_| panic!()).as_deref(),
+            Some("plain-token")
+        );
+        assert_eq!(
+            unseal_token("cursor-safe-storage:v1:c2VhbGVk", |b| {
+                assert_eq!(b, b"sealed");
+                Some(b"opened-token".to_vec())
+            })
+            .as_deref(),
+            Some("opened-token")
+        );
+        assert!(unseal_token("cursor-safe-storage:v1:c2VhbGVk", |_| None).is_none());
+    }
+    #[test]
+    fn chromium_v10_safe_storage_uses_the_profile_aes_key() {
+        use aes_gcm::{
+            aead::{Aead, KeyInit},
+            Aes256Gcm, Nonce,
+        };
+        use base64::Engine;
+        let key = [7u8; 32];
+        let nonce = [8u8; 12];
+        let mut encrypted = b"v10".to_vec();
+        encrypted.extend(nonce);
+        encrypted.extend(
+            Aes256Gcm::new_from_slice(&key)
+                .unwrap()
+                .encrypt(Nonce::from_slice(&nonce), b"synthetic-token".as_ref())
+                .unwrap(),
+        );
+        let stored = format!(
+            "cursor-safe-storage:v1:{}",
+            base64::engine::general_purpose::STANDARD.encode(&encrypted)
+        );
+        assert_eq!(
+            unseal_token(&stored, |bytes| crate::browser_cookies::decrypt_value(
+                bytes, &key
+            )
+            .map(String::into_bytes))
+            .as_deref(),
+            Some("synthetic-token")
+        );
+        assert!(
+            unseal_token(&stored, |bytes| crate::browser_cookies::decrypt_value(
+                bytes, &[9u8; 32]
+            )
+            .map(String::into_bytes))
+            .is_none()
+        );
     }
 }

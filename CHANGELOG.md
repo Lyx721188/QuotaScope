@@ -5,7 +5,30 @@ What each release changed, written for somebody deciding whether to install it.
 Windows releases use their own version sequence. Entries below 1.1.1 include
 inherited macOS history and do not establish Windows feature availability.
 
-## Unreleased (Windows)
+## Unreleased
+
+- Lighten experimental Pulse glass, prevent flicker as the detail card moves, unify the bubble and pointer fill, and clip long labels within their columns.
+- Add a selectable Pulse sidebar appearance modelled on the upstream rail: edge-hugging silhouette, usage-tinted rings, collapse and expand with delayed content fades, a hover detail card, and crossfades when switching accounts.
+- Redraw the application icon as a QuotaScope mark in the upstream visual language — a dark rounded shell, a light Q built from an open gauge, and a lime accent — emitted at seven ICO sizes.
+- Add an experimental translucent-glass switch for the Pulse appearance, off by default. It uses desktop capture and a GPU shader for blur, approximate edge refraction, subtle dispersion and highlights, with a translucent fallback.
+- Fix the experimental glass never transmitting the desktop: leaving the client area inside DWM's extended frame made Windows fill the glass layer with opaque white, so transparent pixels read as white and the tinted fill settled on a fixed grey. Pulse now clears the frame margins and draws the silhouette itself.
+- Fix protected Edge/Chrome session imports through an already connected OpenCLI Browser Bridge when All browsers is selected. Run imports in the background, retain their results, verify saved credentials and reject stale completions after account or browser changes.
+- Fix startup with cached session-account readings by releasing the settings lock before validating their credential context.
+- Add Open Design / OpenDesign Go browser-session and desktop-login quota readers, with personal-workspace selection, billing-route fallback, plan windows and reported USD wallet balances. Model-call API keys cannot query usage; added accounts never borrow the desktop login.
+- Add DimAgent plan, add-on and token-window quotas through the signed-in `dim usage --json` CLI, with bounded hidden child processes and expiry handling.
+- Add Antigravity's version-gated `agy` CLI route and Automatic / CLI / Desktop selection; versions before 1.1.11 are never asked for `/usage`.
+- Add Cursor weekly and Enterprise allowances; Xiaomi accounts without a Coding Plan can show their reported prepaid balance.
+- Expand official service-status pages to all 44 upstream providers with upstream component and notification filters and the existing public history display.
+- Add optional local PNG icons for extensions, identified by account and refreshed on rescans, plus built-in Open Design and DimAgent marks.
+- Add explicit browser selection for session import; Default browser reads that browser alone. Reload encrypted sessions for all browser-session providers during background refresh.
+- Add this month, last month, this year and custom inclusive date ranges to Token spend. Correct Grok's cache/reasoning double count and price the documented Antigravity Flash `-n` / `-xpe` variants.
+- Merge MiniMax sites with isolated credentials and migrate older accounts, add Qoder raw credit amounts and 31-day history, and share account history across settings.
+- Add daily, weekly, monthly and yearly usage recaps with native PNG export and clipboard images, calendar ranges, and selectable estimate currencies and exchange rates.
+- Read native MiniMax Code, Command Code and Kimi Code sessions, attribute Devin-routed Oh My Pi records, and deduplicate Codex archive copies.
+- Add bounded, masked server replies to connection checks, sealed Cursor login support and OpenCode no-plan detection.
+- Add per-account robot avatars, local agent activity marks, Antigravity model-group rings, segmented progress bars, optional edge snapping and experimental elastic docking.
+- Keep card headers fixed while scrolling, add notification testing, Russian translations, installed-version notes and a one-time GitHub prompt. Remove the Codex weaker-model inference pane.
+- Scope and verification: [November upstream batch](Docs/upstream-sync-2026-11-12.md).
 
 - **Measured history that outlives its files.** The Token page keeps per-file Claude Code and Codex counts in a separate archive, so deleting or rotating a transcript no longer erases what was measured; a damaged, oversized, foreign-root or impossible-count archive is left untouched and the read is marked incomplete, a full archive keeps stored history and only flags the files it could not take, and a partial reread never blends two observations into a figure no read produced. The same page adds a past-year activity calendar with weekly bars and a running total, a monthly recap with an explicit month picker, and a public-price comparison that never assumes a subscription price. See [the archive rules](Docs/providers/windows-transcript-archive.md).
 

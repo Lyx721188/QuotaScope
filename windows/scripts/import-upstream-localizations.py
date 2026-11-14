@@ -8,7 +8,7 @@ import sys
 target = pathlib.Path(__file__).resolve().parents[1] / "quotascope-core/src/translations"
 target.mkdir(exist_ok=True)
 ref = sys.argv[1] if len(sys.argv) > 1 else "b396306c9b19c5c24764a97b9308d86d7959abbc"
-for language in ("zh-Hant", "ja", "ko"):
+for language in ("zh-Hans", "zh-Hant", "ja", "ko", "ru"):
     source = subprocess.check_output(
         ["git", "show", f"{ref}:Sources/Pulse/Resources/{language}.lproj/Localizable.strings"]
     ).decode("utf-8")

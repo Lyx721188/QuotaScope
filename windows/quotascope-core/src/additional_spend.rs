@@ -180,11 +180,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ),
     ("warp", "Warp (export)", ".config/tokscale/warp-cache"),
     ("hindsight", "Hindsight (export)", ".hindsight/usage"),
-    (
-        "mcode",
-        "MiniMax Code (export)",
-        ".config/tokscale/headless/mcode",
-    ),
+    ("mcode", "MiniMax Code", ".minimax/v2/sessions"),
     ("copilot", "GitHub Copilot", ".copilot/session-state"),
 ];
 
@@ -200,6 +196,8 @@ pub fn native_supported(id: &str) -> bool {
             | "dsh"
             | "zcode"
             | "hermes"
+            | "mcode"
+            | "commandcode"
             | "antigravity"
             | "hindsight"
             | "cursor"
@@ -218,6 +216,20 @@ pub fn roots(id: &str, relative: &str) -> Vec<PathBuf> {
     };
     if id != "hermes" && !relative.is_empty() {
         paths.push(crate::home_dir().join(relative));
+    }
+    if id == "kimi" {
+        paths.push(
+            std::env::var_os("KIMI_CODE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| crate::model::home_path(".kimi-code"))
+                .join("sessions"),
+        );
+    }
+    if id == "commandcode" {
+        paths = vec![
+            crate::model::home_path(".commandcode/projects"),
+            crate::model::home_path(".commandcode/config.json"),
+        ];
     }
     let roaming = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -269,6 +281,9 @@ struct Reader {
     ids: HashMap<String, (String, String, TokenTally)>,
     unclassified: BTreeMap<String, BTreeMap<String, i64>>,
     partial: bool,
+    vendor: Option<String>,
+    kimi_modern: HashSet<String>,
+    kimi_legacy: HashMap<String, Vec<String>>,
 }
 impl Reader {
     fn forget(&mut self, id: &str) {
@@ -325,7 +340,7 @@ fn price_source(
     prices: &BTreeMap<String, crate::model_prices::ModelPrice>,
 ) -> UsageLedger {
     let mut ledger = if reader.unclassified.is_empty() {
-        crate::ledger::priced(&reader.buckets, prices, None)
+        crate::ledger::priced(&reader.buckets, prices, reader.vendor.as_deref())
     } else {
         crate::ledger::priced_with_unclassified(&reader.buckets, &reader.unclassified, prices)
     };
@@ -335,6 +350,9 @@ fn price_source(
 
 fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
     let mut reader = Reader::default();
+    if id == "commandcode" {
+        reader.vendor = Some("commandcode".into());
+    }
     if id == "hermes" {
         let report = crate::hermes_spend::read_paths(paths);
         reader.buckets = report.buckets;
@@ -455,6 +473,11 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
             match id {
                 "grok" => name == "updates.jsonl",
                 "kimi" => name == "wire.jsonl",
+                "mcode" => name == "messages.jsonl",
+                "commandcode" => {
+                    file.extension().is_some_and(|s| s == "jsonl")
+                        && !name.ends_with(".checkpoints.jsonl")
+                }
                 "roocode" | "kilocode" | "cline" => name == "ui_messages.json",
                 "dsh" => {
                     name.starts_with("session")
@@ -467,6 +490,10 @@ fn read_source(id: &str, paths: &[PathBuf]) -> Reader {
             }
         };
         if !accepted {
+            continue;
+        }
+        if id == "commandcode" && !import {
+            commandcode_file(&file, paths, &mut reader);
             continue;
         }
         let dsh = id == "dsh" && !import;
@@ -678,6 +705,152 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
     }
 }
 
+fn model_id(model: &str) -> Option<&str> {
+    model
+        .rsplit('/')
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+fn named_tally(usage: &Value, keys: [&str; 4]) -> Option<TokenTally> {
+    let one = |key: &str| {
+        usage
+            .get(key)
+            .and_then(crate::http::number)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 1e12 && v.fract() == 0.0)
+            .map(|v| v as i64)
+    };
+    Some(TokenTally {
+        input: one(keys[0])?,
+        output: one(keys[1])?,
+        cache_read: one(keys[2])?,
+        cache_write: one(keys[3])?,
+    })
+}
+fn commandcode_file(file: &Path, roots: &[PathBuf], reader: &mut Reader) {
+    let Ok(input) = std::fs::File::open(file) else {
+        reader.partial = true;
+        return;
+    };
+    if input
+        .metadata()
+        .ok()
+        .is_none_or(|m| m.len() > 32 * 1024 * 1024)
+    {
+        reader.partial = true;
+        return;
+    }
+    let mut lines =
+        crate::scan::LineReader::new(input, std::collections::hash_map::DefaultHasher::new(), 0);
+    let mut entries = Vec::new();
+    let mut session = file
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    for line in lines.by_ref() {
+        if entries.len() >= 100000 || !crate::scan::checkpoint() {
+            reader.partial = true;
+            break;
+        }
+        let Ok(row) = serde_json::from_str::<Value>(&line) else {
+            reader.partial = true;
+            continue;
+        };
+        if row["type"] == "session" {
+            if let Some(id) = row["id"].as_str() {
+                session = id.into();
+            }
+            continue;
+        }
+        // Store metadata only, never conversation contents.
+        entries.push(serde_json::json!({"id":row.get("id"),"parentId":row.get("parentId"),"type":row.get("type"),"model":row.get("model"),"role":row.pointer("/message/role").or_else(||row.get("role")),"timestamp":row.get("timestamp"),"usage":row.get("usage")}));
+    }
+    if lines.finish().is_err() {
+        reader.partial = true;
+    }
+    let by_id: HashMap<&str, &Value> = entries
+        .iter()
+        .filter_map(|e| Some((e["id"].as_str()?, e)))
+        .collect();
+    let tree = entries.iter().any(|e| e["parentId"].is_string());
+    let config = roots
+        .iter()
+        .find(|p| p.file_name().is_some_and(|n| n == "config.json"))
+        .and_then(|p| {
+            let input = std::fs::File::open(p).ok()?;
+            let value: Value = serde_json::from_reader(input.take(1024 * 1024)).ok()?;
+            value["model"]
+                .as_str()
+                .and_then(model_id)
+                .map(str::to_owned)
+        });
+    let mut current_model: Option<&str> = None;
+    for (index, row) in entries.iter().enumerate() {
+        if !crate::scan::checkpoint() {
+            reader.partial = true;
+            break;
+        }
+        if row["type"] == "model_change" {
+            current_model = row["model"].as_str().and_then(model_id).or(current_model);
+            continue;
+        }
+        if row["role"] != "assistant" || !row["usage"].is_object() {
+            continue;
+        }
+        let Some(tally) = named_tally(
+            &row["usage"],
+            [
+                "inputTokens",
+                "outputTokens",
+                "cacheReadTokens",
+                "cacheWriteTokens",
+            ],
+        ) else {
+            reader.partial = true;
+            continue;
+        };
+        let Some(at) = timestamp(&row["timestamp"], false) else {
+            reader.partial = true;
+            continue;
+        };
+        let mut model = row["model"].as_str().and_then(model_id);
+        if model.is_none() && tree {
+            let mut cursor = row["parentId"].as_str();
+            let mut visited = HashSet::new();
+            while let Some(parent) = cursor {
+                if visited.len() >= 10000 || !visited.insert(parent) {
+                    reader.partial = true;
+                    break;
+                }
+                let Some(ancestor) = by_id.get(parent) else {
+                    break;
+                };
+                if let Some(found) = ancestor["model"].as_str().and_then(model_id) {
+                    model = Some(found);
+                    break;
+                }
+                cursor = ancestor["parentId"].as_str();
+            }
+        } else if model.is_none() {
+            model = current_model;
+        }
+        let model = model
+            .or(config.as_deref())
+            .unwrap_or("commandcode (unknown)");
+        let identity = row["id"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("line:{index}:{at}"));
+        reader.add(
+            at,
+            model,
+            tally,
+            Some(format!("commandcode:{session}:{identity}")),
+        );
+    }
+}
+
 fn count(value: &Value) -> i64 {
     crate::http::number(value)
         .filter(|n| n.is_finite() && *n >= 0.0 && *n <= 1e12)
@@ -839,8 +1012,10 @@ fn parse(
                     at,
                     &model,
                     TokenTally {
-                        input: count(&usage["inputTokens"]),
-                        output: count(&usage["outputTokens"]) + count(&usage["reasoningTokens"]),
+                        input: count(&usage["inputTokens"])
+                            .saturating_sub(count(&usage["cachedReadTokens"]))
+                            .max(0),
+                        output: count(&usage["outputTokens"]),
                         cache_write: count(&usage["cacheCreationTokens"]),
                         cache_read: count(&usage["cachedReadTokens"]),
                     },
@@ -849,22 +1024,108 @@ fn parse(
             }
         }
         "kimi" => {
-            let usage = &row["message"]["payload"]["token_usage"];
-            let Some(at) = timestamp(&row["timestamp"], count(&row["timestamp"]) > 10_000_000_000)
-            else {
+            let modern = row["type"].as_str() == Some("usage.record");
+            let usage = if modern {
+                &row["usage"]
+            } else {
+                &row["message"]["payload"]["token_usage"]
+            };
+            if !usage.is_object() {
+                return;
+            }
+            let Some(at) = (if modern {
+                timestamp(&row["time"], true)
+            } else {
+                timestamp(&row["timestamp"], count(&row["timestamp"]) > 10_000_000_000)
+            }) else {
+                reader.partial = true;
                 return;
             };
-            reader.add(
-                at,
-                "kimi (unnamed)",
-                TokenTally {
-                    input: count(&usage["input_other"]),
-                    output: count(&usage["output"]),
-                    cache_write: count(&usage["input_cache_creation"]),
-                    cache_read: count(&usage["input_cache_read"]),
-                },
-                Some(format!("{file_id}:{at}")),
+            let keys = if modern {
+                [
+                    "inputOther",
+                    "output",
+                    "inputCacheRead",
+                    "inputCacheCreation",
+                ]
+            } else {
+                [
+                    "input_other",
+                    "output",
+                    "input_cache_read",
+                    "input_cache_creation",
+                ]
+            };
+            let Some(tally) = named_tally(usage, keys) else {
+                reader.partial = true;
+                return;
+            };
+            let identity = format!(
+                "{}:{}:{}:{}:{}",
+                at / 1000,
+                tally.input,
+                tally.cache_write,
+                tally.cache_read,
+                tally.output
             );
+            let record = format!("{file_id}:{at}");
+            if modern {
+                reader.kimi_modern.insert(identity.clone());
+                if let Some(old) = reader.kimi_legacy.remove(&identity) {
+                    for id in old {
+                        reader.forget(&id);
+                    }
+                }
+            } else {
+                if reader.kimi_modern.contains(&identity) {
+                    return;
+                }
+                reader
+                    .kimi_legacy
+                    .entry(identity)
+                    .or_default()
+                    .push(record.clone());
+            }
+            let model = if modern {
+                row["model"]
+                    .as_str()
+                    .and_then(model_id)
+                    .unwrap_or("kimi (unnamed)")
+            } else {
+                "kimi (unnamed)"
+            };
+            reader.add(at, model, tally, Some(record));
+        }
+        "mcode" => {
+            let message = &row["message"];
+            if message["role"] != "assistant" || !message["usage"].is_object() {
+                return;
+            }
+            let usage = &message["usage"];
+            let Some(tally) = named_tally(usage, ["input", "output", "cacheRead", "cacheWrite"])
+            else {
+                reader.partial = true;
+                return;
+            };
+            if tally.total() == 0 {
+                return;
+            }
+            let Some(at) = timestamp(&message["timestamp"], true)
+                .or_else(|| timestamp(&row["timestamp"], true))
+            else {
+                reader.partial = true;
+                return;
+            };
+            let model = message["model"]
+                .as_str()
+                .and_then(model_id)
+                .unwrap_or("mcode (unknown)");
+            let identity = row["message_id"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| format!("mcode:message:{s}"))
+                .unwrap_or_else(|| format!("{file_id}:{at}:{model}"));
+            reader.add(at, model, tally, Some(identity));
         }
         "roocode" | "kilocode" | "cline" => {
             if row["type"].as_str() != Some("say") || row["say"].as_str() != Some("api_req_started")
@@ -1037,6 +1298,111 @@ fn devin(path: &Path, reader: &mut Reader) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kimi_code_counts_only_usage_records_and_replaces_migrated_legacy_counts() {
+        let mut reader = Reader::default();
+        let legacy = serde_json::json!({"timestamp":1794470400i64,"message":{"payload":{"token_usage":{"input_other":10,"output":4,"input_cache_read":5,"input_cache_creation":1}}}});
+        let modern = serde_json::json!({"type":"usage.record","time":1794470400000i64,"model":"custom-endpoint/k3-256k","usage":{"inputOther":10,"output":4,"inputCacheRead":5,"inputCacheCreation":1}});
+        parse(
+            "kimi",
+            &legacy,
+            false,
+            Path::new("old/wire.jsonl"),
+            &mut reader,
+            &mut (0, None),
+        );
+        parse(
+            "kimi",
+            &modern,
+            false,
+            Path::new("new/wire.jsonl"),
+            &mut reader,
+            &mut (0, None),
+        );
+        parse(
+            "kimi",
+            &serde_json::json!({"type":"step.end","time":1794470400000i64,"event":{"usage":modern["usage"]}}),
+            false,
+            Path::new("new/wire.jsonl"),
+            &mut reader,
+            &mut (0, None),
+        );
+        assert_eq!(total(&reader), 20);
+        assert_eq!(
+            reader
+                .buckets
+                .values()
+                .next()
+                .unwrap()
+                .get("k3-256k")
+                .unwrap()
+                .total(),
+            20
+        );
+        parse(
+            "kimi",
+            &legacy,
+            false,
+            Path::new("another/wire.jsonl"),
+            &mut reader,
+            &mut (0, None),
+        );
+        assert_eq!(total(&reader), 20);
+    }
+
+    #[test]
+    fn minimax_code_messages_deduplicate_across_sessions_and_keep_actual_model() {
+        let mut reader = Reader::default();
+        let row = serde_json::json!({"message_id":"same","message":{"role":"assistant","model":"other/kimi-for-coding","timestamp":1794470400000i64,"usage":{"input":10,"output":4,"cacheRead":5,"cacheWrite":1,"totalTokens":20,"cost":0}}});
+        for file in ["one/messages.jsonl", "two/messages.jsonl"] {
+            parse(
+                "mcode",
+                &row,
+                false,
+                Path::new(file),
+                &mut reader,
+                &mut (0, None),
+            );
+        }
+        assert_eq!(total(&reader), 20);
+        assert!(reader
+            .buckets
+            .values()
+            .next()
+            .unwrap()
+            .contains_key("kimi-for-coding"));
+        assert!(!reader.partial);
+    }
+
+    #[test]
+    fn commandcode_ancestry_does_not_borrow_a_siblings_model_and_replays_fold() {
+        let fixture = Fixture::new();
+        let file = fixture.0.join("branch.jsonl");
+        let rows = [
+            serde_json::json!({"type":"session","id":"session"}),
+            serde_json::json!({"type":"model_change","id":"old","model":"deepseek-v4.1-flash"}),
+            serde_json::json!({"type":"model_change","id":"new","parentId":"old","model":"gpt-test"}),
+            serde_json::json!({"id":"a","parentId":"old","role":"assistant","timestamp":"2026-11-12T08:00:00Z","usage":{"inputTokens":10,"outputTokens":5,"cacheReadTokens":2,"cacheWriteTokens":0}}),
+            serde_json::json!({"id":"b","parentId":"new","role":"assistant","timestamp":"2026-11-12T08:00:00Z","usage":{"inputTokens":20,"outputTokens":5,"cacheReadTokens":2,"cacheWriteTokens":0}}),
+        ];
+        std::fs::write(
+            &file,
+            rows.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let mut reader = Reader::default();
+        commandcode_file(&file, &[], &mut reader);
+        commandcode_file(&file, &[], &mut reader);
+        assert_eq!(total(&reader), 44);
+        let models = reader.buckets.values().next().unwrap();
+        assert_eq!(models["deepseek-v4.1-flash"].total(), 17);
+        assert_eq!(models["gpt-test"].total(), 27);
+    }
     use serde_json::json;
     struct Fixture(PathBuf);
     impl Fixture {
@@ -1065,6 +1431,32 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn grok_input_includes_cache_and_output_includes_reasoning() {
+        let mut reader = Reader::default();
+        let row = serde_json::json!({"timestamp":"2026-11-12T08:00:00Z", "params":{"update":{"sessionUpdate":"turn_completed", "usage":{"inputTokens":100,"cachedReadTokens":40,"outputTokens":50,"reasoningTokens":20,"cacheCreationTokens":0}}}});
+        parse(
+            "grok",
+            &row,
+            false,
+            Path::new("updates.jsonl"),
+            &mut reader,
+            &mut (0, None),
+        );
+        assert_eq!(total(&reader), 150);
+        let tally = reader
+            .buckets
+            .values()
+            .next()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(tally.input, 60);
+        assert_eq!(tally.cache_read, 40);
+        assert_eq!(tally.output, 50);
+    }
+
     fn total(reader: &Reader) -> i64 {
         reader
             .buckets

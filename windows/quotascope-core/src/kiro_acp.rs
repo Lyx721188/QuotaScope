@@ -247,11 +247,11 @@ pub fn locate() -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-struct Job(Option<windows::Win32::Foundation::HANDLE>);
+pub(crate) struct Job(Option<windows::Win32::Foundation::HANDLE>);
 
 #[cfg(windows)]
 impl Job {
-    fn attach(child: &Child) -> Result<Self, Failure> {
+    pub(crate) fn attach(child: &Child) -> Result<Self, Failure> {
         use std::os::windows::io::AsRawHandle;
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::System::JobObjects::*;

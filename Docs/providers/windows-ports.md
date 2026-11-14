@@ -1,6 +1,6 @@
 # Windows provider 读取路由
 
-按当前 `Provider`、`Services` 注册表和设置入口核对：77 个内置 provider，77 个注册读取路由。新增十项的真实账号尚未逐一验证，细节见 [本轮移植状态](../upstream-implementation-status.md)。
+按当前 `Provider`、`Services` 注册表和设置入口核对：78 个内置 provider，78 个注册读取路由。新增十项的真实账号尚未逐一验证，细节见 [本轮移植状态](../upstream-implementation-status.md)。
 “已实现”表示代码路由和解析测试存在，不能等同于每个账号都经过真实请求验证。
 主账户可启用；API key/Cookie/JSON 凭据附加账户可添加，交互式附加账户 OAuth/login 仍未移植。
 
@@ -13,15 +13,14 @@ API key/Cookie header 由设置保存到 DPAPI 加密文件。浏览器导入仅
 | Claude Code | `claudeCode` | 已实现；需配置/登录 | CLI OAuth；Status Line 缓存、显式导入 Desktop/浏览器回退 | [claude_code.rs](../../windows/quotascope-core/src/providers/claude_code.rs) |
 | Codex | `codex` | 已实现；需配置/登录 | CLI OAuth + app-server 回退；账户统计与重置次数读取 | [codex.rs](../../windows/quotascope-core/src/providers/codex.rs) |
 | Kiro | `kiro` | 已实现；fixture/隔离 ACP 验证，真实账号未验证 | Kiro CLI 原有登录；设置启用/刷新，无需粘贴凭据 | [kiro.rs](../../windows/quotascope-core/src/providers/kiro.rs) · [配置与边界](windows-kiro.md) |
-| Antigravity | `antigravity` | 已实现；需配置/登录 | 正在运行的本机语言服务器 | [antigravity.rs](../../windows/quotascope-core/src/providers/antigravity.rs) |
+| Antigravity | `antigravity` | 已实现；需配置/登录 | 本机语言服务器 / agy CLI ≥ 1.1.11 | [antigravity.rs](../../windows/quotascope-core/src/providers/antigravity.rs) |
 | Cursor | `cursor` | 已实现；需配置/登录 | Cursor 本机登录数据库 | [cursor.rs](../../windows/quotascope-core/src/providers/cursor.rs) |
 | OpenCode Go | `openCodeGo` | 已实现；需配置/登录 | API key / 独立官网会话及实际账单 | [opencode.rs](../../windows/quotascope-core/src/providers/opencode.rs) |
 | Kimi Code | `kimiCode` | 已实现；需配置/登录 | API key | [kimi.rs](../../windows/quotascope-core/src/providers/kimi.rs) |
 | Ollama Cloud | `ollamaCloud` | 已实现；真实账号未验证 | 浏览器会话 / 只读官网额度页 | [remaining.rs](../../windows/quotascope-core/src/providers/remaining.rs) |
 | z.ai | `zai` | 已实现；需配置/登录 | API key | [zai.rs](../../windows/quotascope-core/src/providers/zai.rs) |
 | Zhipu | `glmCoding` | 已实现；需配置/登录 | API key / 本机已保存 key | [zai.rs](../../windows/quotascope-core/src/providers/zai.rs) |
-| MiniMax | `minimax` | 已实现；需配置/登录 | API key | [minimax.rs](../../windows/quotascope-core/src/providers/minimax.rs) |
-| MiniMax CN | `minimaxCN` | 已实现；需配置/登录 | API key | [minimax.rs](../../windows/quotascope-core/src/providers/minimax.rs) |
+| MiniMax | `minimax` | 已实现；需配置/登录 | 国际站 / 中国站，各自独立 API key | [minimax.rs](../../windows/quotascope-core/src/providers/minimax.rs) |
 | GitHub Copilot | `copilot` | 已实现；需配置/登录 | GitHub device-code 登录 | [copilot.rs](../../windows/quotascope-core/src/providers/copilot.rs) |
 | Grok | `grok` | 已实现；需配置/登录 | Grok 本机登录 | [grok.rs](../../windows/quotascope-core/src/providers/grok.rs) |
 | Grok Bot | `grokBot` | 已实现；真实账号未验证 | Cursor 已保存登录 | [remaining.rs](../../windows/quotascope-core/src/providers/remaining.rs) |
@@ -43,7 +42,7 @@ API key/Cookie header 由设置保存到 DPAPI 加密文件。浏览器导入仅
 | Gemini | `gemini` | 已实现；真实账号未验证 | Gemini CLI Google 登录 | [remaining.rs](../../windows/quotascope-core/src/providers/remaining.rs) |
 | Kilo Code | `kiloCode` | 已实现；需配置/登录 | API key | [kilo_code.rs](../../windows/quotascope-core/src/providers/kilo_code.rs) |
 | Augment Code | `augment` | 已实现；需配置/登录 | 浏览器导入 / Cookie header | [augment.rs](../../windows/quotascope-core/src/providers/augment.rs) |
-| JetBrains AI | `jetBrainsAI` | 未移植 | 未实现 | — |
+| JetBrains AI | `jetBrainsAI` | 已实现；真实账号未验证 | 本机 IDE 已保存额度 | [remaining.rs](../../windows/quotascope-core/src/providers/remaining.rs) |
 | T3 Chat | `t3Chat` | 已实现；需配置/登录 | 浏览器导入 / Cookie header | [t3chat.rs](../../windows/quotascope-core/src/providers/t3chat.rs) |
 | Synthetic | `synthetic` | 已实现；需配置/登录 | API key | [synthetic.rs](../../windows/quotascope-core/src/providers/synthetic.rs) |
 | ElevenLabs | `elevenLabs` | 已实现；需配置/登录 | API key | [elevenlabs.rs](../../windows/quotascope-core/src/providers/elevenlabs.rs) |
@@ -89,8 +88,18 @@ API key/Cookie header 由设置保存到 DPAPI 加密文件。浏览器导入仅
 | Vercel AI Gateway | `vercelAIGateway` | 已实现；需配置/登录 | API key | [vercel_ai_gateway.rs](../../windows/quotascope-core/src/providers/vercel_ai_gateway.rs) |
 
 新增十项已注册路由与样本解析，仍需真实账号验收；来源/回退的限制以本轮移植状态为准。
-扩展程序独立于这 77 个内置 provider，见 [Windows extensions](../extensions.md)。
+扩展程序独立于这 78 个内置 provider，见 [Windows extensions](../extensions.md)。
 
 托盘用量页使用上游明确的 18 个 URL；只有启用的账户出现在托盘中。
 详细卡历史支持主账户 Claude Code/Codex 本机账本、z.ai/智谱服务器统计及 OpenCode 官网实际请求账单。
 操作步骤和验证边界见 [Windows 1.2 guide](../windows-1.2.md)。
+
+
+## 2026-11-12 新增
+
+| Provider | 读取方式 | 凭据与边界 |
+|---|---|---|
+| Open Design / OpenDesign Go | 个人工作区的 coding-plan-usage、funding-check、snapshot | 设置中导入指定浏览器会话，或只读 `~/.amr/config.json` 的 prod 登录；模型调用 API Key 不能查额度；附加账户不借用桌面主账户登录 |
+| DimAgent | `dim usage --json` | 使用 dim CLI 自己的登录；套餐、加油包、Token 窗口分别显示，过期包不计作当前额度 |
+
+两项均通过合成协议验证，真实账户尚待验收。完整批次及平台适配说明见[同步记录](../upstream-sync-2026-11-12.md)。

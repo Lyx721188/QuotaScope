@@ -7,14 +7,8 @@
 //! `GET /v1/accounts` answers a key, but with the account's prepaid balance,
 //! which is a separate system from the plan.
 //!
-//! **Two sites, two accounts.** `platform.stepfun.com` and
-//! `platform.stepfun.ai` are separate sign-ins, and upstream never sends one
-//! site's session to the other: which one is read is a setting there. The
-//! Windows port has one StepFun entry, no site choice, and an import that
-//! stores one header without naming the host it came from — so the fetch
-//! tries the hosts in the import's own order, and only a refused session (the
-//! one signal that the header belongs to the other site) moves it on. A
-//! session is sent nowhere else.
+//! **Two independent storefronts.** A credential is sent only to the site
+//! selected when this read started; a refusal never tries the other site.
 //!
 //! **Two plans, two shapes.** Since 2026-06-18 StepFun sells a Token Plan: a
 //! monthly pool of Credits plus 30-day top-up packs, each a bucket with its
@@ -107,23 +101,14 @@ impl ProviderService for StepFunService {
         let Some(cookie) = normalize(&stored) else {
             return ProviderUsage::unavailable(account, Unavailability::SessionMissing);
         };
-        // The import reads the hosts in this order and stores one header
-        // without naming the host it came from. A refused session is the one
-        // signal that the header belongs to the other site, so only a refusal
-        // hops; a rate limit or a fault is the host answering, and says so.
-        let mut answered: Option<(usize, Value)> = None;
-        for site in 0..HOSTS.len() {
-            match self.post(site, RATE_LIMIT_METHOD, &cookie) {
-                Ok(reply) => {
-                    answered = Some((site, reply));
-                    break;
-                }
-                Err(Unavailability::SessionExpired) => {}
-                Err(reason) => return ProviderUsage::unavailable(account, reason),
-            }
-        }
-        let Some((site, reply)) = answered else {
-            return ProviderUsage::unavailable(account, Unavailability::SessionExpired);
+        let site = if keys.site(Provider::StepFun) == "international" {
+            1
+        } else {
+            0
+        };
+        let reply = match self.post(site, RATE_LIMIT_METHOD, &cookie) {
+            Ok(reply) => reply,
+            Err(reason) => return ProviderUsage::unavailable(account, reason),
         };
 
         let snapshot = match parse(&reply) {

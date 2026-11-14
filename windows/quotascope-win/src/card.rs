@@ -18,6 +18,33 @@ use crate::geometry::{card, Metrics};
 use crate::theme::panel;
 use quotascope_core::model::usage_tint;
 
+fn card_palette() -> &'static panel::Palette {
+    if quotascope_core::settings::with(|s| s.panel_appearance == "pulse") {
+        &panel::DARK
+    } else {
+        panel::palette()
+    }
+}
+
+fn bar_colour(window: &quotascope_core::model::UsageWindow, data: &CardData, pulse: bool) -> Rgba {
+    if !pulse {
+        return panel::accent();
+    }
+    let spent = usage_tint::is_spent(Some(window));
+    if !spent {
+        if let Some(color) =
+            quotascope_core::settings::with(|s| s.ring_tints.get(&data.usage.account.id()).cloned())
+        {
+            if let Some(hex) = color.strip_prefix('#').filter(|s| s.len() == 6) {
+                if let Ok(value) = u32::from_str_radix(hex, 16) {
+                    return Rgba::from_hex(value);
+                }
+            }
+        }
+    }
+    usage_tint::color_with(window.used_fraction, spent, data.warning_fraction).into()
+}
+
 #[derive(Clone)]
 pub struct CardData {
     pub usage: ProviderUsage,
@@ -141,6 +168,7 @@ struct ActivityFigure {
     label: &'static str,
     tokens: i64,
     cost: Option<f64>,
+    credit_used: Option<f64>,
 }
 
 struct Activity {
@@ -151,11 +179,21 @@ struct Activity {
     priced: bool,
     currency: Option<String>,
     actual_costs: bool,
+    credits: bool,
 }
 
 impl Activity {
     fn money(&self, amount: f64) -> String {
-        let prefix = if self.actual_costs { "" } else { "≈" };
+        if self.credits {
+            return quotascope_core::localization::t_fmt(
+                "{n} deducted",
+                &[&quotascope_core::qoder_history::number(amount)],
+            );
+        }
+        if !self.actual_costs {
+            return quotascope_core::money::estimate(amount);
+        }
+        let prefix = "";
         match self.currency.as_deref().unwrap_or("USD") {
             "USD" => format!("{prefix}${amount:.2}"),
             "CNY" | "RMB" => format!("{prefix}¥{amount:.2}"),
@@ -226,6 +264,7 @@ fn activity(data: &CardData) -> Option<Activity> {
         priced: false,
         currency: None,
         actual_costs: false,
+        credits: false,
     };
     let lines = &mut section.notes;
     match &data.history {
@@ -243,6 +282,24 @@ fn activity(data: &CardData) -> Option<Activity> {
         Some(HistoryRead::Failed(reason)) => {
             lines.push(t("Couldn't read the history.").into());
             lines.push(reason.message().to_string());
+        }
+        Some(HistoryRead::Credits(credits)) => {
+            section.heading = t("Whole account");
+            section.credits = true;
+            section.priced = true;
+            for (label, span) in [("Today", 1), ("7 days", 7), ("31 days", 31)] {
+                let (used, charged) = credits.total(span);
+                section.figures.push(ActivityFigure {
+                    label: t(label),
+                    tokens: 0,
+                    cost: Some(charged),
+                    credit_used: Some(used),
+                });
+            }
+            lines.push(t("Credits before discounts; the second line is credits deducted.").into());
+            section.footer = Some(t(
+                "Provider credit records · all machines · not tokens or money",
+            ));
         }
         Some(HistoryRead::Answered {
             ledger,
@@ -296,6 +353,7 @@ fn activity(data: &CardData) -> Option<Activity> {
                         label: t(label),
                         tokens,
                         cost: section.priced.then_some(cost),
+                        credit_used: None,
                     });
                 }
                 let mut models: std::collections::BTreeMap<&str, i64> = Default::default();
@@ -404,8 +462,8 @@ fn draw_detail_line(
     alpha: f32,
 ) -> windows::core::Result<()> {
     *cy += m.s(4.0);
-    let brush = painter.brush(faded(panel::palette().text_secondary, alpha))?;
-    painter.text(
+    let brush = painter.brush(faded(card_palette().text_secondary, alpha))?;
+    painter.text_clipped(
         text,
         crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(13.0) as f32),
         m.s(card::FOOTNOTE_FONT) as f32,
@@ -430,7 +488,7 @@ fn draw_history(
     let Some(section) = activity(data) else {
         return Ok(());
     };
-    let palette = panel::palette();
+    let palette = card_palette();
     let primary = painter.brush(faded(palette.text_primary, alpha))?;
     let secondary = painter.brush(faded(palette.text_secondary, alpha))?;
     let muted = painter.brush(faded(palette.text_disabled, alpha))?;
@@ -442,7 +500,7 @@ fn draw_history(
         &rule,
     );
     *cy += m.s(1.0 + 10.0);
-    painter.text(
+    painter.text_clipped(
         section.heading,
         crate::d2d::rect(
             x as f32,
@@ -456,8 +514,8 @@ fn draw_history(
         0,
         1,
     );
-    painter.text(
-        "token",
+    painter.text_clipped(
+        if section.credits { "credits" } else { "token" },
         crate::d2d::rect(
             (x + width * 0.65) as f32,
             *cy as f32,
@@ -476,7 +534,7 @@ fn draw_history(
         let column = (width - m.s(16.0)) / 3.0;
         for (index, figure) in section.figures.iter().enumerate() {
             let left = x + index as f64 * (column + m.s(8.0));
-            painter.text(
+            painter.text_clipped(
                 figure.label,
                 crate::d2d::rect(left as f32, *cy as f32, column as f32, m.s(13.0) as f32),
                 m.s(10.5) as f32,
@@ -485,8 +543,11 @@ fn draw_history(
                 0,
                 1,
             );
-            painter.text(
-                &short_tokens(figure.tokens),
+            painter.text_clipped(
+                &figure
+                    .credit_used
+                    .map(quotascope_core::qoder_history::number)
+                    .unwrap_or_else(|| short_tokens(figure.tokens)),
                 crate::d2d::rect(
                     left as f32,
                     (*cy + m.s(15.0)) as f32,
@@ -500,7 +561,7 @@ fn draw_history(
                 1,
             );
             if let Some(cost) = figure.cost {
-                painter.text(
+                painter.text_clipped(
                     &section.money(cost),
                     crate::d2d::rect(
                         left as f32,
@@ -517,33 +578,41 @@ fn draw_history(
             }
         }
         *cy += m.s(32.0 + if section.priced { 15.0 } else { 0.0 } + 10.0);
-        let Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) = &data.history
-        else {
-            unreachable!()
+        let (days, count): (Vec<(chrono::NaiveDate, f64)>, u64) = match &data.history {
+            Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) => (
+                recent_days(ledger)
+                    .into_iter()
+                    .map(|d| (d.date, d.tokens as f64))
+                    .collect(),
+                30,
+            ),
+            Some(quotascope_core::history::HistoryRead::Credits(credits)) => {
+                (credits.days.iter().map(|d| (d.date, d.used)).collect(), 31)
+            }
+            _ => (Vec::new(), 30),
         };
-        let days = recent_days(ledger);
         let today = chrono::Local::now().date_naive();
-        let first = today - chrono::Days::new(29);
-        let maximum = days.iter().map(|day| day.tokens).max().unwrap_or(1).max(1) as f64;
-        let slot_width = width / 30.0;
+        let first = today - chrono::Days::new(count - 1);
+        let maximum = days.iter().map(|day| day.1).fold(1.0, f64::max);
+        let slot_width = width / count as f64;
         let bar_width = slot_width * 0.65;
-        for index in 0..30 {
+        for index in 0..count {
             let date = first + chrono::Days::new(index);
             let tokens = days
                 .iter()
-                .find(|day| day.date == date)
-                .map(|day| day.tokens)
-                .unwrap_or(0)
-                .max(0);
-            let height = if tokens > 0 {
-                (m.s(30.0) * tokens as f64 / maximum).max(bar_width)
+                .find(|day| day.0 == date)
+                .map(|day| day.1)
+                .unwrap_or(0.0)
+                .max(0.0);
+            let height = if tokens > 0.0 {
+                (m.s(30.0) * tokens / maximum).max(bar_width)
             } else {
                 m.s(1.5)
             };
             let brush = painter.brush(faded(
                 palette.text_primary.with_alpha(if date == today {
                     0.85
-                } else if tokens > 0 {
+                } else if tokens > 0.0 {
                     0.32
                 } else {
                     0.12
@@ -562,7 +631,7 @@ fn draw_history(
             );
         }
         *cy += m.s(30.0 + 4.0);
-        painter.text(
+        painter.text_clipped(
             &first.format("%m/%d").to_string(),
             crate::d2d::rect(x as f32, *cy as f32, (width / 2.0) as f32, m.s(11.0) as f32),
             m.s(9.0) as f32,
@@ -571,7 +640,7 @@ fn draw_history(
             0,
             1,
         );
-        painter.text(
+        painter.text_clipped(
             &today.format("%m/%d").to_string(),
             crate::d2d::rect(
                 (x + width / 2.0) as f32,
@@ -589,7 +658,7 @@ fn draw_history(
     }
     for note in &section.notes {
         *cy += m.s(8.0);
-        painter.text(
+        painter.text_clipped(
             note,
             crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(14.0) as f32),
             m.s(10.5) as f32,
@@ -602,7 +671,7 @@ fn draw_history(
     }
     if let Some(footer) = section.footer {
         *cy += m.s(10.0);
-        painter.text(
+        painter.text_clipped(
             footer,
             crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(13.0) as f32),
             m.s(9.5) as f32,
@@ -690,69 +759,10 @@ pub fn draw_card(
     data: &CardData,
     alpha: f32,
 ) -> windows::core::Result<()> {
-    let palette = panel::palette();
+    let palette = card_palette();
     let inset_x = origin.0 + m.s(card::PADDING);
     let inset_w = m.s(card::WIDTH);
-    let mut cy = origin.1 + m.s(card::PADDING);
-
-    // Header: the mark and the title, one line, always — the card's height
-    // is budgeted, and a wrapped header would slice off against the edge.
-    let title_brush = painter.brush(faded(palette.text_primary, alpha))?;
-    let mark_size = m.s(card::HEADER_ICON) as f32;
-    let mark_y = (cy + (m.s(card::HEADER_HEIGHT) - m.s(card::HEADER_ICON)) / 2.0) as f32;
-    let mut drew_mark = false;
-    if let Some(key) = &data.icon {
-        if let Some(bitmap) = crate::assets::bitmap_for(painter.engine, key) {
-            let dest = crate::d2d::rect(inset_x as f32, mark_y, mark_size, mark_size);
-            if let Ok(ctx) = windows::core::Interface::cast::<
-                windows::Win32::Graphics::Direct2D::ID2D1DeviceContext,
-            >(painter.rt)
-            {
-                unsafe {
-                    ctx.DrawBitmap(
-                        &bitmap,
-                        Some(&dest),
-                        alpha,
-                        windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
-                        None,
-                        None,
-                    );
-                }
-                drew_mark = true;
-            }
-        }
-    }
-    if !drew_mark {
-        painter.text(
-            &data.monogram,
-            crate::d2d::rect(
-                inset_x as f32,
-                cy as f32,
-                (m.s(card::HEADER_ICON) + 4.0) as f32,
-                m.s(card::HEADER_HEIGHT) as f32,
-            ),
-            (m.s(card::HEADER_ICON) * 0.8) as f32,
-            windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            &title_brush,
-            0,
-            1,
-        );
-    }
-    painter.text(
-        &quotascope_core::localization::t_fmt("{provider} Usage", &[&data.title]),
-        crate::d2d::rect(
-            (inset_x + m.s(card::HEADER_ICON) + 8.0) as f32,
-            cy as f32,
-            (inset_w - m.s(card::HEADER_ICON) - 8.0) as f32,
-            m.s(card::HEADER_HEIGHT) as f32,
-        ),
-        m.s(card::TITLE_FONT) as f32,
-        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
-        &title_brush,
-        0,
-        1,
-    );
-    cy += m.s(card::HEADER_HEIGHT);
+    let mut cy = origin.1 + header_height(m);
     for line in detail_header(data) {
         draw_detail_line(painter, m, inset_x, &mut cy, inset_w, &line, alpha)?;
     }
@@ -833,7 +843,7 @@ pub fn draw_card(
             });
         let footnote_brush = painter.brush(faded(palette.text_disabled, alpha))?;
         cy += m.s(card::CONTENT_SPACING);
-        painter.text(
+        painter.text_clipped(
             &stamp,
             crate::d2d::rect(
                 inset_x as f32,
@@ -867,7 +877,7 @@ fn draw_progress_row(
     data: &CardData,
     alpha: f32,
 ) -> windows::core::Result<()> {
-    let palette = panel::palette();
+    let palette = card_palette();
     let spent_color = usage_tint::is_spent(Some(window));
 
     // The name gets the row to itself; a scoped name plus a reset time does
@@ -878,8 +888,8 @@ fn draw_progress_row(
         .detailed
         .then(|| window.window_clock_fraction(false, quotascope_core::timeutil::now_ms()))
         .flatten();
-    painter.text(
-        &window.display_name(),
+    painter.text_clipped(
+        &window_amount_title(window, data),
         crate::d2d::rect(
             x as f32,
             *cy as f32,
@@ -898,7 +908,7 @@ fn draw_progress_row(
             &[&format!("{:.0}", clock * 100.0)],
         );
         let brush = painter.brush(faded(palette.text_disabled, alpha))?;
-        painter.text(
+        painter.text_clipped(
             &text,
             crate::d2d::rect(
                 (x + width * 0.67) as f32,
@@ -923,34 +933,90 @@ fn draw_progress_row(
     } else {
         window.used_fraction.clamp(0.0, 1.0)
     };
-    let bar_h = m.s(card::PROGRESS_BAR_HEIGHT) as f32;
-    let bar_y = (*cy + m.s(card::PROGRESS_BAR_HEIGHT) / 2.0) as f32;
-    let track_brush = painter.brush(faded(palette.bar_track, alpha))?;
-    draw_capsule(
-        painter,
-        x as f32,
-        bar_y - bar_h / 2.0,
-        width as f32,
-        bar_h,
-        &track_brush,
-    );
-
-    let fill_w = (width * progress) as f32;
-    if progress > 0.0 {
-        let fill_brush = painter.brush(faded(panel::accent(), alpha))?;
-        // The smallest non-zero reading still puts a dot of colour on
-        // screen — the same rule the ring's round cap follows.
-        let fill_w = fill_w.max(bar_h).min(width as f32);
+    let bar_h = card::progress_bar_height(m) as f32;
+    let bar_y = (*cy + card::progress_bar_height(m) / 2.0) as f32;
+    if m.segmented {
+        let track = painter.brush(faded(palette.bar_track, alpha))?;
+        let fill = painter.brush(faded(bar_colour(window, data, m.pulse), alpha))?;
+        let count = if m.pulse {
+            ((width + m.s(2.0)) / m.s(4.5)).floor().max(1.0) as usize
+        } else {
+            48
+        };
+        let pitch = if m.pulse {
+            m.s(4.5)
+        } else {
+            width / count as f64
+        };
+        let mut lit = (progress * count as f64).round() as usize;
+        if progress > 0.0 {
+            lit = lit.max(1);
+        }
+        if progress < 1.0 {
+            lit = lit.min(count.saturating_sub(1));
+        }
+        for i in 0..count {
+            let left = x + i as f64 * pitch;
+            let tick = if m.pulse {
+                m.s(2.5)
+            } else {
+                (pitch - m.s(2.0)).max(1.0)
+            };
+            let amount = if m.pulse {
+                if i < lit {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                ((progress * width - i as f64 * pitch) / tick).clamp(0.0, 1.0)
+            };
+            painter.fill_rounded_rect(
+                crate::d2d::rect(left as f32, bar_y - bar_h / 2.0, tick as f32, bar_h),
+                if m.pulse { (tick / 2.0) as f32 } else { 0.0 },
+                &track,
+            );
+            if amount > 0.0 {
+                painter.fill_rounded_rect(
+                    crate::d2d::rect(
+                        left as f32,
+                        bar_y - bar_h / 2.0,
+                        (tick * amount) as f32,
+                        bar_h,
+                    ),
+                    if m.pulse { (tick / 2.0) as f32 } else { 0.0 },
+                    &fill,
+                );
+            }
+        }
+    } else {
+        let track_brush = painter.brush(faded(palette.bar_track, alpha))?;
         draw_capsule(
             painter,
             x as f32,
             bar_y - bar_h / 2.0,
-            fill_w,
+            width as f32,
             bar_h,
-            &fill_brush,
+            &track_brush,
         );
+
+        let fill_w = (width * progress) as f32;
+        if progress > 0.0 {
+            let fill_brush = painter.brush(faded(bar_colour(window, data, m.pulse), alpha))?;
+            // The smallest non-zero reading still puts a dot of colour on
+            // screen — the same rule the ring's round cap follows.
+            let fill_w = fill_w.max(bar_h).min(width as f32);
+            draw_capsule(
+                painter,
+                x as f32,
+                bar_y - bar_h / 2.0,
+                fill_w,
+                bar_h,
+                &fill_brush,
+            );
+        }
     }
-    *cy += m.s(card::PROGRESS_BAR_HEIGHT) + m.s(card::ROW_INTERNAL_SPACING);
+    *cy += card::progress_bar_height(m) + m.s(card::ROW_INTERNAL_SPACING);
 
     // The two short facts pair off: what is gone, and when it comes back.
     // The word has to follow the figure.
@@ -969,7 +1035,7 @@ fn draw_progress_row(
     } else {
         faded(palette.text_secondary, alpha)
     })?;
-    painter.text(
+    painter.text_clipped(
         &figure_label,
         crate::d2d::rect(
             x as f32,
@@ -987,7 +1053,7 @@ fn draw_progress_row(
     let reset = reset_text(window);
     if !reset.is_empty() {
         let reset_brush = painter.brush(faded(palette.text_disabled, alpha))?;
-        painter.text(
+        painter.text_clipped(
             &reset,
             crate::d2d::rect(
                 (x + width * 0.4) as f32,
@@ -1010,7 +1076,7 @@ fn draw_progress_row(
     if let Some(text) = data.value_lines.get(&window.id) {
         *cy += m.s(card::ROW_INTERNAL_SPACING);
         let estimate_brush = painter.brush(faded(palette.text_disabled, alpha))?;
-        painter.text(
+        painter.text_clipped(
             text,
             crate::d2d::rect(
                 x as f32,
@@ -1033,7 +1099,7 @@ fn draw_progress_row(
     if let Some((text, color)) = forecast_line(window, data) {
         *cy += m.s(card::ROW_INTERNAL_SPACING);
         let burn_brush = painter.brush(faded(color, alpha))?;
-        painter.text(
+        painter.text_clipped(
             &text,
             crate::d2d::rect(
                 x as f32,
@@ -1078,7 +1144,7 @@ fn forecast_line(
     } else {
         (
             quotascope_core::localization::t("Expected to last the window").into(),
-            panel::palette().text_disabled,
+            card_palette().text_disabled,
         )
     })
 }
@@ -1109,9 +1175,9 @@ fn draw_value_row(
     value: &str,
     alpha: f32,
 ) -> windows::core::Result<()> {
-    let palette = panel::palette();
+    let palette = card_palette();
     let title_brush = painter.brush(faded(palette.text_primary, alpha))?;
-    painter.text(
+    painter.text_clipped(
         title,
         crate::d2d::rect(
             x as f32,
@@ -1126,7 +1192,7 @@ fn draw_value_row(
         1,
     );
     let value_brush = painter.brush(faded(palette.text_secondary, alpha))?;
-    painter.text(
+    painter.text_clipped(
         value,
         crate::d2d::rect(
             (x + width * 0.4) as f32,
@@ -1203,7 +1269,7 @@ fn draw_wrapped(
     let lines = wrapped_lines(text, width, font);
     let lh = font * 1.3;
     for (i, text) in lines.iter().enumerate() {
-        painter.text(
+        painter.text_clipped(
             text,
             crate::d2d::rect(
                 x as f32,
@@ -1362,7 +1428,7 @@ mod tests {
         });
         let section = activity(&payload).unwrap();
         assert_eq!(section.figures.len(), 3);
-        assert_eq!(section.money(0.12), "≈$0.12");
+        assert_eq!(section.money(0.12), "$0.12");
         assert!(section
             .figures
             .iter()
@@ -1474,4 +1540,102 @@ mod tests {
         assert!(lines.len() > 1);
         assert_eq!(lines.join(""), message);
     }
+}
+
+fn window_amount_title(window: &quotascope_core::model::UsageWindow, data: &CardData) -> String {
+    let title = window.display_name();
+    if !quotascope_core::settings::with(|s| s.credit_amounts.contains(&data.usage.account.id())) {
+        return title;
+    }
+    let Some(amounts) = &window.amounts else {
+        return title;
+    };
+    let value = if data.shows_remaining {
+        amounts
+            .remaining
+            .unwrap_or((amounts.limit - amounts.used).max(0.0))
+    } else {
+        amounts.used
+    };
+    format!(
+        "{} · {} / {}",
+        title,
+        quotascope_core::qoder_history::number(value),
+        quotascope_core::qoder_history::number(amounts.limit)
+    )
+}
+
+pub fn header_height(m: &Metrics) -> f64 {
+    m.s(card::PADDING + card::HEADER_HEIGHT)
+}
+pub fn draw_card_header(
+    painter: &Painter,
+    m: &Metrics,
+    origin: (f64, f64),
+    data: &CardData,
+    alpha: f32,
+) -> windows::core::Result<f64> {
+    let palette = card_palette();
+    let inset_x = origin.0 + m.s(card::PADDING);
+    let inset_w = m.s(card::WIDTH);
+    let mut cy = origin.1 + m.s(card::PADDING);
+    // Header: the mark and the title, one line, always — the card's height
+    // is budgeted, and a wrapped header would slice off against the edge.
+    let title_brush = painter.brush(faded(palette.text_primary, alpha))?;
+    let mark_size = m.s(card::HEADER_ICON) as f32;
+    let mark_y = (cy + (m.s(card::HEADER_HEIGHT) - m.s(card::HEADER_ICON)) / 2.0) as f32;
+    let mut drew_mark = false;
+    if let Some(key) = &data.icon {
+        if let Some(bitmap) = crate::assets::bitmap_for_ink(painter.engine, key, m.pulse) {
+            let dest = crate::d2d::rect(inset_x as f32, mark_y, mark_size, mark_size);
+            if let Ok(ctx) = windows::core::Interface::cast::<
+                windows::Win32::Graphics::Direct2D::ID2D1DeviceContext,
+            >(painter.rt)
+            {
+                unsafe {
+                    ctx.DrawBitmap(
+                        &bitmap,
+                        Some(&dest),
+                        alpha,
+                        windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                        None,
+                        None,
+                    );
+                }
+                drew_mark = true;
+            }
+        }
+    }
+    if !drew_mark {
+        painter.text_clipped(
+            &data.monogram,
+            crate::d2d::rect(
+                inset_x as f32,
+                cy as f32,
+                (m.s(card::HEADER_ICON) + 4.0) as f32,
+                m.s(card::HEADER_HEIGHT) as f32,
+            ),
+            (m.s(card::HEADER_ICON) * 0.8) as f32,
+            windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            &title_brush,
+            0,
+            1,
+        );
+    }
+    painter.text_clipped(
+        &quotascope_core::localization::t_fmt("{provider} Usage", &[&data.title]),
+        crate::d2d::rect(
+            (inset_x + m.s(card::HEADER_ICON) + 8.0) as f32,
+            cy as f32,
+            (inset_w - m.s(card::HEADER_ICON) - 8.0) as f32,
+            m.s(card::HEADER_HEIGHT) as f32,
+        ),
+        m.s(card::TITLE_FONT) as f32,
+        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        &title_brush,
+        0,
+        1,
+    );
+    cy += m.s(card::HEADER_HEIGHT);
+    Ok(cy)
 }

@@ -4,7 +4,7 @@
 发布前任务与后续顺序见 [验收计划](../Docs/release-acceptance-2026-10-04.md)。
 
 Current Windows implementation and limitations:
-[usage guide](../Docs/windows-1.2.md), [all 77 provider routes](../Docs/providers/windows-ports.md),
+[usage guide](../Docs/windows-1.2.md), [all 78 provider routes](../Docs/providers/windows-ports.md),
 and [extension contract](../Docs/extensions.md). The main branch can contain
 unreleased changes; consult [CHANGELOG](../CHANGELOG.md) for release availability.
 
@@ -57,14 +57,14 @@ quotascope.exe --json | jq -r '.accounts[] | "\(.name) \(.headline.usedPercent /
 
 ## What is ported
 
-All 77 catalog providers have registered Windows routes. Depending on the
+All 78 catalog providers have registered Windows routes. Depending on the
 provider, a route uses an API key, an explicitly imported browser session,
 a local client or a logged-in CLI. Implementation and parser fixtures do
 not imply that every provider has been verified with a real account.
 The [Windows route table](../Docs/providers/windows-ports.md) is the support reference.
 
-The Token page catalogs 54 sources: 35 read a known native or export-cache
-format, and 19 currently accept only the documented JSONL import format.
+The Token page catalogs 54 sources: 38 read a known native or export-cache
+format, and 16 currently accept only the documented JSONL import format.
 ZCode reads normalized model-attempt counts from its local SQLite usage table;
 see [format and limits](../Docs/providers/windows-zcode-local-usage.md).
 DSH supports real, bounded Zstandard decoding; its incomplete-record flag
@@ -72,10 +72,10 @@ remains visible in the source list and filtered totals.
 
 Main also includes cancellable background Token aggregation,
 [DeepSeek console history](../Docs/providers/windows-deepseek-console.md),
-and [conservative Codex local clues](../Docs/providers/windows-codex-signals.md).
-The remaining native formats, interactive login for added accounts,
-full BotMark animation and some Windows-specific translations are tracked
-in the [implementation status](../Docs/upstream-implementation-status.md).
+and [Codex model and timing details](../Docs/providers/windows-codex-signals.md).
+Import-only formats, interactive login for added accounts and remaining
+Windows-specific translations are tracked in the
+[implementation status](../Docs/upstream-implementation-status.md).
 
 ## Architecture
 
@@ -111,6 +111,16 @@ and accent are re-read whenever Windows announces a change, and the icon
 cache re-tints with them. Credentials are stored with `CryptProtectData`
 under the current user, so they do not survive `roaming` to another machine
 — by design.
+
+General → Panel appearance also offers **Pulse**, a solid black rail with
+the upstream default's edge flare, usage-coloured rings, morphing collapse,
+and a pointer-shaped detail card. Windows renders these surfaces and springs
+itself; macOS Liquid Glass and notch-specific behavior are not available.
+An optional **Translucent glass (experimental)** switch tints the Pulse rail
+and its card using an experimental desktop capture and a GPU shader for blur, approximate edge refraction and subtle dispersion.
+It falls back to ordinary translucent composition when capture is unavailable.
+While enabled, the rail and card are excluded from Desktop Duplication captures,
+including other software using that API. It is off by default.
 
 ## Keeping the port honest
 

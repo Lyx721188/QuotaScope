@@ -265,6 +265,18 @@ impl TrayIcon {
         self.dashboard = entries;
     }
 
+    pub fn test_notification(&mut self) {
+        self.set_hidden(false);
+        self.show_balloon(
+            "QuotaScope",
+            quotascope_core::localization::t("This is a test notification."),
+            false,
+        );
+        unsafe {
+            SetTimer(Some(self.hwnd), 3, 15000, None);
+        }
+    }
+
     pub fn show_balloon(&mut self, title: &str, text: &str, warning: bool) {
         if !self.added {
             return;
@@ -340,10 +352,15 @@ unsafe extern "system" fn tray_wndproc(
                 _ => LRESULT(0),
             }
         }
-        WM_TIMER => {
+        WM_TIMER if wparam.0 != 3 => {
             if let Some(poll) = tray.poll.as_ref() {
                 let _ = poll.send(());
             }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == 3 => {
+            let _ = KillTimer(Some(hwnd), 3);
+            tray.set_hidden(quotascope_core::settings::with(|s| s.hides_tray_icon));
             LRESULT(0)
         }
         WM_COMMAND => {

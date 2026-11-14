@@ -23,6 +23,7 @@ pub enum AppMsg {
     Panel(PanelEvent),
     Settings(SettingsAction),
     StorePoll,
+    Activity(HashMap<Provider, bool>),
     /// A second launch asked for the settings window.
     OpenSettings,
     OpenDashboard,
@@ -84,6 +85,10 @@ pub struct App {
     outage_running: bool,
     outage_at: Option<std::time::Instant>,
     maintenance_at: std::time::Instant,
+    activity: HashMap<Provider, bool>,
+    activity_at: Option<std::time::Instant>,
+    activity_running: bool,
+    activity_control: Option<std::sync::Arc<quotascope_core::scan::Control>>,
 }
 
 /// Long enough that moving between rings does not rescan, short enough that
@@ -241,6 +246,10 @@ impl App {
             outage_running: false,
             outage_at: None,
             maintenance_at: std::time::Instant::now(),
+            activity: HashMap::new(),
+            activity_at: None,
+            activity_running: false,
+            activity_control: None,
         };
 
         // Paint the rail from the cache before the first round trip, so it
@@ -286,6 +295,23 @@ impl App {
                 AppMsg::Tray(command) => self.handle_tray(command),
                 AppMsg::Panel(event) => self.handle_panel(event),
                 AppMsg::Settings(action) => self.handle_settings(action),
+                AppMsg::Activity(states) => {
+                    self.activity_running = false;
+                    let cancelled = self
+                        .activity_control
+                        .take()
+                        .is_some_and(|control| control.is_cancelled());
+                    if !cancelled
+                        && quotascope_core::settings::with(|s| {
+                            s.reads_token_spend && s.animates_ring_activity
+                        })
+                    {
+                        self.activity = states;
+                    } else {
+                        self.activity.clear();
+                    }
+                    self.rebuild_entries();
+                }
                 AppMsg::StorePoll => self.poll_store(),
                 AppMsg::OpenSettings => self.settings.show(),
                 AppMsg::OpenDashboard => self.settings.show_dashboard(),
@@ -472,7 +498,24 @@ impl App {
                     self.mark_refreshing();
                 }
             }
+            SettingsAction::ForgetReading(raw) => {
+                if let Some(account) = quotascope_core::model::AccountKey::from_id(&raw) {
+                    self.readings.remove(&raw);
+                    self.store.send(Command::ForgetAccount(account));
+                    self.invalidate_histories();
+                    self.rebuild_entries();
+                }
+            }
             SettingsAction::SaveKey => {
+                self.readings.retain(|_, r| {
+                    !r.provider().uses_api_key()
+                        || r.credential_context.as_deref()
+                            == Some(
+                                quotascope_core::provider_sites::current_context(&r.account)
+                                    .as_str(),
+                            )
+                });
+                self.rebuild_entries();
                 self.invalidate_histories();
                 self.store.send(Command::SettingsChanged);
             }
@@ -490,6 +533,7 @@ impl App {
             }
             SettingsAction::OpenUrl(url) => open_in_browser(&url),
             SettingsAction::OpenFolder(path) => open_in_browser(&path.to_string_lossy()),
+            SettingsAction::TestNotification => self.tray.test_notification(),
             SettingsAction::CheckUpdates => {
                 self.check_updates(quotascope_core::updates::Trigger::Manual)
             }
@@ -540,12 +584,87 @@ impl App {
     }
 
     fn poll_store(&mut self) {
+        let allowed =
+            quotascope_core::settings::with(|s| s.reads_token_spend && s.animates_ring_activity);
+        if !allowed {
+            if let Some(control) = &self.activity_control {
+                control.cancel();
+            }
+        }
+        if !allowed && !self.activity.is_empty() {
+            self.activity.clear();
+            self.rebuild_entries();
+        }
+        if allowed
+            && self.panel.activity_visible()
+            && !self.activity_running
+            && self
+                .activity_at
+                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(5))
+        {
+            let providers: std::collections::HashSet<_> = quotascope_core::settings::with(|s| {
+                s.ordered_enabled()
+                    .into_iter()
+                    .filter(|a| a.is_primary())
+                    .map(|a| a.provider)
+                    .filter(|p| {
+                        matches!(
+                            p,
+                            Provider::ClaudeCode | Provider::Codex | Provider::CommandCode
+                        )
+                    })
+                    .collect()
+            });
+            if !providers.is_empty() {
+                self.activity_running = true;
+                self.activity_at = Some(std::time::Instant::now());
+                let tx = self.tx.clone();
+                let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
+                self.activity_control = Some(control.clone());
+                std::thread::spawn(move || {
+                    let now = quotascope_core::timeutil::now_ms();
+                    let home = quotascope_core::home_dir();
+                    let out = std::panic::catch_unwind(|| {
+                        quotascope_core::scan::run(
+                            control,
+                            0,
+                            |_| {},
+                            || {
+                                providers
+                                    .into_iter()
+                                    .map(|p| {
+                                        (p, quotascope_core::agent_activity::working(p, now, &home))
+                                    })
+                                    .collect()
+                            },
+                        )
+                    })
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default();
+                    let _ = tx.send(AppMsg::Activity(out));
+                });
+            }
+        }
+
         self.panel.follow_pointer_if_enabled();
 
         while let Some(update) = self.store.poll() {
             match update {
                 Update::Readings(readings) => {
                     for reading in readings {
+                        if reading
+                            .credential_context
+                            .as_deref()
+                            .is_some_and(|context| {
+                                context
+                                    != quotascope_core::provider_sites::current_context(
+                                        &reading.account,
+                                    )
+                            })
+                        {
+                            continue;
+                        }
                         self.refreshing.remove(&reading.account.id());
                         if matches!(
                             reading.account.provider,
@@ -566,6 +685,13 @@ impl App {
                 }
             }
         }
+        quotascope_core::money::ensure_rates();
+        if quotascope_core::money::take_changed() {
+            self.estimates_dirty = true;
+            self.estimates.clear();
+            self.rebuild_entries();
+            self.settings.refresh();
+        }
         self.update_settings_status();
         if self.panel.is_visible() {
             self.maybe_refresh_estimates();
@@ -575,6 +701,7 @@ impl App {
         }
         if self.maintenance_at.elapsed() >= std::time::Duration::from_secs(30) {
             self.maintenance_at = std::time::Instant::now();
+            quotascope_core::notices::note_active();
             if self.settings.is_open() {
                 quotascope_core::spend_warmer::cancel_running();
             } else {
@@ -751,14 +878,17 @@ impl App {
         let subjects: Vec<_> = settings
             .ordered_enabled()
             .into_iter()
-            .filter(|a| a.is_primary() || a.provider == Provider::DeepSeek)
+            .filter(|a| {
+                a.is_primary() || matches!(a.provider, Provider::DeepSeek | Provider::Qoder)
+            })
             .filter(|a| settings.detailed_cards.contains(&a.id()))
             .filter(|a| a.provider.provides_history())
             .filter(|a| {
                 settings.reads_token_spend
                     || matches!(
                         a.provider,
-                        Provider::Zai
+                        Provider::Qoder
+                            | Provider::Zai
                             | Provider::GlmCoding
                             | Provider::OpenCodeGo
                             | Provider::DeepSeek
@@ -907,6 +1037,13 @@ impl App {
                     entry.ring.is_refreshing = true;
                 }
                 entry.account = account.clone();
+                entry.ring.robot = crate::robot::style(&account.id(), &settings);
+                entry.ring.is_busy = account.is_primary()
+                    && self
+                        .activity
+                        .get(&account.provider)
+                        .copied()
+                        .unwrap_or(false);
                 entry.title = crate::panel::account_title(account.provider, &account, &settings);
                 entry.value_lines = self
                     .estimates
@@ -922,8 +1059,9 @@ impl App {
                 if account.is_primary() && account.provider == Provider::Codex {
                     entry.codex_details = self.codex_details.clone();
                 }
-                entry
+                crate::panel::split_entry(entry, &settings)
             })
+            .flatten()
             .collect();
         self.panel.set_entries(entries);
         self.tray.set_dashboard(

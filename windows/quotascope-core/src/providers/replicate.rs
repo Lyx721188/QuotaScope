@@ -25,6 +25,7 @@
 
 use super::{pasted_or_none, KeyRing, ProviderService, SessionSpec};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, CreditAmount, Provider, ProviderUsage, Unavailability};
 use serde_json::Value;
 use std::sync::Arc;
@@ -58,7 +59,7 @@ impl ReplicateService {
             .header("Cookie", cookie)
             .header("Accept", accept)
             .timeout(Duration::from_secs(15))
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         let text = match response.text() {

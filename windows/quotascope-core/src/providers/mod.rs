@@ -7,6 +7,7 @@ pub mod aixy;
 pub mod alibaba_coding_plan;
 pub mod amp;
 pub mod antigravity;
+pub mod antigravity_cli;
 pub mod atlas_cloud;
 pub mod augment;
 pub mod bifrost;
@@ -24,6 +25,7 @@ pub mod deepinfra;
 pub mod deepseek;
 pub mod device_login;
 pub mod devpass;
+pub mod dim_agent;
 pub mod elevenlabs;
 pub mod factory;
 pub mod gitkraken;
@@ -44,6 +46,7 @@ pub mod moonshot;
 pub mod neuralwatt;
 pub mod new_api;
 pub mod notion_ai;
+pub mod open_design;
 pub mod openai_platform;
 pub mod opencode;
 pub mod perplexity;
@@ -93,6 +96,7 @@ pub struct SessionSpec {
 pub fn session_spec(provider: Provider) -> Option<SessionSpec> {
     match provider {
         Provider::Abacus => Some(abacus::SESSION),
+        Provider::OpenDesign => Some(open_design::SESSION),
         Provider::Augment => Some(augment::SESSION),
         Provider::LongCat => Some(longcat::SESSION),
         Provider::Manus => Some(manus::SESSION),
@@ -100,12 +104,26 @@ pub fn session_spec(provider: Provider) -> Option<SessionSpec> {
         Provider::NotionAi => Some(notion_ai::SESSION),
         Provider::OllamaCloud => Some(remaining::OLLAMA_SESSION),
         Provider::Perplexity => Some(perplexity::SESSION),
-        Provider::Qoder => Some(qoder::SESSION),
+        Provider::Qoder => Some(SessionSpec {
+            hosts: if crate::settings::with(|s| s.qoder_site == "china") {
+                &["qoder.com.cn"]
+            } else {
+                &["qoder.com"]
+            },
+            cookies: qoder::SESSION.cookies,
+        }),
         Provider::QwenCloud => Some(qwen_cloud::SESSION),
         Provider::RaycastAi => Some(raycast_ai::SESSION),
         Provider::Replicate => Some(replicate::SESSION),
         Provider::Sakana => Some(sakana::SESSION),
-        Provider::StepFun => Some(step_fun::SESSION),
+        Provider::StepFun => Some(SessionSpec {
+            hosts: if crate::settings::with(|s| s.stepfun_site == "international") {
+                &["platform.stepfun.ai"]
+            } else {
+                &["platform.stepfun.com"]
+            },
+            cookies: step_fun::SESSION.cookies,
+        }),
         Provider::T3Chat => Some(t3chat::SESSION),
         Provider::TypeSafe => Some(type_safe::SESSION),
         Provider::XiaomiMiMo => Some(xiaomi_mimo::SESSION),
@@ -119,6 +137,7 @@ pub fn session_spec(provider: Provider) -> Option<SessionSpec> {
 /// per request.
 #[derive(Default, Clone)]
 pub struct KeyRing {
+    pub sites: std::collections::HashMap<String, String>,
     pub api_keys: std::collections::HashMap<String, String>,
     pub addresses: std::collections::HashMap<String, String>,
     pub copilot_token: Option<String>,
@@ -128,7 +147,7 @@ pub struct KeyRing {
 }
 
 impl KeyRing {
-    pub(crate) fn for_account(&self, account: &AccountKey) -> Self {
+    pub fn for_account(&self, account: &AccountKey) -> Self {
         if account.is_primary() {
             return self.clone();
         }
@@ -140,6 +159,14 @@ impl KeyRing {
             })
             .unwrap_or_default();
         Self {
+            sites: [(
+                account.provider.raw().to_string(),
+                self.sites.get(&account.id()).cloned().unwrap_or_else(|| {
+                    crate::provider_sites::default_site(account.provider).into()
+                }),
+            )]
+            .into_iter()
+            .collect(),
             api_keys,
             addresses: self.addresses.clone(),
             copilot_token: None,
@@ -152,10 +179,29 @@ impl KeyRing {
         }
     }
     pub fn load() -> KeyRing {
+        let settings = crate::settings::with(Clone::clone);
+        let mut sites = settings.account_sites.clone();
+        for provider in [
+            Provider::Minimax,
+            Provider::MinimaxCn,
+            Provider::Qoder,
+            Provider::StepFun,
+        ] {
+            sites.insert(
+                provider.raw().into(),
+                crate::provider_sites::site(&AccountKey::primary(provider), &settings),
+            );
+        }
         let mut api_keys = std::collections::HashMap::new();
-        for provider in crate::model::ALL_PROVIDERS {
+        for provider in crate::model::ALL_PROVIDERS
+            .into_iter()
+            .chain(std::iter::once(Provider::MinimaxCn))
+        {
             if provider.uses_api_key() {
-                if let Some(key) = crate::secrets::key_for(provider.raw()) {
+                if let Some(key) = crate::secrets::key_for(&crate::provider_sites::slot_for(
+                    &AccountKey::primary(provider),
+                    &settings,
+                )) {
                     api_keys.insert(provider.raw().to_string(), key);
                 }
             }
@@ -178,6 +224,7 @@ impl KeyRing {
             .filter_map(|a| crate::deepseek_session::token(&a).map(|token| (a.id(), token)))
             .collect();
         KeyRing {
+            sites,
             api_keys,
             addresses: crate::settings::with(|settings| settings.server_addresses.clone()),
             copilot_token: crate::secrets::key_for("copilot"),
@@ -186,6 +233,33 @@ impl KeyRing {
         }
     }
 
+    pub fn site(&self, provider: Provider) -> &str {
+        self.sites
+            .get(provider.raw())
+            .map(String::as_str)
+            .unwrap_or_else(|| crate::provider_sites::default_site(provider))
+    }
+    pub fn credential_context(&self, account: &AccountKey) -> String {
+        let mut key = self
+            .api_keys
+            .get(account.provider.raw())
+            .cloned()
+            .unwrap_or_default();
+        if account.provider == Provider::DeepSeek {
+            key.push('|');
+            key.push_str(
+                self.deepseek_console
+                    .get(&account.id())
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            );
+        }
+        if account.provider == Provider::OpenCodeGo && account.is_primary() {
+            key.push('|');
+            key.push_str(self.opencode_console.as_deref().unwrap_or(""));
+        }
+        crate::provider_sites::context(account, self.site(account.provider), Some(&key))
+    }
     pub fn api_key(&self, provider: Provider) -> Option<String> {
         self.api_keys.get(provider.raw()).cloned()
     }
@@ -211,8 +285,8 @@ pub trait ProviderService: Send + Sync {
 
     fn fetch(&self, keys: &KeyRing) -> ProviderUsage;
 
-    /// One account, not the primary one. Not ported yet — added accounts
-    /// need QuotaScope's own OAuth logins.
+    /// Account-specific routes can opt in here to prevent primary local-login
+    /// fallback. Other routes receive the already-isolated key ring.
     fn fetch_account(&self, _keys: &KeyRing, _account: &AccountKey) -> Option<ProviderUsage> {
         None
     }
@@ -252,6 +326,8 @@ impl Services {
             Arc::new(claude_code::ClaudeCodeService::new(http.clone())),
             Arc::new(codex::CodexService::new(http.clone())),
             Arc::new(kiro::KiroService),
+            Arc::new(dim_agent::DimAgentService),
+            Arc::new(open_design::OpenDesignService::new(http.clone())),
             Arc::new(antigravity::AntigravityService::new()),
             Arc::new(cursor::CursorService::new()),
             Arc::new(copilot::CopilotService::new(http.clone())),

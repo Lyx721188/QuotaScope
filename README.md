@@ -23,13 +23,16 @@ Win32、Direct2D 和 WinUI 3 之上。它直接读取各服务商自己的客户
 - Provider 图标和本地化资源随 Windows 应用一起发布
 - 托盘逐账户用量摘要和用量页入口；设置页支持账户搜索、订阅/API 分组和凭据明文切换
 - 每账户余额口径、预算与低余额提醒；扩展程序可报告自己的用量
-- 可选的本机 Token 消耗分析：54 个来源目录，其中 35 个可读取已知格式（含导出缓存），19 个支持标准导入
-- DeepSeek 官网历史与独立会话、Codex 本地请求参数线索、DSH 压缩会话读取；缺失或不完整记录会明确提示
-- Claude Code/Codex/Antigravity 账户详细卡，以及 z.ai/智谱近 30 天用量历史
+- 可选的本机 Token 消耗分析：54 个来源目录，其中 38 个可读取已知格式（含导出缓存），16 个支持标准导入
+- DeepSeek 官网历史与独立会话、Codex 模型用量与时序、DSH 压缩会话读取；缺失或不完整记录会明确提示
+- 账户历史、Qoder 积分与 31 天明细，MiniMax 国际站与中国站独立凭据
+- Open Design / OpenDesign Go、DimAgent、Antigravity agy CLI 及 44 家官方服务状态
+- 日、周、月、年 Token 回顾、PNG 分享、估算币种与汇率设置
+- 分段进度条、按账户机器人头像、Antigravity 模型组圆环与自由放置
 
 ## 支持的服务商
 
-内置目录包含 77 个 provider，均已注册 Windows 读取路由。API key、
+内置目录包含 78 个 provider，均已注册 Windows 读取路由。API key、
 自建网关和受支持的浏览器会话可在账户设置中配置。部分路由依赖已登录的本机 CLI 或客户端；
 路由实现和解析测试不代表所有服务商都经过真实账号验证。
 
@@ -98,7 +101,7 @@ QuotaScope for Windows 移植自 [qunqin24/Pulse](https://github.com/qunqin24/Pu
 - **用量卡的排版基线**，即上游的 250 点宽度。
 
 Windows 这一侧自己做的：Rust 实现、Win32/Direct2D 渲染、真 Mica 与 DWM 圆角、WinUI 3 设置  
-窗口、托盘、DPAPI 凭据存储、Inno Setup 安装包与 CI，以及上游那 17 个之外的 60 个 provider。
+窗口、托盘、DPAPI 凭据存储、Inno Setup 安装包与 CI，以及上游那 17 个之外的 62 个 provider。
 
 本仓库已从 fork 网络中独立出来，不再自动获得上游的更新，也不代表上游对 Windows 版负责；  
 macOS 版的问题请报到 [qunqin24/Pulse](https://github.com/qunqin24/Pulse)。

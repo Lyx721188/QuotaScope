@@ -30,6 +30,11 @@ const CLOCK_LINE_WIDTH: f64 = 2.0;
 
 #[derive(Clone)]
 pub struct RingModel {
+    pub pulse: bool,
+    pub warning_at: f64,
+    pub chosen_tint: Option<Rgba>,
+    pub second_spent: bool,
+    pub robot: Option<crate::robot::Style>,
     /// How much of the tightest limit is gone, or none when there is no
     /// fraction to draw — an empty track then says "nothing known" rather
     /// than "nothing used".
@@ -59,6 +64,11 @@ pub struct RingModel {
 impl RingModel {
     pub fn unavailable(monogram: &str) -> RingModel {
         RingModel {
+            pulse: false,
+            warning_at: 0.75,
+            chosen_tint: None,
+            second_spent: false,
+            robot: None,
             used_fraction: None,
             has_reading: false,
             is_spent: false,
@@ -111,14 +121,36 @@ pub fn draw_ring(
     let clock_radius =
         ((diameter + line_width + (CLOCK_GAP + CLOCK_LINE_WIDTH / 2.0) * 2.0 * scale) / 2.0) as f32;
 
-    let arc_color = panel::accent();
+    let palette = if model.pulse {
+        &panel::DARK
+    } else {
+        panel::palette()
+    };
+    let tint = |used: f64, spent: bool| -> Rgba {
+        if model.pulse {
+            let spent = spent || used >= 1.0;
+            if !spent {
+                if let Some(chosen) = model.chosen_tint {
+                    return chosen;
+                }
+            }
+            quotascope_core::model::usage_tint::color_with(used, spent, model.warning_at).into()
+        } else {
+            panel::accent()
+        }
+    };
+    let arc_color = tint(model.used_fraction.unwrap_or(0.0), model.is_spent);
 
     // Track. The ring's track brightens with its emphasis, so a ring near
     // the pointer wakes up — arc, track and glow together, in proportion.
     let track = circle_geometry(painter.engine, center, radius)?;
     let track_color = {
-        let base = panel::palette().track;
-        base.with_alpha((base.a + 0.28 * model.halo as f32).min(1.0))
+        let base = palette.track;
+        if model.pulse {
+            base.with_alpha(0.18)
+        } else {
+            base.with_alpha((base.a + 0.28 * model.halo as f32).min(1.0))
+        }
     };
     let brush = painter.brush(track_color)?;
     painter.draw_geometry(&track, &brush, lw, true);
@@ -127,6 +159,12 @@ pub fn draw_ring(
     // the colour is the system's, not a verdict.
     let fraction = arc_fraction(model);
     if let Some(arc) = arc_geometry(painter.engine, center, radius, fraction)? {
+        if model.pulse && model.halo > 0.0 {
+            for (width, opacity) in [(10.0, 0.035), (7.0, 0.075), (5.0, 0.13)] {
+                let glow = painter.brush(arc_color.with_alpha(opacity * model.halo as f32))?;
+                painter.draw_geometry(&arc, &glow, (line_width + width * scale) as f32, true);
+            }
+        }
         let mut c = arc_color;
         if model.is_refreshing {
             c = quiet(c);
@@ -161,9 +199,13 @@ pub fn draw_ring(
     // data for.
     let mark_alpha = if model.has_reading { 1.0 } else { 0.35 };
     let mut drew_icon = false;
-    if let Some(key) = &model.icon {
-        if let Some(bitmap) = crate::assets::bitmap_for(painter.engine, key) {
-            let size = (centre_diameter * 0.58) as f32;
+    if let Some(style) = &model.robot {
+        crate::robot::draw(painter, mark, centre_diameter * 0.88, model, style, now_ms)?;
+        drew_icon = true;
+    }
+    if let Some(key) = model.icon.as_ref().filter(|_| !drew_icon) {
+        if let Some(bitmap) = crate::assets::bitmap_for_ink(painter.engine, key, model.pulse) {
+            let size = (centre_diameter * if model.pulse { 1.0 } else { 0.9 }) as f32;
             let dest = D2D_RECT_F {
                 left: mark.X - size / 2.0,
                 top: mark.Y - size / 2.0,
@@ -192,8 +234,7 @@ pub fn draw_ring(
         }
     }
     if !drew_icon {
-        let text_brush =
-            painter.brush(panel::palette().text_primary.with_alpha(mark_alpha as f32))?;
+        let text_brush = painter.brush(palette.text_primary.with_alpha(mark_alpha as f32))?;
         let font_size = (centre_diameter * ICON_SCALE * 0.62) as f32;
         let half = centre_diameter as f32 / 2.0;
         painter.text(
@@ -213,17 +254,29 @@ pub fn draw_ring(
         let second_radius = (diameter / 2.0 - line_width - SECOND_RING_SQUEEZE * scale) as f32;
         let second_lw = (2.5 * scale) as f32;
         let used = second.clamp(0.0, 1.0);
-        let shown = if model.shows_remaining {
+        let spent = model.second_spent || used >= 1.0;
+        let shown = if model.pulse && spent {
+            1.0
+        } else if model.shows_remaining {
             1.0 - used
         } else {
             used
         };
         let track = circle_geometry(painter.engine, center, second_radius)?;
-        let brush = painter.brush(panel::palette().track)?;
+        let brush = painter.brush(if model.pulse {
+            palette.track.with_alpha(0.18)
+        } else {
+            palette.track
+        })?;
         painter.draw_geometry(&track, &brush, second_lw, true);
         if shown > 0.0 {
             if let Some(arc) = arc_geometry(painter.engine, center, second_radius, shown as f64)? {
-                let brush = painter.brush(quiet(arc_color))?;
+                let color = if model.pulse {
+                    tint(used, spent)
+                } else {
+                    quiet(arc_color)
+                };
+                let brush = painter.brush(color)?;
                 painter.draw_geometry(&arc, &brush, second_lw, true);
             }
         }
@@ -240,7 +293,7 @@ pub fn draw_ring(
             angle - 90.0,
             BUSY_SWEEP_DEG,
         )? {
-            let brush = painter.brush(panel::palette().text_primary)?;
+            let brush = painter.brush(palette.text_primary)?;
             painter.draw_geometry(&mark, &brush, (line_width * 0.5).max(1.5) as f32, true);
         }
     }
@@ -249,11 +302,11 @@ pub fn draw_ring(
     // rather than a second hue.
     if let Some(elapsed) = model.elapsed_fraction {
         let track = circle_geometry(painter.engine, center, clock_radius)?;
-        let brush = painter.brush(panel::palette().track.with_alpha(0.16))?;
+        let brush = painter.brush(palette.track.with_alpha(0.16))?;
         painter.draw_geometry(&track, &brush, (2.0 * scale) as f32, true);
         if elapsed > 0.0 {
             if let Some(arc) = arc_geometry(painter.engine, center, clock_radius, elapsed)? {
-                let brush = painter.brush(panel::palette().text_primary.with_alpha(0.7))?;
+                let brush = painter.brush(palette.text_primary.with_alpha(0.7))?;
                 painter.draw_geometry(&arc, &brush, (2.0 * scale) as f32, true);
             }
         }

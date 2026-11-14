@@ -1,6 +1,8 @@
 # 上游功能移植进度
 
-更新日期：2026-10-05。当前公开路线图见[下一轮计划](next-upstream-plan-2026-10-04.md)，依赖和验收标准见[实施任务](release-acceptance-2026-10-04.md)。
+更新日期：2026-11-12。当前公开路线图见[下一轮计划](next-upstream-plan-2026-10-04.md)，依赖和验收标准见[实施任务](release-acceptance-2026-10-04.md)。
+
+本轮新增参考 Pulse `338c796`（2026-11-11，1.13.0 后的 main），OpenDesign、DimAgent、CLI、额度、状态页、扩展和日期范围的实际移植范围见[11 月同步记录](upstream-sync-2026-11-12.md)。下方旧批次保留其原验收边界，不能当成本轮的完整回归记录。
 
 第二轮新增上游参考：Pulse 1.7.2 `b570dd7`。Windows 已接入 Codex、Claude Code、DeepSeek 当前官方状态、独立故障通知开关及持久化去重，验证与范围见[服务状态说明](providers/windows-service-status.md)。官网约 90 天历史条与公布的可用率已实现；缺损历史单独提示，缺少可用率保留未知。
 
@@ -20,14 +22,14 @@ Hermes 已从仅标准导入升级为原生 SQLite 会话／模型／profile 读
 |---|---|---|
 | N1 性能 | 价格索引及命中/未命中缓存；未变日志不重写解析缓存，整数纳秒时间戳；单个可取消聚合 worker，最多四个筛选结果 | 追加、改写、删除、重启、筛选、取消与关闭重开回归通过；保持价格优先级和未计价语义 |
 | N2 DeepSeek | 实际费用携带币种；有界官网历史缓存、余额回退、异步浏览器导入/清除；凭据、续读和缓存按账户隔离 | 合成协议、HTTP、Windows DPAPI 与隔离 UI 通过；真实账户未验证，见[说明](providers/windows-deepseek-console.md) |
-| N3 Codex | 保守比较设置/请求参数；有界、可取消 facts reader；主账户展开页显示时段、规则、分母、不可判断与缺口 | parser/worker/隔离 UI 通过；不证明服务端实际运行模型，见[说明](providers/windows-codex-signals.md) |
+| N3 Codex | 本轮同步撤下推断面板，保留模型用量、实测时序与提示缓存 | 当前行为与回归入口见[说明](providers/windows-codex-signals.md) |
 | N4a DSH | 按 magic 流式解压 Zstandard 与拼接帧；原始/解码字节、单行和窗口有界；损坏、缺计数、变动保留 partial | 纯解析、取消、隔离 UI、冻结样本独立复算通过；不代表全部历史完整，见[说明](providers/windows-dsh-local-usage.md) |
 | N4b ZCode | 固定 SQLite 用量表；归一化输入含缓存、输出含 reasoning；WAL/索引/取消及内存缓存有界 | 18 项定向回归、冻结用量独立复算及隔离 Debug UI 通过；Release UI 也通过 [dcaa37c 的 CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37184221991)，见[说明](providers/windows-zcode-local-usage.md) |
 | R1 自动化 | ZIP 许可证与哈希；相同 Release payload 的独立身份安装、托盘/设置生命周期、卸载；失败日志保留 | [ef9292d 的 Windows CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37171576671) 成功；[dcaa37c 的 CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37184221991) 另通过 DSH/ZCode Release Token 页；原 AppId 升级、真实账户、多 DPI 人工验收仍分别待完成 |
 
 N1–N4a 的源码基线回归为 706 passed / 6 ignored；含 ZCode 的 dcaa37c 为 724 passed / 6 ignored，fmt、普通 Clippy、Release 和 JSON CLI 完成；已有 Clippy 告警仍存在。每次后续改动以对应 commit 的检查为准。
 
-当前目录为 77 个 Windows 路由、54 个 Token 来源（36 个已知格式读取，含导出缓存；18 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。标准导入计数与零值覆盖随 `53bd960` 通过 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37186053767)，统一读取预算及流式 JSON 数组随 `f08ee5a` 通过 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37188857492)，浏览器副本隔离及清理随 `3e95c23` 通过 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37190912782)。日期展开仅补最近 366 天、所有实际记录保留，整仓 744 passed / 6 ignored、隔离 Debug UI 通过；[日期改动 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37191964998) 通过。固定头部签名另通过本地 core 670 passed / 5 ignored 及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37192497068)。模型时序扫描新增上限与独立缺口提示，整仓 750 passed / 6 ignored；隔离账户 UI 通过；[该批 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37194125169) 已通过。日期上界与计数有效性已通过 12 项定向、整仓 756 passed / 6 ignored 和扩展账户 Debug UI（未来事件排除、有效首字 2.00 秒、Token 保持）；[对应 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37195452537) 已通过。Codex 原生累计校验/缺口缓存通过整仓 766 passed / 6 ignored、账户/维护/续读/筛选/取消 Debug UI；同 ZIP 的 Release 账户回归通过 [176cb24 的 CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37197866133)，三份结果使用相同 Release 程序哈希。真实账户与升级仍分别保留验收状态。
+当前目录为 78 个 Windows 路由、54 个 Token 来源（38 个已知格式读取，含导出缓存；16 个标准导入）。ZCode 的 reader、缓存、独立复算和 Debug UI 已通过，原生支持已接入。标准导入计数与零值覆盖随 `53bd960` 通过 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37186053767)，统一读取预算及流式 JSON 数组随 `f08ee5a` 通过 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37188857492)，浏览器副本隔离及清理随 `3e95c23` 通过 [CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37190912782)。日期展开仅补最近 366 天、所有实际记录保留，整仓 744 passed / 6 ignored、隔离 Debug UI 通过；[日期改动 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37191964998) 通过。固定头部签名另通过本地 core 670 passed / 5 ignored 及 [Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37192497068)。模型时序扫描新增上限与独立缺口提示，整仓 750 passed / 6 ignored；隔离账户 UI 通过；[该批 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37194125169) 已通过。日期上界与计数有效性已通过 12 项定向、整仓 756 passed / 6 ignored 和扩展账户 Debug UI（未来事件排除、有效首字 2.00 秒、Token 保持）；[对应 Release CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37195452537) 已通过。Codex 原生累计校验/缺口缓存通过整仓 766 passed / 6 ignored、账户/维护/续读/筛选/取消 Debug UI；同 ZIP 的 Release 账户回归通过 [176cb24 的 CI](https://github.com/Lyx721188/QuotaScope/actions/runs/37197866133)，三份结果使用相同 Release 程序哈希。真实账户与升级仍分别保留验收状态。
 
 ## 已发布的 1.3.0 / 1.3.1 基线
 
@@ -50,7 +52,7 @@ Windows 1.3.1 将 Kiro 替换为专用 ACP 读取器，补齐严格解析、稳�
 | Codex 缓存 | GPT-5.6 及后续型号显示官方最短 30 分钟复用期，不保证命中 | 型号/缓存计数回归；旧型号不套用期限 |
 | OpenCode 官网 | Go 额度、跨设备请求账单、实际美元费用；官网会话与 API key 分别加密保存 | 分页去重、循环游标、不完整页面、认证失败样本；真实账号未验证 |
 | OpenCode 2 / Kilo SQLite | 新旧消息表兼容、助手记录过滤、重复 ID 合并 | 临时只读数据库回归 |
-| Token 来源与小时图 | 54 项目录；36 项已知格式读取（含导出缓存），18 项仅支持标准导入 | DSH 分叉/重放、导入 schema/ID、计数和筛选；不宣称 54 项全部原生支持 |
+| Token 来源与小时图 | 54 项目录；38 项已知格式读取（含导出缓存），16 项仅支持标准导入 | DSH 分叉/重放、导入 schema/ID、计数和筛选；不宣称 54 项全部原生支持 |
 | 后台统计 | 默认关闭；单份 5 分钟快照、30 秒扫描期限；关闭选项取消释放；前台扫描取消后台扫描 | 取消/关闭/缓存回归；不保留完整对话文本 |
 | 十个额度路由 | Kiro、Ollama Cloud、Grok Bot、Volcengine、Devin、Alibaba Token Plan、Gemini、JetBrains AI、Windsurf、Nous Portal | 上游额度 fixtures、独立火山签名向量、非法数据样本；真实账号未逐一验证 |
 | Chromium localStorage | 有界只读 LevelDB；只读当前 manifest/指定网站及键；CRC/Snappy/版本/删除校验 | 日志、manifest、过期文件、跨域、损坏记录回归 |

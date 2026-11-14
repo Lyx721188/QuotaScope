@@ -37,7 +37,8 @@ impl ProviderService for MinimaxService {
             return ProviderUsage::unavailable(account, Unavailability::ApiKeyMissing);
         };
 
-        let api_host = if provider == Provider::MinimaxCn {
+        let api_host = if provider == Provider::MinimaxCn || keys.site(Provider::Minimax) == "china"
+        {
             "https://api.minimaxi.com"
         } else {
             "https://api.minimax.io"

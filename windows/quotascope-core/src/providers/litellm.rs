@@ -24,6 +24,7 @@
 use super::{pasted_or_none, KeyRing, ProviderService};
 use crate::gateway;
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, Kind, Provider, ProviderUsage, Unavailability, UsageWindow};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -57,7 +58,7 @@ impl LiteLlmService {
             .header("Authorization", format!("Bearer {key}"))
             .header("Accept", "application/json")
             .timeout(std::time::Duration::from_secs(15))
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         if status == 403 || status == 404 {

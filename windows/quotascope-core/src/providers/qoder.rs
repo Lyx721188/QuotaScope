@@ -5,13 +5,9 @@
 //! with the signed-in cookies and draws what comes back, so that session is
 //! the credential.
 //!
-//! **Two sites, two accounts.** `qoder.com` and `qoder.com.cn` are separate
-//! sign-ins, and upstream never sends one site's session to the other: which
-//! one is read is a setting there. The Windows port has one Qoder entry, no
-//! site choice, and an import that stores one header without naming the host
-//! it came from — so the fetch tries the hosts in the import's own order, and
-//! only a refused session (the one signal that the header belongs to the
-//! other site) moves it on. A session is sent nowhere else.
+//! **Two sites, two independent logins.** The selected storefront and its
+//! encrypted cookie are captured together. A refusal never sends the cookie
+//! to the other storefront.
 //!
 //! **Not the IDE's own figures.** The Qoder app caches a credit reading of
 //! its own and exposes it over a local socket, but other monitors that read
@@ -144,18 +140,16 @@ impl ProviderService for QoderService {
         let Some(cookie) = normalize(&stored) else {
             return ProviderUsage::unavailable(account, Unavailability::SessionMissing);
         };
-        // The import reads the hosts in this order and stores one header
-        // without naming the host it came from. A refused session is the one
-        // signal that the header belongs to the other site, so only a refusal
-        // hops; a rate limit or a fault is the host answering, and says so.
-        for site in 0..HOSTS.len() {
-            match self.usage_json(site, &cookie) {
-                Ok(reply) => return self.reading(&reply, account),
-                Err(Unavailability::SessionExpired) => {}
-                Err(reason) => return ProviderUsage::unavailable(account, reason),
-            }
+        // The selected storefront is captured with this account's credential.
+        let site = if keys.site(Provider::Qoder) == "china" {
+            1
+        } else {
+            0
+        };
+        match self.usage_json(site, &cookie) {
+            Ok(reply) => self.reading(&reply, account),
+            Err(reason) => ProviderUsage::unavailable(account, reason),
         }
-        ProviderUsage::unavailable(account, Unavailability::SessionExpired)
     }
 }
 
@@ -435,6 +429,11 @@ fn window(pool: &Pool, id: &str, resets_at: Option<i64>) -> Option<UsageWindow> 
         30 * 86_400,
         resets_at,
     );
+    window.amounts = Some(crate::model::WindowAmounts {
+        used: pool.used,
+        limit: pool.limit,
+        remaining: pool.remaining,
+    });
     window.reports_length = false;
     window.is_exhausted = pool
         .remaining

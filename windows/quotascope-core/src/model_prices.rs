@@ -66,7 +66,7 @@ const PROVIDERS: &[&str] = &[
 /// are only ever consulted for the agent whose plan they are. Stored
 /// namespaced (`vendor|id`) so a vendor's price can never be found by a
 /// lookup that did not ask for that vendor.
-const VENDORS: &[&str] = &["opencode-go", "kilo", "cline-pass"];
+const VENDORS: &[&str] = &["opencode-go", "kilo", "cline-pass", "commandcode"];
 
 /// Separates a vendor from a model id in the table. Not a character any
 /// models.dev id uses.
@@ -315,6 +315,12 @@ pub fn aliases(model: &str) -> Vec<String> {
         push_bases(&mut candidates, model, arm);
     }
 
+    // These exact Antigravity Flash arms share the model enum and price.
+    for suffix in ["-n", "-xpe"] {
+        if model == format!("gemini-3.8-flash{suffix}") {
+            candidates.push("gemini-3.8-flash".into());
+        }
+    }
     candidates.push(dotted(model));
 
     // A context window on the end is the same model with more room:

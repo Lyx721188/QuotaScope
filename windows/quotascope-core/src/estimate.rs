@@ -93,7 +93,7 @@ pub struct BudgetEstimate {
 }
 
 impl BudgetEstimate {
-    /// "≈$220": whole dollars from a hundred up, because the figure is an
+    /// "$220": whole dollars from a hundred up, because the figure is an
     /// estimate and cents would claim a precision it does not have. Shared by
     /// the card and any other surface, so they agree.
     pub fn approximate(&self) -> String {
@@ -102,11 +102,7 @@ impl BudgetEstimate {
 }
 
 pub fn approximate(amount: f64) -> String {
-    if amount >= 100.0 {
-        format!("≈${:.0}", amount)
-    } else {
-        format!("≈${:.2}", amount)
-    }
+    crate::money::estimate_with_threshold(amount, 100.0)
 }
 
 pub fn estimate(
@@ -322,7 +318,7 @@ mod tests {
         assert!((e.full - 400.0).abs() < 1e-9);
         assert!((e.spent - 100.0).abs() < 1e-9);
         assert!((e.remaining - 300.0).abs() < 1e-9);
-        assert_eq!(e.approximate(), "≈$400");
+        assert_eq!(e.approximate(), "$400");
     }
 
     #[test]
@@ -455,10 +451,10 @@ mod tests {
 
     #[test]
     fn approximate_formats_whole_dollars_from_a_hundred_up() {
-        assert_eq!(approximate(219.6), "≈$220");
-        assert_eq!(approximate(99.99), "≈$99.99");
-        assert_eq!(approximate(12.0), "≈$12.00");
-        assert_eq!(approximate(10_000.0), "≈$10000");
+        assert_eq!(approximate(219.6), "$220");
+        assert_eq!(approximate(99.99), "$99.99");
+        assert_eq!(approximate(12.0), "$12.00");
+        assert_eq!(approximate(10_000.0), "$10000");
     }
 
     #[test]

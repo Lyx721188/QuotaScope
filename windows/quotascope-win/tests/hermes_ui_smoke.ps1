@@ -1,4 +1,4 @@
-# Isolated native Hermes cumulative/profile counts and coverage repair on Token page.
+﻿# Isolated native Hermes cumulative/profile counts and coverage repair on Token page.
 param([Parameter(Mandatory=$true)][string]$Executable,[string]$Python='python',[string]$OutputDirectory='target/hermes-ui-validation')
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -13,6 +13,8 @@ New-Item -ItemType Directory -Path $data,$fixtureHome,$hermes,$OutputDirectory -
 $reserve=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
 $reserve.Start()
 $settings=@{hasRun=$true;enabledAccounts=@();language='zh';readsTokenSpend=$true;checksForUpdates=$false;proxyMode='manual';proxyUrl="http://127.0.0.1:$($reserve.LocalEndpoint.Port)"}
+$fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
+$settings.notices=@{lastVersion=$fixtureVersion}
 [IO.File]::WriteAllText((Join-Path $data 'settings.json'),($settings|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 $prices=@{fetched_at_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();prices=@{'fixture-a'=@{input=1.0;output=2.0};'fixture-b'=@{input=1.0;output=2.0};'fixture-c'=@{input=1.0;output=2.0}}}
 [IO.File]::WriteAllText((Join-Path $data 'model-prices-4.json'),($prices|ConvertTo-Json -Depth 4))
@@ -116,9 +118,9 @@ function Choose-Filter([int]$index,[string]$name) {
     $until=[DateTime]::UtcNow.AddSeconds(5)
     do {
         $combos=@(Nodes|Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::ComboBox})
-        if($combos.Count -eq 6){break};Start-Sleep -Milliseconds 100
+        if($combos.Count -ge 6){break};Start-Sleep -Milliseconds 100
     } while([DateTime]::UtcNow -lt $until)
-    if($combos.Count -ne 6){throw 'Filters not ready'}
+    if($combos.Count -lt 6){throw 'Filters not ready'}
     $combos[$index].GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
     $container=$null
     if($combos[$index].TryGetCurrentPattern([Windows.Automation.ItemContainerPattern]::Pattern,[ref]$container)){

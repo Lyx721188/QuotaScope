@@ -7,6 +7,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [upstream-sync-2026-11-12.md](upstream-sync-2026-11-12.md) | Open Design 与本轮 Windows 新功能及验证记录 |
 | [json-output.md](json-output.md) | `quotascope.exe --json` 的状态栏输出约定 |
 | [providers/README.md](providers/README.md) | 各服务商的读取通道、鉴权和本地数据来源 |
 | [providers/windows-browser-cookie-read.md](providers/windows-browser-cookie-read.md) | 浏览器只读读取、临时副本隔离与支持边界 |

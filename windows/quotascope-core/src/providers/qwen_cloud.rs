@@ -19,6 +19,7 @@
 use super::alibaba_coding_plan::{console_number, console_string, expanded};
 use super::{pasted_or_none, KeyRing, ProviderService, SessionSpec};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, Kind, Provider, ProviderUsage, Unavailability, UsageWindow};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
@@ -125,7 +126,7 @@ impl QwenCloudService {
         }
         let response = call
             .body(request.body)
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         match status {
@@ -144,7 +145,7 @@ impl QwenCloudService {
             .header("Cookie", cookie)
             .header("Accept", accept)
             .timeout(Duration::from_secs(15))
-            .send()
+            .observed_send()
             .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         let text = response

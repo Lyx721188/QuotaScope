@@ -31,6 +31,8 @@ pub fn add(provider: Provider, credential: &str) -> Option<AccountKey> {
         return None;
     }
     crate::settings::mutate(|s| {
+        let site = crate::provider_sites::site(&AccountKey::primary(provider), s);
+        s.account_sites.insert(account.id(), site);
         s.enabled_accounts.insert(account.id());
         s.next_account_slot = slot.saturating_add(1);
     });
@@ -48,6 +50,11 @@ pub fn remove(account: &AccountKey) {
     crate::settings::mutate(|s| {
         let id = account.id();
         s.enabled_accounts.remove(&id);
+        s.account_sites.remove(&id);
+        s.robot_avatars.remove(&id);
+        s.split_accounts.remove(&id);
+        s.shown_model_groups.remove(&id);
+        s.credit_amounts.remove(&id);
         s.pinned_windows.remove(&id);
         s.detailed_cards.remove(&id);
         s.ring_tints.remove(&id);

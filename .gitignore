@@ -18,5 +18,13 @@ work/
 
 # Local collaboration and handoff notes
 HANDOFF.md
+Docs/handoff-*.md
 PORT_PLAN.md
 UPSTREAM_PARITY.md
+
+# Local scratch diagnostics
+.tmp_*
+.tmp_crops/
+
+# Obsolete single-pass glass shader replaced by the two-pass pipeline
+windows/quotascope-win/shaders/liquid_glass_hdr_ps.cso

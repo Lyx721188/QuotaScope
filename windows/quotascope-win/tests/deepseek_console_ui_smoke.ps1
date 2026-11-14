@@ -1,4 +1,4 @@
-# Run from windows/ with a complete Debug payload and an unlocked desktop.
+﻿# Run from windows/ with a complete Debug payload and an unlocked desktop.
 # All credentials and Chromium files are synthetic. A loopback-only failed
 # proxy prevents enabled test accounts from reaching any external service.
 param([Parameter(Mandatory = $true)][string]$Executable)
@@ -59,6 +59,8 @@ $proxyPort = $reserve.LocalEndpoint.Port
 # Keep the listener reserved without accepting connections. It cannot tunnel
 # requests or forward credentials, and is stopped during cleanup.
 $settings = @{hasRun=$true; enabledAccounts=@('deepSeek#1'); detailedCards=@(); language='zh'; readsTokenSpend=$false; proxyMode='manual'; proxyUrl="http://127.0.0.1:$proxyPort"}
+$fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
+$settings.notices=@{lastVersion=$fixtureVersion}
 [IO.File]::WriteAllText((Join-Path $data 'settings.json'), ($settings | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
 function Write-Keys($keys) {
     $plain = [Text.Encoding]::UTF8.GetBytes(($keys | ConvertTo-Json -Compress))
@@ -107,7 +109,7 @@ function Select-Page([string]$name) {
     $node.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
 }
 function Configure-DeepSeek {
-    Select-Page '账户'
+    Select-Page '账号'
     $until = [DateTime]::UtcNow.AddSeconds(15)
     do {
         $search = Get-Nodes | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Edit -and $_.Current.ClassName -eq 'TextBox' } | Select-Object -First 1

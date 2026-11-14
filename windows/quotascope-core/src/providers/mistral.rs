@@ -20,6 +20,7 @@
 
 use super::{pasted_or_none, KeyRing, ProviderService, SessionSpec};
 use crate::http::HttpClient;
+use crate::http::ObserveRequest as _;
 use crate::model::{
     AccountKey, CreditAmount, Kind, Provider, ProviderUsage, Unavailability, UsageWindow,
 };
@@ -205,7 +206,9 @@ impl MistralService {
                 request.header("X-CSRFToken", csrf)
             };
         }
-        let response = request.send().map_err(|_| Unavailability::Unreachable)?;
+        let response = request
+            .observed_send()
+            .map_err(|_| Unavailability::Unreachable)?;
         let status = response.status().as_u16();
         let text = response
             .text()

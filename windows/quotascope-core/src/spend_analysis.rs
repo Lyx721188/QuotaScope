@@ -11,6 +11,7 @@ pub struct Query {
     pub span: Span,
     pub today: NaiveDate,
     pub recap_month: NaiveDate,
+    pub recap_period: crate::recap::Period,
     pub source: Option<String>,
     pub model: Option<String>,
     pub group: Group,
@@ -23,6 +24,7 @@ impl Query {
         self.span == other.span
             && self.today == other.today
             && self.recap_month == other.recap_month
+            && self.recap_period == other.recap_period
             && self.source == other.source
             && self.model == other.model
             && self.group == other.group
@@ -137,8 +139,9 @@ impl Summary {
                     query.source.as_deref(),
                     query.model.as_deref(),
                 );
-                let recap = crate::recap::MonthlyRecap::build(
+                let recap = crate::recap::MonthlyRecap::build_period(
                     snapshot,
+                    query.recap_period,
                     query.recap_month,
                     query.today,
                     query.source.as_deref(),
@@ -273,6 +276,7 @@ mod tests {
             query: Query {
                 span: Span::Week,
                 today: NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
+                recap_period: crate::recap::Period::Month,
                 recap_month: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
                 source: None,
                 model: None,
