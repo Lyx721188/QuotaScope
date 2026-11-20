@@ -53,12 +53,14 @@ $unrelated = Join-Path $local 'Microsoft/Edge/User Data/Default/Local Storage/le
 New-Item -ItemType Directory -Path $data -Force | Out-Null
 [DeepSeekFixture]::Storage($unrelated, 'https://unrelated.example', 'synthetic-unrelated', $false)
 [DeepSeekFixture]::Storage($browser, 'https://platform.deepseek.com', 'synthetic-console-A', $false)
+# A profile only counts as an installed browser once it has a cookie store.
+New-Item -ItemType File -Path (Join-Path $local 'Microsoft/Edge/User Data/Profile 1/Network/Cookies') -Force | Out-Null
 $reserve = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $reserve.Start()
 $proxyPort = $reserve.LocalEndpoint.Port
 # Keep the listener reserved without accepting connections. It cannot tunnel
 # requests or forward credentials, and is stopped during cleanup.
-$settings = @{hasRun=$true; enabledAccounts=@('deepSeek#1'); detailedCards=@(); language='zh';  proxyMode='manual'; proxyUrl="http://127.0.0.1:$proxyPort"}
+$settings = @{hasRun=$true; enabledAccounts=@('deepSeek#1'); detailedCards=@(); language='zh'; importBrowser='all';  proxyMode='manual'; proxyUrl="http://127.0.0.1:$proxyPort"}
 $fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
 $settings.notices=@{lastVersion=$fixtureVersion}
 [IO.File]::WriteAllText((Join-Path $data 'settings.json'), ($settings | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
