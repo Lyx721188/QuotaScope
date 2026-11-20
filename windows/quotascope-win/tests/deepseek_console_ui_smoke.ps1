@@ -171,6 +171,7 @@ try {
     $keys = Wait-Key 'deepSeek:console' $null
     [void](Wait-Node '官网会话已清除。')
     if ($keys.Count -ne 2) { throw 'Clear left unexpected credential slots' }
+    New-Item -ItemType Directory -Path 'target/upstream-followthrough-20261004' -Force | Out-Null
     [pscustomobject]@{Passed=$true; DebugExecutable=[IO.Path]::GetFullPath($Executable); Sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash; Browser='Edge Profile 1'; OriginFiltered=$true; DeletionRespected=$true; DpapiEncrypted=$true; ApiKeysPreserved=$true; AccountSessionsIsolated=$true; ExtraAndPrimaryClear=$true; LocalTokenReadingDisabled=$true; ExternalRequestsBlockedByLoopbackProxy=$true; RealAccountVerified=$false} | ConvertTo-Json | Tee-Object -FilePath 'target/upstream-followthrough-20261004/n2d-console-ui-result.json'
 } finally {
     if (-not $testApp.HasExited) { $testApp.Kill(); $testApp.WaitForExit() }
