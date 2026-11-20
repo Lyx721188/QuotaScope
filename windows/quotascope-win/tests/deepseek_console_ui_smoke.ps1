@@ -58,7 +58,7 @@ $reserve.Start()
 $proxyPort = $reserve.LocalEndpoint.Port
 # Keep the listener reserved without accepting connections. It cannot tunnel
 # requests or forward credentials, and is stopped during cleanup.
-$settings = @{hasRun=$true; enabledAccounts=@('deepSeek#1'); detailedCards=@(); language='zh'; readsTokenSpend=$false; proxyMode='manual'; proxyUrl="http://127.0.0.1:$proxyPort"}
+$settings = @{hasRun=$true; enabledAccounts=@('deepSeek#1'); detailedCards=@(); language='zh';  proxyMode='manual'; proxyUrl="http://127.0.0.1:$proxyPort"}
 $fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
 $settings.notices=@{lastVersion=$fixtureVersion}
 [IO.File]::WriteAllText((Join-Path $data 'settings.json'), ($settings | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
@@ -124,7 +124,7 @@ function Configure-DeepSeek {
     if ($controls.Count -ne 1) { throw 'Account search did not select DeepSeek alone' }
     $configure = $controls | Where-Object { $_.Current.Name -eq '配置' } | Select-Object -First 1
     if ($configure) { $configure.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke() }
-    [void](Wait-Node '导入 DeepSeek 官网会话，可读取整个账户近 30 个自然日的 Token 和实际账单。API key 独立保存。')
+    [void](Wait-Node '导入 DeepSeek 官网会话，可读取账户余额。API key 独立保存。')
 }
 function Wait-Key([string]$id, $expected) {
     $until = [DateTime]::UtcNow.AddSeconds(15)

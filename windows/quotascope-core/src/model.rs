@@ -552,22 +552,6 @@ impl Provider {
         }
     }
 
-    /// Whether a spending history can be shown for this provider at all.
-    pub fn provides_history(&self) -> bool {
-        crate::history::local_source(*self).is_some()
-            || matches!(
-                self,
-                Provider::Qoder
-                    | Provider::ClaudeCode
-                    | Provider::Codex
-                    | Provider::Antigravity
-                    | Provider::Zai
-                    | Provider::GlmCoding
-                    | Provider::OpenCodeGo
-                    | Provider::DeepSeek
-            )
-    }
-
     /// Billing classification from upstream, independent of credential type.
     pub fn is_api_billing(&self) -> bool {
         matches!(
@@ -620,11 +604,6 @@ impl Provider {
                 | Provider::Replicate
                 | Provider::TypeSafe
         )
-    }
-
-    pub fn spending_is_watched_locally(&self) -> bool {
-        !self.reports_spendable_balance()
-            && !matches!(self, Provider::OpenDesign | Provider::DimAgent)
     }
 
     /// Whether this provider keeps a credential of its own in `keys.dat`.

@@ -10,7 +10,6 @@
 //! `card::PADDING` on all sides.
 
 use quotascope_core::model::{ProviderUsage, State, Unavailability};
-use std::collections::HashMap;
 use windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL;
 
 use crate::d2d::{Painter, Rgba};
@@ -59,14 +58,7 @@ pub struct CardData {
     /// Where a figure stops being calm and starts warning: the reader's own
     /// line, not a constant.
     pub warning_fraction: f64,
-    /// Per window id, the value estimate the transcript ledger supports —
-    /// "Estimated value ≈$220 · ≈$57 used". Absent wherever the inputs
-    /// cannot support the figure.
-    pub value_lines: HashMap<String, String>,
     pub detailed: bool,
-    pub history_enabled: bool,
-    pub history: Option<quotascope_core::history::HistoryRead>,
-    pub prompt_cache: Option<quotascope_core::prompt_cache::CacheReading>,
     pub codex_details: Option<quotascope_core::codex_account::AccountDetails>,
     pub shows_codex_reset_credits: bool,
 }
@@ -101,25 +93,6 @@ fn account_notes(data: &CardData) -> Vec<String> {
             None => lines.push(t("Reading reset credits…").into()),
         }
     }
-    if data.detailed {
-        if let Some(usage) = data.codex_details.as_ref().and_then(|d| d.usage.as_ref()) {
-            if let Some(tokens) = usage.lifetime_tokens {
-                lines.push(t_fmt(
-                    "Account lifetime: {tokens} tokens",
-                    &[&short_tokens(tokens)],
-                ));
-            }
-            if let Some(tokens) = usage.peak_daily_tokens {
-                lines.push(t_fmt("Peak day: {tokens} tokens", &[&short_tokens(tokens)]));
-            }
-            if let Some(days) = usage.current_streak_days {
-                lines.push(t_fmt("Current streak: {days} days", &[&days.to_string()]));
-            }
-            if let Some(days) = usage.longest_streak_days {
-                lines.push(t_fmt("Longest streak: {days} days", &[&days.to_string()]));
-            }
-        }
-    }
     lines
 }
 
@@ -146,312 +119,6 @@ fn detail_header(data: &CardData) -> Vec<String> {
     }
 }
 
-fn recent_days(
-    ledger: &quotascope_core::ledger::UsageLedger,
-) -> Vec<&quotascope_core::ledger::LedgerDay> {
-    let today = chrono::Local::now().date_naive();
-    let start = today - chrono::Days::new(29);
-    ledger
-        .days
-        .iter()
-        .filter(|day| day.date >= start && day.date <= today)
-        .collect()
-}
-
-#[cfg(test)]
-fn has_history_chart(data: &CardData) -> bool {
-    data.history_enabled
-        && matches!(&data.history, Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) if !recent_days(ledger).is_empty())
-}
-
-struct ActivityFigure {
-    label: &'static str,
-    tokens: i64,
-    cost: Option<f64>,
-    credit_used: Option<f64>,
-}
-
-struct Activity {
-    heading: &'static str,
-    figures: Vec<ActivityFigure>,
-    notes: Vec<String>,
-    footer: Option<&'static str>,
-    priced: bool,
-    currency: Option<String>,
-    actual_costs: bool,
-    credits: bool,
-}
-
-impl Activity {
-    fn money(&self, amount: f64) -> String {
-        if self.credits {
-            return quotascope_core::localization::t_fmt(
-                "{n} deducted",
-                &[&quotascope_core::qoder_history::number(amount)],
-            );
-        }
-        if !self.actual_costs {
-            return quotascope_core::money::estimate(amount);
-        }
-        let prefix = "";
-        match self.currency.as_deref().unwrap_or("USD") {
-            "USD" => format!("{prefix}${amount:.2}"),
-            "CNY" | "RMB" => format!("{prefix}¥{amount:.2}"),
-            other => format!("{prefix}{amount:.2} {other}"),
-        }
-    }
-    fn height(&self, m: &Metrics) -> f64 {
-        m.s(card::CONTENT_SPACING + 1.0 + 10.0 + 13.0)
-            + if self.figures.is_empty() {
-                0.0
-            } else {
-                m.s(10.0
-                    + 13.0
-                    + 2.0
-                    + 17.0
-                    + if self.priced { 15.0 } else { 0.0 }
-                    + 10.0
-                    + 30.0
-                    + 4.0
-                    + 11.0)
-            }
-            + self.notes.len() as f64 * m.s(8.0 + 14.0)
-            + if self.footer.is_some() {
-                m.s(10.0 + 13.0)
-            } else {
-                0.0
-            }
-    }
-}
-
-fn short_tokens(tokens: i64) -> String {
-    let n = tokens.max(0) as f64;
-    for (base, suffix) in [(1e9, "B"), (1e6, "M"), (1e3, "K")] {
-        if n >= base {
-            return format!("{:.1}{suffix}", n / base);
-        }
-    }
-    tokens.max(0).to_string()
-}
-
-fn activity(data: &CardData) -> Option<Activity> {
-    use quotascope_core::history::HistoryRead;
-    use quotascope_core::localization::{t, t_fmt};
-    if !data.history_enabled {
-        return None;
-    }
-    let account_wide = matches!(
-        &data.history,
-        Some(HistoryRead::Answered {
-            account_wide: true,
-            ..
-        })
-    ) || matches!(
-        data.usage.provider(),
-        quotascope_core::model::Provider::Zai
-            | quotascope_core::model::Provider::GlmCoding
-            | quotascope_core::model::Provider::DeepSeek
-    );
-    let mut section = Activity {
-        heading: t(if account_wide {
-            "Whole account"
-        } else {
-            "On this PC"
-        }),
-        figures: Vec::new(),
-        notes: Vec::new(),
-        footer: None,
-        priced: false,
-        currency: None,
-        actual_costs: false,
-        credits: false,
-    };
-    let lines = &mut section.notes;
-    match &data.history {
-        None => lines.push(t("Reading history…").into()),
-        Some(HistoryRead::NotConfigured) => lines.push(
-            t(
-                if data.usage.provider() == quotascope_core::model::Provider::DeepSeek {
-                    "Import a browser session in Settings."
-                } else {
-                    "Add an API key to read history."
-                },
-            )
-            .into(),
-        ),
-        Some(HistoryRead::Failed(reason)) => {
-            lines.push(t("Couldn't read the history.").into());
-            lines.push(reason.message().to_string());
-        }
-        Some(HistoryRead::Credits(credits)) => {
-            section.heading = t("Whole account");
-            section.credits = true;
-            section.priced = true;
-            for (label, span) in [("Today", 1), ("7 days", 7), ("31 days", 31)] {
-                let (used, charged) = credits.total(span);
-                section.figures.push(ActivityFigure {
-                    label: t(label),
-                    tokens: 0,
-                    cost: Some(charged),
-                    credit_used: Some(used),
-                });
-            }
-            lines.push(t("Credits before discounts; the second line is credits deducted.").into());
-            section.footer = Some(t(
-                "Provider credit records · all machines · not tokens or money",
-            ));
-        }
-        Some(HistoryRead::Answered {
-            ledger,
-            account_wide,
-            actual_costs,
-            currency,
-        }) => {
-            section.currency = currency.clone();
-            section.actual_costs = *actual_costs;
-            if (!account_wide
-                || data.usage.provider() == quotascope_core::model::Provider::DeepSeek)
-                && !ledger.has_partial_records
-            {
-                if let Some(rate) =
-                    ledger.cache_hit_rate_calendar(30, chrono::Local::now().date_naive())
-                {
-                    lines.push(t_fmt(
-                        "Cache hit rate: {percent}%",
-                        &[&format!("{:.0}", rate * 100.0)],
-                    ));
-                }
-            }
-            if ledger.has_partial_records {
-                lines.push(
-                    t("Some records are incomplete; totals cover only readable records.").into(),
-                );
-            }
-            let days = recent_days(ledger);
-            if days.is_empty() {
-                lines.push(
-                    t(if *account_wide {
-                        "No history in the last 30 days."
-                    } else {
-                        "No readable local history in the last 30 days."
-                    })
-                    .into(),
-                );
-            } else {
-                let cost: f64 = days.iter().map(|day| day.cost).sum();
-                section.priced =
-                    (*actual_costs && currency.is_some()) || (!account_wide && cost > 0.0);
-                let today = chrono::Local::now().date_naive();
-                for (label, span) in [("Today", 1), ("7 days", 7), ("30 days", 30)] {
-                    let cutoff = today - chrono::Days::new(span - 1);
-                    let selected: Vec<_> = days.iter().filter(|day| day.date >= cutoff).collect();
-                    let tokens = selected
-                        .iter()
-                        .fold(0_i64, |sum, day| sum.saturating_add(day.tokens));
-                    let cost: f64 = selected.iter().map(|day| day.cost).sum();
-                    section.figures.push(ActivityFigure {
-                        label: t(label),
-                        tokens,
-                        cost: section.priced.then_some(cost),
-                        credit_used: None,
-                    });
-                }
-                let mut models: std::collections::BTreeMap<&str, i64> = Default::default();
-                for day in &days {
-                    for (model, tokens) in &day.models {
-                        let n = models.entry(model).or_default();
-                        *n = n.saturating_add(*tokens);
-                    }
-                }
-                if let Some((model, _)) = models.into_iter().max_by_key(|(_, tokens)| *tokens) {
-                    let name = ledger
-                        .model_names
-                        .get(model)
-                        .map(String::as_str)
-                        .unwrap_or(model);
-                    lines.push(t_fmt("Most used: {model}", &[name]));
-                }
-                let unpriced = days
-                    .iter()
-                    .fold(0_i64, |sum, day| sum.saturating_add(day.unpriced_tokens));
-                if (!account_wide || *actual_costs) && unpriced > 0 {
-                    lines.push(t_fmt(
-                        "{tokens} tokens have no published price",
-                        &[&short_tokens(unpriced)],
-                    ));
-                }
-            }
-            section.footer = Some(t(if *actual_costs && currency.is_some() {
-                "Provider bills · all machines · actual recorded cost in the displayed currency"
-            } else if *account_wide {
-                "Provider statistics · all machines · no price breakdown"
-            } else {
-                "Local records · API value is an estimate, not a bill"
-            }));
-        }
-    }
-    if matches!(
-        data.usage.provider(),
-        quotascope_core::model::Provider::ClaudeCode | quotascope_core::model::Provider::Codex
-    ) {
-        let now = quotascope_core::timeutil::now_ms();
-        if let Some(reading) = &data.prompt_cache {
-            let alive = reading.alive(now);
-            if let Some(first) = alive.first() {
-                section.notes.push(t_fmt(
-                    "Prompt cache: {count} chats",
-                    &[&alive.len().to_string()],
-                ));
-                let minutes =
-                    ((first.lapse.expires_at().saturating_sub(now) + 59_999) / 60_000).max(1);
-                let tier = if first.lapse.lifetime_ms == 3_600_000 {
-                    "1h"
-                } else {
-                    "5m"
-                };
-                section.notes.push(
-                    if data.usage.provider() == quotascope_core::model::Provider::Codex {
-                        t_fmt(
-                            "Cache eligible for at least {minutes} min; a hit is not guaranteed.",
-                            &[&minutes.to_string()],
-                        )
-                    } else {
-                        t_fmt(
-                            "{tier} cache · expires in {minutes} min",
-                            &[tier, &minutes.to_string()],
-                        )
-                    },
-                );
-            } else if reading.latest_lapsed(now).is_some() {
-                section.notes.push(
-                    t(
-                        if data.usage.provider() == quotascope_core::model::Provider::Codex {
-                            "The minimum cache window has ended; entries may remain cached."
-                        } else {
-                            "Prompt cache has expired."
-                        },
-                    )
-                    .into(),
-                );
-                section
-                    .notes
-                    .push(t("The next message will rebuild the cache.").into());
-            } else {
-                section.notes.push(t("No active prompt cache.").into());
-                section
-                    .notes
-                    .push(t("No recent cache tier was reported.").into());
-            }
-        } else {
-            section.notes.push(t("Reading prompt cache…").into());
-            section
-                .notes
-                .push(t("Cache lifetime comes from local records.").into());
-        }
-    }
-    Some(section)
-}
-
 fn draw_detail_line(
     painter: &Painter,
     m: &Metrics,
@@ -476,215 +143,6 @@ fn draw_detail_line(
     Ok(())
 }
 
-fn draw_history(
-    painter: &Painter,
-    m: &Metrics,
-    x: f64,
-    cy: &mut f64,
-    width: f64,
-    data: &CardData,
-    alpha: f32,
-) -> windows::core::Result<()> {
-    let Some(section) = activity(data) else {
-        return Ok(());
-    };
-    let palette = card_palette();
-    let primary = painter.brush(faded(palette.text_primary, alpha))?;
-    let secondary = painter.brush(faded(palette.text_secondary, alpha))?;
-    let muted = painter.brush(faded(palette.text_disabled, alpha))?;
-    let rule = painter.brush(faded(palette.track.with_alpha(0.10), alpha))?;
-    *cy += m.s(card::CONTENT_SPACING);
-    painter.fill_rounded_rect(
-        crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(1.0) as f32),
-        0.0,
-        &rule,
-    );
-    *cy += m.s(1.0 + 10.0);
-    painter.text_clipped(
-        section.heading,
-        crate::d2d::rect(
-            x as f32,
-            *cy as f32,
-            (width * 0.65) as f32,
-            m.s(13.0) as f32,
-        ),
-        m.s(10.5) as f32,
-        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_MEDIUM,
-        &secondary,
-        0,
-        1,
-    );
-    painter.text_clipped(
-        if section.credits { "credits" } else { "token" },
-        crate::d2d::rect(
-            (x + width * 0.65) as f32,
-            *cy as f32,
-            (width * 0.35) as f32,
-            m.s(13.0) as f32,
-        ),
-        m.s(10.0) as f32,
-        DWRITE_FONT_WEIGHT_NORMAL,
-        &muted,
-        2,
-        1,
-    );
-    *cy += m.s(13.0);
-    if !section.figures.is_empty() {
-        *cy += m.s(10.0);
-        let column = (width - m.s(16.0)) / 3.0;
-        for (index, figure) in section.figures.iter().enumerate() {
-            let left = x + index as f64 * (column + m.s(8.0));
-            painter.text_clipped(
-                figure.label,
-                crate::d2d::rect(left as f32, *cy as f32, column as f32, m.s(13.0) as f32),
-                m.s(10.5) as f32,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                &secondary,
-                0,
-                1,
-            );
-            painter.text_clipped(
-                &figure
-                    .credit_used
-                    .map(quotascope_core::qoder_history::number)
-                    .unwrap_or_else(|| short_tokens(figure.tokens)),
-                crate::d2d::rect(
-                    left as f32,
-                    (*cy + m.s(15.0)) as f32,
-                    column as f32,
-                    m.s(17.0) as f32,
-                ),
-                m.s(14.0) as f32,
-                windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                &primary,
-                0,
-                1,
-            );
-            if let Some(cost) = figure.cost {
-                painter.text_clipped(
-                    &section.money(cost),
-                    crate::d2d::rect(
-                        left as f32,
-                        (*cy + m.s(34.0)) as f32,
-                        column as f32,
-                        m.s(13.0) as f32,
-                    ),
-                    m.s(10.0) as f32,
-                    DWRITE_FONT_WEIGHT_NORMAL,
-                    &secondary,
-                    0,
-                    1,
-                );
-            }
-        }
-        *cy += m.s(32.0 + if section.priced { 15.0 } else { 0.0 } + 10.0);
-        let (days, count): (Vec<(chrono::NaiveDate, f64)>, u64) = match &data.history {
-            Some(quotascope_core::history::HistoryRead::Answered { ledger, .. }) => (
-                recent_days(ledger)
-                    .into_iter()
-                    .map(|d| (d.date, d.tokens as f64))
-                    .collect(),
-                30,
-            ),
-            Some(quotascope_core::history::HistoryRead::Credits(credits)) => {
-                (credits.days.iter().map(|d| (d.date, d.used)).collect(), 31)
-            }
-            _ => (Vec::new(), 30),
-        };
-        let today = chrono::Local::now().date_naive();
-        let first = today - chrono::Days::new(count - 1);
-        let maximum = days.iter().map(|day| day.1).fold(1.0, f64::max);
-        let slot_width = width / count as f64;
-        let bar_width = slot_width * 0.65;
-        for index in 0..count {
-            let date = first + chrono::Days::new(index);
-            let tokens = days
-                .iter()
-                .find(|day| day.0 == date)
-                .map(|day| day.1)
-                .unwrap_or(0.0)
-                .max(0.0);
-            let height = if tokens > 0.0 {
-                (m.s(30.0) * tokens / maximum).max(bar_width)
-            } else {
-                m.s(1.5)
-            };
-            let brush = painter.brush(faded(
-                palette.text_primary.with_alpha(if date == today {
-                    0.85
-                } else if tokens > 0.0 {
-                    0.32
-                } else {
-                    0.12
-                }),
-                alpha,
-            ))?;
-            painter.fill_rounded_rect(
-                crate::d2d::rect(
-                    (x + index as f64 * slot_width) as f32,
-                    (*cy + m.s(30.0) - height) as f32,
-                    bar_width as f32,
-                    height as f32,
-                ),
-                (bar_width / 2.0).min(height / 2.0) as f32,
-                &brush,
-            );
-        }
-        *cy += m.s(30.0 + 4.0);
-        painter.text_clipped(
-            &first.format("%m/%d").to_string(),
-            crate::d2d::rect(x as f32, *cy as f32, (width / 2.0) as f32, m.s(11.0) as f32),
-            m.s(9.0) as f32,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            &muted,
-            0,
-            1,
-        );
-        painter.text_clipped(
-            &today.format("%m/%d").to_string(),
-            crate::d2d::rect(
-                (x + width / 2.0) as f32,
-                *cy as f32,
-                (width / 2.0) as f32,
-                m.s(11.0) as f32,
-            ),
-            m.s(9.0) as f32,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            &muted,
-            2,
-            1,
-        );
-        *cy += m.s(11.0);
-    }
-    for note in &section.notes {
-        *cy += m.s(8.0);
-        painter.text_clipped(
-            note,
-            crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(14.0) as f32),
-            m.s(10.5) as f32,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            &secondary,
-            0,
-            1,
-        );
-        *cy += m.s(14.0);
-    }
-    if let Some(footer) = section.footer {
-        *cy += m.s(10.0);
-        painter.text_clipped(
-            footer,
-            crate::d2d::rect(x as f32, *cy as f32, width as f32, m.s(13.0) as f32),
-            m.s(9.5) as f32,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            &muted,
-            0,
-            1,
-        );
-        *cy += m.s(13.0);
-    }
-    Ok(())
-}
-
 /// The card's total size for a reading of this shape — what the flyout
 /// window has to be, in design units.
 pub fn body_size(m: &Metrics, data: &CardData) -> (f64, f64) {
@@ -698,9 +156,6 @@ pub fn body_size(m: &Metrics, data: &CardData) -> (f64, f64) {
         State::Live | State::Stale => {
             for window in &data.usage.windows {
                 h += m.s(card::CONTENT_SPACING) + card::row_height(m, false);
-                if data.value_lines.contains_key(&window.id) {
-                    h += m.s(card::ROW_INTERNAL_SPACING + card::ROW_TEXT_LINE_HEIGHT);
-                }
                 if forecast_line(window, data).is_some() {
                     h += m.s(card::ROW_INTERNAL_SPACING + card::ROW_TEXT_LINE_HEIGHT);
                 }
@@ -716,9 +171,6 @@ pub fn body_size(m: &Metrics, data: &CardData) -> (f64, f64) {
         }
     }
     h += account_notes(data).len() as f64 * m.s(card::ROW_INTERNAL_SPACING + 4.0 + 13.0);
-    if let Some(section) = activity(data) {
-        h += section.height(m);
-    }
     if matches!(data.usage.state, State::Stale) {
         h += m.s(card::CONTENT_SPACING + card::ROW_TEXT_LINE_HEIGHT);
     }
@@ -825,7 +277,6 @@ pub fn draw_card(
         cy += m.s(card::ROW_INTERNAL_SPACING);
         draw_detail_line(painter, m, inset_x, &mut cy, inset_w, &note, alpha)?;
     }
-    draw_history(painter, m, inset_x, &mut cy, inset_w, data, alpha)?;
 
     // The "as of" line: how much to trust the figures.
     if let State::Stale = data.usage.state {
@@ -1070,29 +521,6 @@ fn draw_progress_row(
     }
     *cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
 
-    // The value estimate, when this machine's own records can price the
-    // window. Labelled an estimate because it is the one figure here that
-    // was inferred rather than reported.
-    if let Some(text) = data.value_lines.get(&window.id) {
-        *cy += m.s(card::ROW_INTERNAL_SPACING);
-        let estimate_brush = painter.brush(faded(palette.text_disabled, alpha))?;
-        painter.text_clipped(
-            text,
-            crate::d2d::rect(
-                x as f32,
-                *cy as f32,
-                width as f32,
-                m.s(card::ROW_TEXT_LINE_HEIGHT) as f32,
-            ),
-            m.s(card::FOOTNOTE_FONT) as f32,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            &estimate_brush,
-            0,
-            0,
-        );
-        *cy += m.s(card::ROW_TEXT_LINE_HEIGHT);
-    }
-
     // The forecast: the one line the provider did not say, dimmer than the
     // figures above it, absent far more often than present — and the
     // verdict without the time when the time is past the horizon.
@@ -1308,240 +736,6 @@ fn wrapped_lines(text: &str, width: f64, font: f64) -> Vec<String> {
     lines
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use quotascope_core::history::HistoryRead;
-    use quotascope_core::model::{AccountKey, Provider};
-    use serde_json::json;
-
-    fn data(history: HistoryRead) -> CardData {
-        CardData {
-            usage: ProviderUsage::live_now(AccountKey::primary(Provider::Zai), Vec::new()),
-            title: "z.ai".into(),
-            monogram: "Z".into(),
-            icon: None,
-            shows_remaining: false,
-            shows_forecast: false,
-            warning_fraction: 0.75,
-            value_lines: HashMap::new(),
-            detailed: true,
-            history_enabled: true,
-            history: Some(history),
-            prompt_cache: None,
-            codex_details: None,
-            shows_codex_reset_credits: false,
-        }
-    }
-
-    #[test]
-    fn deepseek_empty_and_loading_history_are_whole_account_and_require_console_login() {
-        let mut payload = data(HistoryRead::NotConfigured);
-        payload.usage.account = AccountKey::primary(Provider::DeepSeek);
-        let section = activity(&payload).unwrap();
-        assert_eq!(
-            section.heading,
-            quotascope_core::localization::t("Whole account")
-        );
-        assert_eq!(
-            section.notes,
-            vec![quotascope_core::localization::t(
-                "Import a browser session in Settings."
-            )]
-        );
-        assert!(!section.priced && section.figures.is_empty());
-        payload.history = None;
-        assert_eq!(
-            activity(&payload).unwrap().heading,
-            quotascope_core::localization::t("Whole account")
-        );
-    }
-
-    #[test]
-    fn reset_credit_metadata_is_visible_without_reading_local_transcripts() {
-        use quotascope_core::codex_account::{AccountDetails, ResetCredits};
-        let mut payload = data(HistoryRead::NotConfigured);
-        payload.usage.account = AccountKey::primary(Provider::Codex);
-        payload.history_enabled = false;
-        payload.detailed = false;
-        payload.shows_codex_reset_credits = true;
-        let m = Metrics::from_settings(&Default::default());
-        let loading_height = body_size(&m, &payload).1;
-        payload.codex_details = Some(AccountDetails {
-            usage: None,
-            reset_credits: ResetCredits::Available {
-                count: 3,
-                next_expiry_ms: Some(1_900_000_000_000),
-            },
-        });
-        assert_eq!(account_notes(&payload).len(), 2);
-        assert!((body_size(&m, &payload).1 - loading_height - m.s(24.0)).abs() < 1e-8);
-        assert!(activity(&payload).is_none());
-        payload.codex_details.as_mut().unwrap().reset_credits = ResetCredits::Unreported;
-        assert_eq!(account_notes(&payload).len(), 1);
-        payload.shows_codex_reset_credits = false;
-        assert!(account_notes(&payload).is_empty());
-    }
-
-    #[test]
-    fn account_statistics_never_show_a_money_column_and_reserve_chart_height() {
-        let today = chrono::Local::now().date_naive().to_string();
-        let history = quotascope_core::history::parse_reply(
-            &json!({"success":true,"code":200,"data":{"x_time":[today],"tokensUsage":[1000]}}),
-        );
-        let mut payload = data(history);
-        assert!(has_history_chart(&payload));
-        assert!(activity(&payload)
-            .unwrap()
-            .notes
-            .iter()
-            .all(|line| !line.contains('$')));
-        assert!(activity(&payload)
-            .unwrap()
-            .figures
-            .iter()
-            .all(|figure| figure.cost.is_none()));
-        let m = Metrics::from_settings(&Default::default());
-        let loaded_height = body_size(&m, &payload).1;
-        payload.history = None;
-        assert!(!has_history_chart(&payload));
-        assert!(loaded_height > body_size(&m, &payload).1 + m.s(30.0));
-    }
-
-    #[test]
-    fn local_history_uses_calendar_cutoff_and_respects_the_opt_in() {
-        let today = chrono::Local::now().date_naive();
-        let mut ledger = quotascope_core::history::parse_statistics(&json!({"x_time":[(today - chrono::Days::new(30)).to_string(),today.to_string()],"tokensUsage":[900,1]})).unwrap();
-        ledger.days.last_mut().unwrap().cost = 0.12;
-        assert_eq!(
-            recent_days(&ledger)
-                .iter()
-                .map(|day| day.tokens)
-                .sum::<i64>(),
-            1
-        );
-        let mut payload = data(HistoryRead::Answered {
-            ledger,
-            account_wide: false,
-            actual_costs: false,
-            currency: None,
-        });
-        let section = activity(&payload).unwrap();
-        assert_eq!(section.figures.len(), 3);
-        assert_eq!(section.money(0.12), "$0.12");
-        assert!(section
-            .figures
-            .iter()
-            .all(|figure| figure.tokens == 1 && figure.cost == Some(0.12)));
-        payload.history_enabled = false;
-        assert!(activity(&payload).is_none());
-        assert!(!has_history_chart(&payload));
-    }
-
-    #[test]
-    fn actual_history_keeps_its_currency_and_missing_money_stays_absent() {
-        let today = chrono::Local::now().date_naive().to_string();
-        let mut ledger = quotascope_core::history::parse_statistics(
-            &json!({"x_time":[today],"tokensUsage":[100]}),
-        )
-        .unwrap();
-        ledger.days[0].cost = 1.25;
-        let mut payload = data(HistoryRead::Answered {
-            ledger: ledger.clone(),
-            account_wide: true,
-            actual_costs: true,
-            currency: Some("CNY".into()),
-        });
-        let section = activity(&payload).unwrap();
-        assert!(section.priced && section.actual_costs);
-        assert_eq!(section.money(1.25), "¥1.25");
-        assert!(section
-            .figures
-            .iter()
-            .all(|figure| figure.cost == Some(1.25)));
-        let footer = section.footer.unwrap();
-        assert!(!footer.contains("USD") && !footer.contains("美元"));
-        for (currency, expected) in [("USD", "$1.25"), ("EUR", "1.25 EUR")] {
-            payload.history = Some(HistoryRead::Answered {
-                ledger: ledger.clone(),
-                account_wide: true,
-                actual_costs: true,
-                currency: Some(currency.into()),
-            });
-            assert_eq!(activity(&payload).unwrap().money(1.25), expected);
-        }
-        let mut zero = ledger.clone();
-        zero.days[0].cost = 0.0;
-        payload.history = Some(HistoryRead::Answered {
-            ledger: zero,
-            account_wide: true,
-            actual_costs: true,
-            currency: Some("USD".into()),
-        });
-        let section = activity(&payload).unwrap();
-        assert!(section
-            .figures
-            .iter()
-            .all(|figure| figure.cost == Some(0.0)));
-        assert_eq!(section.money(0.0), "$0.00");
-        payload.history = Some(HistoryRead::Answered {
-            ledger,
-            account_wide: true,
-            actual_costs: true,
-            currency: None,
-        });
-        let section = activity(&payload).unwrap();
-        assert!(!section.priced);
-        assert!(section.figures.iter().all(|figure| figure.cost.is_none()));
-    }
-
-    #[test]
-    fn frame_reserves_only_actual_content_at_every_panel_scale() {
-        let mut payload = data(HistoryRead::NotConfigured);
-        payload.history_enabled = false;
-        payload.detailed = false;
-        payload.usage = ProviderUsage::unavailable(
-            AccountKey::primary(Provider::Codex),
-            Unavailability::SignInRequired,
-        );
-        for scale in [0.82, 1.0, 1.22] {
-            let mut m = Metrics::from_settings(&Default::default());
-            m.scale = scale;
-            let (width, height) = body_size(&m, &payload);
-            assert!((width - 250.0 * scale).abs() < 0.01);
-            assert!(
-                height < 110.0 * scale,
-                "unavailable card must not reserve phantom limit rows"
-            );
-            payload.usage = ProviderUsage::live_now(
-                AccountKey::primary(Provider::Codex),
-                quotascope_core::providers::codex::parse_usage_response(
-                    &json!({"rate_limit":{"primary_window":{"used_percent":16,"limit_window_seconds":18000},"secondary_window":{"used_percent":56,"limit_window_seconds":604800}}}),
-                ),
-            );
-            let expected = m.s(card::PADDING * 2.0 + card::HEADER_HEIGHT)
-                + 2.0 * (m.s(card::CONTENT_SPACING) + card::row_height(&m, false));
-            assert!((body_size(&m, &payload).1 - expected).abs() < 0.01);
-            payload.usage = ProviderUsage::unavailable(
-                AccountKey::primary(Provider::Codex),
-                Unavailability::SignInRequired,
-            );
-        }
-    }
-
-    #[test]
-    fn token_figures_are_compact_and_cjk_messages_wrap() {
-        assert_eq!(short_tokens(490581125), "490.6M");
-        assert_eq!(short_tokens(1234), "1.2K");
-        assert_eq!(short_tokens(0), "0");
-        assert_eq!(short_tokens(-1), "0");
-        let message = "近三十天没有可读取的本机用量记录，请检查本机登录状态。";
-        let lines = wrapped_lines(message, 120.0, 12.0);
-        assert!(lines.len() > 1);
-        assert_eq!(lines.join(""), message);
-    }
-}
-
 fn window_amount_title(window: &quotascope_core::model::UsageWindow, data: &CardData) -> String {
     let title = window.display_name();
     if !quotascope_core::settings::with(|s| s.credit_amounts.contains(&data.usage.account.id())) {
@@ -1560,9 +754,19 @@ fn window_amount_title(window: &quotascope_core::model::UsageWindow, data: &Card
     format!(
         "{} · {} / {}",
         title,
-        quotascope_core::qoder_history::number(value),
-        quotascope_core::qoder_history::number(amounts.limit)
+        credit_number(value),
+        credit_number(amounts.limit)
     )
+}
+
+fn credit_number(value: f64) -> String {
+    if value > 0.0 && value < 0.01 {
+        "< 0.01".into()
+    } else if value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.2}")
+    }
 }
 
 pub fn header_height(m: &Metrics) -> f64 {
@@ -1638,4 +842,88 @@ pub fn draw_card_header(
     );
     cy += m.s(card::HEADER_HEIGHT);
     Ok(cy)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quotascope_core::model::{AccountKey, Provider};
+    use serde_json::json;
+
+    fn payload() -> CardData {
+        CardData {
+            usage: ProviderUsage::live_now(AccountKey::primary(Provider::Codex), Vec::new()),
+            title: "Codex".into(),
+            monogram: "C".into(),
+            icon: None,
+            shows_remaining: false,
+            shows_forecast: false,
+            warning_fraction: 0.75,
+            detailed: true,
+            codex_details: None,
+            shows_codex_reset_credits: false,
+        }
+    }
+
+    #[test]
+    fn reset_credit_notes_appear_only_when_enabled() {
+        use quotascope_core::codex_account::{AccountDetails, ResetCredits};
+        let mut payload = payload();
+        payload.detailed = false;
+        payload.shows_codex_reset_credits = true;
+        let m = Metrics::from_settings(&Default::default());
+        let loading_height = body_size(&m, &payload).1;
+        payload.codex_details = Some(AccountDetails {
+            reset_credits: ResetCredits::Available {
+                count: 3,
+                next_expiry_ms: Some(1_900_000_000_000),
+            },
+        });
+        assert_eq!(account_notes(&payload).len(), 2);
+        assert!((body_size(&m, &payload).1 - loading_height - m.s(24.0)).abs() < 1e-8);
+        payload.codex_details.as_mut().unwrap().reset_credits = ResetCredits::Unreported;
+        assert_eq!(account_notes(&payload).len(), 1);
+        payload.shows_codex_reset_credits = false;
+        assert!(account_notes(&payload).is_empty());
+    }
+
+    #[test]
+    fn frame_reserves_only_actual_content_at_every_panel_scale() {
+        let mut payload = payload();
+        payload.detailed = false;
+        payload.usage = ProviderUsage::unavailable(
+            AccountKey::primary(Provider::Codex),
+            Unavailability::SignInRequired,
+        );
+        for scale in [0.82, 1.0, 1.22] {
+            let mut m = Metrics::from_settings(&Default::default());
+            m.scale = scale;
+            let (width, height) = body_size(&m, &payload);
+            assert!((width - 250.0 * scale).abs() < 0.01);
+            assert!(
+                height < 110.0 * scale,
+                "unavailable card must not reserve phantom limit rows"
+            );
+            payload.usage = ProviderUsage::live_now(
+                AccountKey::primary(Provider::Codex),
+                quotascope_core::providers::codex::parse_usage_response(
+                    &json!({"rate_limit":{"primary_window":{"used_percent":16,"limit_window_seconds":18000},"secondary_window":{"used_percent":56,"limit_window_seconds":604800}}}),
+                ),
+            );
+            let expected = m.s(card::PADDING * 2.0 + card::HEADER_HEIGHT)
+                + 2.0 * (m.s(card::CONTENT_SPACING) + card::row_height(&m, false));
+            assert!((body_size(&m, &payload).1 - expected).abs() < 0.01);
+            payload.usage = ProviderUsage::unavailable(
+                AccountKey::primary(Provider::Codex),
+                Unavailability::SignInRequired,
+            );
+        }
+    }
+
+    #[test]
+    fn cjk_messages_wrap() {
+        let message = "近三十天没有可读取的本机用量记录，请检查本机登录状态。";
+        let lines = wrapped_lines(message, 120.0, 12.0);
+        assert!(lines.len() > 1);
+        assert_eq!(lines.join(""), message);
+    }
 }

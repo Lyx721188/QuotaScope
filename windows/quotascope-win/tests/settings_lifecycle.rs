@@ -104,7 +104,7 @@ fn tray_settings_close_and_reopen_reuses_window_and_exits_cleanly() {
     std::fs::create_dir_all(&data).unwrap();
     std::fs::write(
         data.join("settings.json"),
-        r#"{"hasRun":true,"enabledAccounts":[],"language":"zh","readsTokenSpend":false,"dockSide":"bottom","floating":true,"animatedBots":true}"#,
+        r#"{"hasRun":true,"enabledAccounts":[],"language":"zh","dockSide":"bottom","floating":true,"animatedBots":true}"#,
     )
     .unwrap();
     let executable = std::env::var("QUOTASCOPE_TEST_EXE")

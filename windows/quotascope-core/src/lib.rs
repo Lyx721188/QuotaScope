@@ -5,8 +5,6 @@
 //! contract. The Windows shell (`quotascope-win`) draws on top of it.
 
 pub mod accounts;
-pub mod additional_spend;
-pub mod agent_activity;
 pub mod alerts;
 pub mod balance_ring;
 pub mod browser_cookies;
@@ -14,57 +12,33 @@ pub mod browser_storage;
 pub mod cache;
 pub mod codex_account;
 pub mod codex_rpc;
-pub mod codex_signal_reader;
-pub mod codex_signals;
 pub mod connection_diagnostics;
 pub mod deepseek_console;
-pub mod deepseek_history;
 pub mod deepseek_session;
 pub mod diagnostics;
-pub mod elsewhere;
-pub mod estimate;
 pub mod extension;
 pub mod gateway;
-pub mod hermes_spend;
-pub mod history;
 pub mod http;
 pub mod integration;
 pub mod kiro_acp;
-pub mod ledger;
 pub mod local_process;
 pub mod localization;
 pub mod model;
-pub mod model_details;
-pub mod model_prices;
 pub mod money;
 pub mod notices;
 pub mod opencode_console;
-pub mod opencode_store;
-pub mod prompt_cache;
 pub mod provider_sites;
 pub mod providers;
 pub mod proxy;
-pub mod qoder_history;
-pub mod recap;
 pub mod report;
-pub mod scan;
 pub mod secrets;
 pub mod service_status;
 mod service_status_history;
 pub mod settings;
-pub mod spend;
-pub mod spend_analysis;
-pub mod spend_warmer;
-mod sqlite_snapshot;
-pub mod statistics_cache;
 pub mod statusline;
 pub mod store;
 pub mod timeutil;
-pub mod token_activity;
-mod transcript_archive;
 pub mod updates;
-pub mod zcode_spend;
-mod zstd_stream;
 
 /// The application data directory: `%APPDATA%\QuotaScope`.
 pub fn data_dir() -> std::path::PathBuf {

@@ -53,7 +53,7 @@ pub fn style(id: &str, s: &quotascope_core::settings::AppSettings) -> Option<Sty
             _ => 0,
         },
         seed,
-        animated: s.animates_ring_activity,
+        animated: true,
         gesture_at: 0,
         gesture: 0,
     })

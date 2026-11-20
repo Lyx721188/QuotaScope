@@ -93,13 +93,9 @@ fn resource_context(engine: &D2DEngine) -> ID2D1DeviceContext {
     .clone()
 }
 
-/// The provider's mark as a bitmap in the current theme's ink. Bitmaps
-/// belong to the shared D2D device, so one cache serves the dock and the
-/// flyout alike.
-pub fn bitmap_for(engine: &D2DEngine, provider: &str) -> Option<ID2D1Bitmap> {
-    bitmap_for_ink(engine, provider, false)
-}
-
+/// The provider's mark as a bitmap in the chosen ink. Bitmaps belong to
+/// the shared D2D device, so one cache serves the dock and the flyout
+/// alike.
 pub fn bitmap_for_ink(engine: &D2DEngine, provider: &str, white: bool) -> Option<ID2D1Bitmap> {
     let custom = quotascope_core::extension::icon_for(provider);
     let cache_key = custom

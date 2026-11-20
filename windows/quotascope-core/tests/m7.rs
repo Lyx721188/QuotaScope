@@ -55,7 +55,6 @@ fn old_settings_preserve_keys_and_default_to_compact_cards() {
     )
     .unwrap();
     assert!(settings.detailed_cards.is_empty());
-    assert!(!settings.reads_token_spend);
     assert_eq!(settings.deepseek_budget, Some(200.0));
     assert_eq!(
         settings.ordered_enabled(),

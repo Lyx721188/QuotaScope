@@ -159,41 +159,33 @@ jobs:
           if (-not $compilerPath) { throw 'Inno Setup compiler missing after installer build' }
           ./installer/test-installer.ps1 -PayloadDirectory $payloads[0].FullName -CompilerPath $compilerPath
 
-      - name: Install Python for synthetic Token fixtures
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.14'
-
       - name: Pulse appearance and animation regression
         shell: pwsh
         run: |
           $executable = Join-Path $env:RUNNER_TEMP 'quotascope-package-smoke/quotascope.exe'
-          ./quotascope-win/tests/pulse_appearance_ui_smoke.ps1 -Executable $executable -OutputDirectory 'target/token-ui-validation'
+          ./quotascope-win/tests/pulse_appearance_ui_smoke.ps1 -Executable $executable -OutputDirectory 'target/ui-validation'
 
       # Run against the actual portable Release payload on the runner's own
-      # desktop. All databases, transcripts, prices and profiles are synthetic.
-      - name: Release Token and service-status page regression
+      # desktop. All sessions and profiles are synthetic.
+      - name: Release service-status and settings regression
         shell: pwsh
         run: |
           $executable = Join-Path $env:RUNNER_TEMP 'quotascope-package-smoke/quotascope.exe'
-          $evidence = 'target/token-ui-validation'
-          ./quotascope-win/tests/dsh_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
-          ./quotascope-win/tests/zcode_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
-          ./quotascope-win/tests/hermes_ui_smoke.ps1 -Executable $executable -Python python -OutputDirectory $evidence
-          ./quotascope-win/tests/codex_signals_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
+          $evidence = 'target/ui-validation'
           ./quotascope-win/tests/service_status_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
           ./quotascope-win/tests/about_updates_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
-          ./quotascope-win/tests/spend_history_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
+          ./quotascope-win/tests/deepseek_console_ui_smoke.ps1 -Executable $executable
           ./quotascope-win/tests/upstream_features_ui_smoke.ps1 -Executable $executable -OutputDirectory $evidence
 
-      - name: Upload synthetic Token validation evidence
+      - name: Upload synthetic UI validation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: quotascope-token-ui-validation
+          name: quotascope-ui-validation
           path: |
-            windows/target/token-ui-validation/*.json
-            windows/target/token-ui-validation/pulse-*.png
+            windows/target/ui-validation/*.json
+            windows/target/ui-validation/pulse-*.png
+            windows/target/upstream-followthrough-*/n2d-console-ui-result.json
           if-no-files-found: ignore
 
       - name: Upload installer validation evidence

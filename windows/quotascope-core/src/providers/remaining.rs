@@ -169,29 +169,36 @@ impl Service {
                     ) else {
                         continue;
                     };
-                    let Ok(mut q) = db.prepare("SELECT value FROM ItemTable WHERE key LIKE 'windsurf.reactSettings.cachedPlanInfoData%' OR key LIKE 'windsurf.settings.cachedPlanInfo%'") else { continue; };
-                    if let Ok(rows) = q.query_map([], |r| r.get::<_, String>(0)) {
-                        for row in rows.flatten() {
-                            if let Ok(root) = serde_json::from_str::<Value>(&row) {
-                                let mut usage = parse(self.provider, &root, Some("savedPlan"));
-                                if matches!(usage.state, crate::model::State::Live) {
-                                    usage.state = crate::model::State::Stale;
-                                    usage.is_cached = true;
+                    let observed_at = path
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as i64);
+                    let mut saved = |mut usage: ProviderUsage| {
+                        if matches!(usage.state, crate::model::State::Live) {
+                            usage.state = crate::model::State::Stale;
+                            usage.is_cached = true;
+                        }
+                        usage.observed_at = observed_at;
+                        readings.push(usage);
+                    };
+                    if let Ok(mut q) = db.prepare("SELECT value FROM ItemTable WHERE key LIKE 'windsurf.reactSettings.cachedPlanInfoData%' OR key LIKE 'windsurf.settings.cachedPlanInfo%'") {
+                        if let Ok(rows) = q.query_map([], |r| r.get::<_, String>(0)) {
+                            for row in rows.flatten() {
+                                if let Ok(root) = serde_json::from_str::<Value>(&row) {
+                                    saved(parse(self.provider, &root, Some("savedPlan")));
                                 }
-                                usage.observed_at = path
-                                    .metadata()
-                                    .and_then(|m| m.modified())
-                                    .ok()
-                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                    .map(|d| d.as_millis() as i64);
-                                readings.push(usage);
                             }
                         }
                     };
+                    if let Some(usage) = devin_auth_status(&db) {
+                        saved(usage);
+                    }
                 }
                 readings
                     .into_iter()
-                    .max_by_key(|u| u.observed_at)
+                    .max_by_key(|u| (u.reports_something(), u.observed_at))
                     .ok_or(Unavailability::LocalAppMissing)
             }
             Provider::JetBrainsAi => jetbrains(),
@@ -475,6 +482,75 @@ pub(super) fn reading(
     usage.plan = plan;
     usage.origin = Some(origin.into());
     usage
+}
+/// Devin's saved `windsurfAuthStatus` row still carries the plan's remaining
+/// percentages after the cached plan-info JSON stopped storing them. The
+/// embedded PlanStatus message uses the GetPlanStatus field numbers.
+fn devin_auth_status(db: &rusqlite::Connection) -> Option<ProviderUsage> {
+    let row: String = db
+        .query_row(
+            "SELECT value FROM ItemTable WHERE key = 'windsurfAuthStatus'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()?;
+    let root = serde_json::from_str::<Value>(&row).ok()?;
+    devin_plan_usage(&root)
+}
+fn devin_plan_usage(root: &Value) -> Option<ProviderUsage> {
+    use base64::Engine;
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(root["userStatusProtoBinaryBase64"].as_str()?)
+        .ok()?;
+    let status = proto(&blob).ok()?.into_iter().find_map(|(n, v)| match v {
+        Proto::Bytes(v) if n == 13 => Some(v),
+        _ => None,
+    })?;
+    let fields = proto(&status).ok()?;
+    let numeric = |number| {
+        fields.iter().find_map(|(n, v)| {
+            if *n == number {
+                if let Proto::Int(v) = v {
+                    Some(*v)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    };
+    let plan = fields
+        .iter()
+        .find_map(|(n, v)| match v {
+            Proto::Bytes(v) if *n == 1 => proto(v).ok(),
+            _ => None,
+        })
+        .and_then(|info| {
+            info.into_iter().find_map(|(n, v)| match v {
+                Proto::Bytes(v) if n == 2 => String::from_utf8(v).ok(),
+                _ => None,
+            })
+        });
+    let mut windows = Vec::new();
+    for (id, kind, seconds, remaining, reset) in [
+        ("daily", Kind::Daily, 86400, 14, 17),
+        ("weekly", Kind::Weekly, 604800, 15, 18),
+    ] {
+        if let Some(left) = numeric(remaining).filter(|v| *v <= 100) {
+            windows.push(UsageWindow::new(
+                id,
+                kind,
+                None,
+                1.0 - left as f64 / 100.0,
+                seconds,
+                numeric(reset)
+                    .and_then(|v| i64::try_from(v).ok())
+                    .and_then(|v| v.checked_mul(1000)),
+            ));
+        }
+    }
+    Some(reading(Provider::Devin, windows, plan, "savedPlan"))
 }
 fn locate(name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<_> =
@@ -760,6 +836,32 @@ pub fn parse(provider: Provider, root: &Value, origin: Option<&str>) -> Provider
                         (1.0 - left / total).max(0.0),
                         0,
                         None,
+                    );
+                    window.reports_length = false;
+                    windows.push(window);
+                }
+            }
+            for (id, scope, consumed, limit) in [
+                ("acu", "ACU", "acuConsumed", "acuLimit"),
+                (
+                    "dollars",
+                    "On-demand spend",
+                    "dollarsConsumed",
+                    "dollarsLimit",
+                ),
+            ] {
+                if let (Some(used), Some(total)) =
+                    (num(&root[consumed]), num(&root[limit]).filter(|n| *n > 0.0))
+                {
+                    let mut window = UsageWindow::new(
+                        id,
+                        Kind::Monthly,
+                        Some(scope.into()),
+                        (used / total).max(0.0),
+                        num(&root["duration"])
+                            .map(|days| (days * 86400.0) as i64)
+                            .unwrap_or(2592000),
+                        stamp(&root["endTimestamp"]),
                     );
                     window.reports_length = false;
                     windows.push(window);
@@ -1131,5 +1233,53 @@ mod tests {
                 .1,
             Some(1784191600000)
         );
+    }
+    #[test]
+    fn devin_auth_status_recovers_quota_dropped_from_plan_json() {
+        fn varint_field(number: u64, value: u64, out: &mut Vec<u8>) {
+            varint(number << 3, out);
+            varint(value, out);
+        }
+        fn bytes_field(number: u64, value: &[u8], out: &mut Vec<u8>) {
+            varint(number << 3 | 2, out);
+            varint(value.len() as u64, out);
+            out.extend(value);
+        }
+        let mut info = Vec::new();
+        bytes_field(2, b"Pro", &mut info);
+        let mut status = Vec::new();
+        bytes_field(1, &info, &mut status);
+        varint_field(14, 98, &mut status);
+        varint_field(15, 99, &mut status);
+        varint_field(17, 1789372800, &mut status);
+        varint_field(18, 1789891200, &mut status);
+        let mut blob = Vec::new();
+        bytes_field(13, &status, &mut blob);
+        use base64::Engine;
+        let root = json!({"userStatusProtoBinaryBase64": base64::engine::general_purpose::STANDARD.encode(blob)});
+        let usage = devin_plan_usage(&root).unwrap();
+        assert_eq!(usage.plan.as_deref(), Some("Pro"));
+        assert_eq!(usage.windows.len(), 2);
+        assert!((usage.windows[0].used_fraction - 0.02).abs() < 1e-10);
+        assert_eq!(usage.windows[0].resets_at, Some(1789372800000));
+        assert!((usage.windows[1].used_fraction - 0.01).abs() < 1e-10);
+        assert_eq!(usage.windows[1].resets_at, Some(1789891200000));
+    }
+    #[test]
+    fn devin_cycle_counters_become_windows() {
+        let usage = parse(
+            Provider::Devin,
+            &json!({"planName":"Pro","duration":29,"endTimestamp":1797322594000i64,
+                    "acuConsumed":40.0,"acuLimit":100.0,
+                    "dollarsConsumed":3.5,"dollarsLimit":10.0}),
+            Some("savedPlan"),
+        );
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[0].id, "acu");
+        assert!((usage.windows[0].used_fraction - 0.4).abs() < 1e-10);
+        assert_eq!(usage.windows[0].window_seconds, 29 * 86400);
+        assert_eq!(usage.windows[0].resets_at, Some(1797322594000));
+        assert_eq!(usage.windows[1].id, "dollars");
+        assert!((usage.windows[1].used_fraction - 0.35).abs() < 1e-10);
     }
 }

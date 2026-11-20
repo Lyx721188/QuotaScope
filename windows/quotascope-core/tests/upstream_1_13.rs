@@ -1,9 +1,7 @@
 //! Synthetic protocol regressions against Pulse 338c796; no live accounts.
-use chrono::NaiveDate;
 use quotascope_core::model::{AccountKey, CreditAmount, Kind, Provider, State};
 use quotascope_core::providers::{cursor, session_spec, Services};
 use quotascope_core::service_status::{self, Page};
-use quotascope_core::spend::Span;
 use serde_json::json;
 
 #[test]
@@ -76,33 +74,6 @@ fn prepaid_xiaomi_retains_currency_and_does_not_invent_a_plan() {
 }
 
 #[test]
-fn calendar_ranges_handle_year_boundaries_and_custom_inclusive_dates() {
-    let date = |s| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
-    let today = date("2026-01-02");
-    assert!(Span::LastMonth.contains(date("2025-12-01"), today));
-    assert!(Span::LastMonth.contains(date("2025-12-31"), today));
-    assert!(!Span::LastMonth.contains(date("2026-01-01"), today));
-    assert!(Span::ThisMonth.contains(date("2026-01-01"), today));
-    assert!(!Span::ThisYear.contains(date("2025-12-31"), today));
-    let span = Span::Custom {
-        start: date("2025-12-31"),
-        end: today,
-    };
-    assert!(span.contains(date("2025-12-31"), today));
-    assert!(span.contains(today, today));
-    assert!(!span.contains(date("2026-01-03"), today));
-    assert_eq!(span.selection_index(), 8);
-    assert_eq!(
-        serde_json::from_str::<Span>(&serde_json::to_string(&span).unwrap()).unwrap(),
-        span
-    );
-    assert_eq!(
-        serde_json::from_str::<Span>("\"week\"").unwrap(),
-        Span::Week
-    );
-}
-
-#[test]
 fn statuspage_rules_separate_cursor_from_grok_and_ignore_suppliers() {
     let bytes = serde_json::to_vec(&json!({"components":[
         {"id":"rflc60xp5jp2","name":"IDE","status":"operational"},
@@ -131,17 +102,4 @@ fn statuspage_rules_separate_cursor_from_grok_and_ignore_suppliers() {
     );
     assert_eq!(Page::ALL.len(), 45);
     assert_eq!(Page::for_provider(Provider::Windsurf), Some(Page::Windsurf));
-}
-
-#[test]
-fn only_documented_flash_arms_share_the_published_price() {
-    for model in ["gemini-3.8-flash-n", "gemini-3.8-flash-xpe"] {
-        assert!(
-            quotascope_core::model_prices::aliases(model).contains(&"gemini-3.8-flash".to_string())
-        );
-    }
-    assert!(
-        !quotascope_core::model_prices::aliases("gemini-3.8-flash-exp-b")
-            .contains(&"gemini-3.8-flash".to_string())
-    );
 }

@@ -253,14 +253,7 @@ mod tests {
             reading.windows.len()
         );
         let account = request("account/usage/read");
-        println!(
-            "account-usage method supported: {}",
-            account
-                .as_ref()
-                .ok()
-                .and_then(|usage| crate::codex_account::parse_usage(usage, &root))
-                .is_some()
-        );
+        println!("account-usage method supported: {}", account.is_ok());
     }
 
     #[test]

@@ -8,7 +8,7 @@ $testId = [guid]::NewGuid().ToString('N')
 $profile = Join-Path $env:TEMP ('quotascope-ui-' + $testId)
 $settingsPath = Join-Path $profile 'QuotaScope/settings.json'
 New-Item -ItemType Directory -Path (Split-Path $settingsPath) -Force | Out-Null
-Set-Content -LiteralPath $settingsPath -Value '{"hasRun":true,"enabledAccounts":[],"language":"zh","readsTokenSpend":false}' -Encoding utf8
+Set-Content -LiteralPath $settingsPath -Value '{"hasRun":true,"enabledAccounts":[],"language":"zh",}' -Encoding utf8
 $info = [Diagnostics.ProcessStartInfo]::new($Executable)
 $info.ArgumentList.Add('--settings')
 $info.UseShellExecute = $false

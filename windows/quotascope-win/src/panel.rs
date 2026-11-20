@@ -69,11 +69,6 @@ pub struct RailEntry {
     pub headline: Option<UsageWindow>,
     /// The full reading, for the card.
     pub usage: Option<ProviderUsage>,
-    /// Per window id, the value estimate the transcript ledger supports.
-    /// Empty unless token spend is on and the ledger can price the window.
-    pub value_lines: HashMap<String, String>,
-    pub history: Option<quotascope_core::history::HistoryRead>,
-    pub prompt_cache: Option<quotascope_core::prompt_cache::CacheReading>,
     pub codex_details: Option<quotascope_core::codex_account::AccountDetails>,
 }
 
@@ -169,9 +164,6 @@ impl RailEntry {
             figure,
             headline,
             usage: Some(usage.clone()),
-            value_lines: HashMap::new(),
-            history: None,
-            prompt_cache: None,
             codex_details: None,
         }
     }
@@ -201,9 +193,6 @@ impl RailEntry {
             figure: "—".to_string(),
             headline: None,
             usage: None,
-            value_lines: HashMap::new(),
-            history: None,
-            prompt_cache: None,
             codex_details: None,
         }
     }
@@ -718,14 +707,8 @@ impl PanelWindow {
                                 && a.resets_at.zip(b.resets_at).is_some_and(|(a, b)| b > a)
                                 && b.used_fraction < a.used_fraction
                         });
-                    if reset
-                        || (old.ring.is_busy
-                            && !entry.ring.is_busy
-                            && quotascope_core::settings::with(|s| {
-                                s.reads_token_spend && s.animates_ring_activity
-                            }))
-                    {
-                        style.gesture = if reset { 1 } else { 2 };
+                    if reset {
+                        style.gesture = 1;
                         style.gesture_at = now;
                     } else if let Some(previous) = &old.ring.robot {
                         style.gesture = previous.gesture;
@@ -747,18 +730,13 @@ impl PanelWindow {
         {
             self.finish_hide_card();
         } else if self.card_slot.is_some() {
-            // A background history read or a detailed-card toggle changes
-            // the height even when the pointer has not moved.
+            // A detailed-card toggle changes the height even when the
+            // pointer has not moved.
             self.place_card();
         }
         self.redraw();
     }
 
-    /// The ring's model, updated in place so an animation state survives
-    /// the snapshot swap.
-    pub fn activity_visible(&self) -> bool {
-        self.is_visible() && !self.hidden
-    }
     pub fn entries_mut(&mut self) -> &mut Vec<RailEntry> {
         &mut self.entries
     }
@@ -1030,18 +1008,6 @@ impl PanelWindow {
         let forecast = self.forecast_enabled();
         let settings = quotascope_core::settings::with(|s| s.clone());
         let detailed = settings.detailed_cards.contains(&entry.account.id());
-        let history_enabled = detailed
-            && (entry.account.is_primary()
-                || usage.provider() == quotascope_core::model::Provider::DeepSeek)
-            && usage.provider().provides_history()
-            && (settings.reads_token_spend
-                || matches!(
-                    usage.provider(),
-                    quotascope_core::model::Provider::Zai
-                        | quotascope_core::model::Provider::GlmCoding
-                        | quotascope_core::model::Provider::OpenCodeGo
-                        | quotascope_core::model::Provider::DeepSeek
-                ));
         let data = CardData {
             usage: usage.clone(),
             title: entry.title.clone(),
@@ -1058,15 +1024,7 @@ impl PanelWindow {
             warning_fraction: quotascope_core::settings::with(|s| {
                 usage_tint::warning_fraction(s.warning_threshold)
             }),
-            value_lines: if detailed && settings.reads_token_spend {
-                entry.value_lines.clone()
-            } else {
-                HashMap::new()
-            },
             detailed,
-            history_enabled,
-            history: entry.history.clone(),
-            prompt_cache: entry.prompt_cache.clone(),
             codex_details: entry.codex_details.clone(),
             shows_codex_reset_credits: settings.shows_codex_reset_credits,
         };
@@ -1843,20 +1801,6 @@ impl PanelWindow {
     pub fn is_visible(&self) -> bool {
         unsafe { IsWindowVisible(self.hwnd).as_bool() }
     }
-
-    pub fn needs_prompt_cache(&self) -> bool {
-        self.card_shown()
-            && self
-                .card_slot
-                .and_then(|i| self.entries.get(i))
-                .is_some_and(|entry| {
-                    matches!(
-                        entry.account.provider,
-                        quotascope_core::model::Provider::ClaudeCode
-                            | quotascope_core::model::Provider::Codex
-                    )
-                })
-    }
 }
 
 /// One step of the damped spring the macOS app rides — SwiftUI's
@@ -2187,8 +2131,6 @@ pub fn split_entry(
         let mut one = RailEntry::from_reading(&reading, settings, settings.shows_remaining);
         one.title = format!("{} · {}", entry.title, group);
         one.group = Some(group);
-        one.value_lines = entry.value_lines.clone();
-        one.history = entry.history.clone();
         one.ring.is_refreshing = entry.ring.is_refreshing;
         out.push(one);
     }

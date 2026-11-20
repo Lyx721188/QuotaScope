@@ -65,7 +65,7 @@ $id=[guid]::NewGuid().ToString('N')
 $profile=Join-Path $env:TEMP ('qs-pulse-'+$id)
 $data=Join-Path $profile 'appdata/QuotaScope'
 New-Item -ItemType Directory -Force -Path $data,(Join-Path $profile 'home') | Out-Null
-$settings=@{hasRun=$true;enabledAccounts=@('codex');dockSide='left';language='zh';readsTokenSpend=$false;checksForUpdates=$false;autoCollapse=$false;proxyMode='manual';proxyUrl='http://127.0.0.1:9'}
+$settings=@{hasRun=$true;enabledAccounts=@('codex');dockSide='left';language='zh';checksForUpdates=$false;autoCollapse=$false;proxyMode='manual';proxyUrl='http://127.0.0.1:9'}
 $fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
 $settings.notices=@{lastVersion=$fixtureVersion}
 $settingsPath=Join-Path $data 'settings.json'

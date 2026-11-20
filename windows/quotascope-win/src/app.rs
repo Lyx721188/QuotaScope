@@ -23,23 +23,11 @@ pub enum AppMsg {
     Panel(PanelEvent),
     Settings(SettingsAction),
     StorePoll,
-    Activity(HashMap<Provider, bool>),
     /// A second launch asked for the settings window.
     OpenSettings,
     OpenDashboard,
     RefreshAll,
     DeviceFlowDone(Result<String, String>),
-    /// The value estimates for the transcript-backed accounts, worked out off
-    /// the UI path: account id -> window id -> the card's estimate line.
-    Estimates(
-        u64,
-        std::collections::HashMap<String, std::collections::HashMap<String, String>>,
-    ),
-    Histories(u64, HashMap<String, quotascope_core::history::HistoryRead>),
-    PromptCache(
-        u64,
-        HashMap<Provider, quotascope_core::prompt_cache::CacheReading>,
-    ),
     CodexDetails(u64, quotascope_core::codex_account::AccountDetails),
     UpdateChecked(
         quotascope_core::updates::Trigger,
@@ -57,25 +45,10 @@ pub struct App {
     rx: Receiver<AppMsg>,
     readings: HashMap<String, ProviderUsage>,
     refreshing: std::collections::HashSet<String>,
-    /// The transcript ledgers' value estimates, keyed like the readings. Kept
-    /// beside the rail entries so the card can draw them without the card
-    /// itself ever touching the file system.
-    estimates: HashMap<String, HashMap<String, String>>,
-    estimates_running: bool,
-    estimates_dirty: bool,
-    estimates_at: Option<std::time::Instant>,
-    histories: HashMap<String, quotascope_core::history::HistoryRead>,
-    histories_running: bool,
-    histories_control: Option<std::sync::Arc<quotascope_core::scan::Control>>,
-    histories_dirty: bool,
-    histories_generation: u64,
-    histories_at: Option<std::time::Instant>,
-    prompt_cache: HashMap<Provider, quotascope_core::prompt_cache::CacheReading>,
-    prompt_cache_running: bool,
-    prompt_cache_at: Option<std::time::Instant>,
     codex_details: Option<quotascope_core::codex_account::AccountDetails>,
     codex_details_running: bool,
     codex_details_at: Option<std::time::Instant>,
+    details_generation: u64,
     update_check_running: bool,
     update_result_at: Option<std::time::Instant>,
     update_notified: Option<String>,
@@ -85,15 +58,11 @@ pub struct App {
     outage_running: bool,
     outage_at: Option<std::time::Instant>,
     maintenance_at: std::time::Instant,
-    activity: HashMap<Provider, bool>,
-    activity_at: Option<std::time::Instant>,
-    activity_running: bool,
-    activity_control: Option<std::sync::Arc<quotascope_core::scan::Control>>,
 }
 
-/// Long enough that moving between rings does not rescan, short enough that
-/// "Today" is today's — upstream's card keeps the same lifetime.
-const ESTIMATES_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Long enough that moving between rings does not refetch, short enough that
+/// a reset-credit count stays fresh.
+const DETAILS_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 impl App {
     /// Starts the app on the calling thread — a worker, since the main
@@ -105,8 +74,6 @@ impl App {
         shared_tx: std::sync::mpsc::Sender<std::sync::Arc<crate::settings_app::Shared>>,
     ) -> App {
         let (tx, rx) = channel::<AppMsg>();
-        // Reclaim pre-existing oversized statistics without blocking either UI.
-        std::thread::spawn(quotascope_core::statistics_cache::enforce);
 
         // The windows speak their own vocabularies; forwarder threads fold
         // them into the one channel the loop listens to.
@@ -219,22 +186,10 @@ impl App {
             rx,
             readings: HashMap::new(),
             refreshing: std::collections::HashSet::new(),
-            estimates: HashMap::new(),
-            estimates_running: false,
-            estimates_dirty: true,
-            estimates_at: None,
-            histories: HashMap::new(),
-            histories_running: false,
-            histories_control: None,
-            histories_dirty: true,
-            histories_generation: 0,
-            histories_at: None,
-            prompt_cache: HashMap::new(),
-            prompt_cache_running: false,
-            prompt_cache_at: None,
             codex_details: None,
             codex_details_running: false,
             codex_details_at: None,
+            details_generation: 0,
             update_check_running: false,
             update_result_at: None,
             update_notified: None,
@@ -246,10 +201,6 @@ impl App {
             outage_running: false,
             outage_at: None,
             maintenance_at: std::time::Instant::now(),
-            activity: HashMap::new(),
-            activity_at: None,
-            activity_running: false,
-            activity_control: None,
         };
 
         // Paint the rail from the cache before the first round trip, so it
@@ -286,7 +237,6 @@ impl App {
         }
         self.store.send(Command::Shutdown);
         quotascope_core::codex_rpc::shutdown();
-        quotascope_core::spend_warmer::clear();
     }
 
     fn drain(&mut self) {
@@ -295,55 +245,13 @@ impl App {
                 AppMsg::Tray(command) => self.handle_tray(command),
                 AppMsg::Panel(event) => self.handle_panel(event),
                 AppMsg::Settings(action) => self.handle_settings(action),
-                AppMsg::Activity(states) => {
-                    self.activity_running = false;
-                    let cancelled = self
-                        .activity_control
-                        .take()
-                        .is_some_and(|control| control.is_cancelled());
-                    if !cancelled
-                        && quotascope_core::settings::with(|s| {
-                            s.reads_token_spend && s.animates_ring_activity
-                        })
-                    {
-                        self.activity = states;
-                    } else {
-                        self.activity.clear();
-                    }
-                    self.rebuild_entries();
-                }
                 AppMsg::StorePoll => self.poll_store(),
                 AppMsg::OpenSettings => self.settings.show(),
                 AppMsg::OpenDashboard => self.settings.show_dashboard(),
                 AppMsg::RefreshAll => self.handle_tray(TrayCommand::RefreshAll),
-                AppMsg::Estimates(generation, map) => {
-                    self.estimates_running = false;
-                    if generation == self.histories_generation {
-                        self.estimates_at = Some(std::time::Instant::now());
-                        self.estimates = map;
-                        self.rebuild_entries();
-                    }
-                }
-                AppMsg::Histories(generation, map) => {
-                    self.histories_running = false;
-                    self.histories_control = None;
-                    if generation == self.histories_generation {
-                        self.histories_at = Some(std::time::Instant::now());
-                        self.histories = map;
-                        self.rebuild_entries();
-                    }
-                }
-                AppMsg::PromptCache(generation, reading) => {
-                    self.prompt_cache_running = false;
-                    if generation == self.histories_generation {
-                        self.prompt_cache = reading;
-                        self.prompt_cache_at = Some(std::time::Instant::now());
-                        self.rebuild_entries();
-                    }
-                }
                 AppMsg::CodexDetails(generation, reading) => {
                     self.codex_details_running = false;
-                    if generation == self.histories_generation {
+                    if generation == self.details_generation {
                         self.codex_details = Some(reading);
                         self.codex_details_at = Some(std::time::Instant::now());
                         self.rebuild_entries();
@@ -436,14 +344,11 @@ impl App {
             TrayCommand::OpenDashboard => self.settings.show_dashboard(),
             TrayCommand::OpenUsagePage(url) => open_in_browser(url),
             TrayCommand::RefreshAll => {
-                self.invalidate_histories();
+                self.invalidate_details();
                 let accounts = quotascope_core::settings::with(|s| {
                     s.ordered_enabled()
                         .into_iter()
-                        .map(|a| {
-                            forget_official_history(&a);
-                            a.id()
-                        })
+                        .map(|a| a.id())
                         .collect::<Vec<_>>()
                 });
                 self.refreshing.extend(accounts);
@@ -459,8 +364,7 @@ impl App {
     fn handle_panel(&mut self, event: PanelEvent) {
         match event {
             PanelEvent::RefreshAccount(account) => {
-                self.invalidate_histories();
-                forget_official_history(&account);
+                self.invalidate_details();
                 self.refreshing.insert(account.id());
                 self.store.send(Command::RefreshAccount(account));
                 self.mark_refreshing();
@@ -476,20 +380,18 @@ impl App {
             SettingsAction::Changed => {
                 self.tray
                     .set_global_shortcuts(quotascope_core::settings::with(|s| s.global_shortcuts));
-                self.invalidate_histories();
+                self.invalidate_details();
                 self.panel.reload_settings();
                 self.tray
                     .set_hidden(quotascope_core::settings::with(|s| s.hides_tray_icon));
                 sync_extension_names();
-                self.estimates_dirty = true;
                 self.store.send(Command::SettingsChanged);
                 self.settings.refresh();
                 self.rebuild_entries();
             }
             SettingsAction::RefreshProvider(raw) => {
-                self.invalidate_histories();
+                self.invalidate_details();
                 if let Some(provider) = Provider::from_raw(&raw) {
-                    forget_official_history(&quotascope_core::model::AccountKey::primary(provider));
                     self.refreshing
                         .insert(quotascope_core::model::AccountKey::primary(provider).id());
                     self.store.send(Command::RefreshAccount(
@@ -502,7 +404,7 @@ impl App {
                 if let Some(account) = quotascope_core::model::AccountKey::from_id(&raw) {
                     self.readings.remove(&raw);
                     self.store.send(Command::ForgetAccount(account));
-                    self.invalidate_histories();
+                    self.invalidate_details();
                     self.rebuild_entries();
                 }
             }
@@ -516,12 +418,11 @@ impl App {
                             )
                 });
                 self.rebuild_entries();
-                self.invalidate_histories();
+                self.invalidate_details();
                 self.store.send(Command::SettingsChanged);
             }
             SettingsAction::RefreshAccount(account) => {
-                self.invalidate_histories();
-                forget_official_history(&account);
+                self.invalidate_details();
                 self.refreshing.insert(account.id());
                 self.store.send(Command::RefreshAccount(account));
                 self.mark_refreshing();
@@ -584,69 +485,6 @@ impl App {
     }
 
     fn poll_store(&mut self) {
-        let allowed =
-            quotascope_core::settings::with(|s| s.reads_token_spend && s.animates_ring_activity);
-        if !allowed {
-            if let Some(control) = &self.activity_control {
-                control.cancel();
-            }
-        }
-        if !allowed && !self.activity.is_empty() {
-            self.activity.clear();
-            self.rebuild_entries();
-        }
-        if allowed
-            && self.panel.activity_visible()
-            && !self.activity_running
-            && self
-                .activity_at
-                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(5))
-        {
-            let providers: std::collections::HashSet<_> = quotascope_core::settings::with(|s| {
-                s.ordered_enabled()
-                    .into_iter()
-                    .filter(|a| a.is_primary())
-                    .map(|a| a.provider)
-                    .filter(|p| {
-                        matches!(
-                            p,
-                            Provider::ClaudeCode | Provider::Codex | Provider::CommandCode
-                        )
-                    })
-                    .collect()
-            });
-            if !providers.is_empty() {
-                self.activity_running = true;
-                self.activity_at = Some(std::time::Instant::now());
-                let tx = self.tx.clone();
-                let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
-                self.activity_control = Some(control.clone());
-                std::thread::spawn(move || {
-                    let now = quotascope_core::timeutil::now_ms();
-                    let home = quotascope_core::home_dir();
-                    let out = std::panic::catch_unwind(|| {
-                        quotascope_core::scan::run(
-                            control,
-                            0,
-                            |_| {},
-                            || {
-                                providers
-                                    .into_iter()
-                                    .map(|p| {
-                                        (p, quotascope_core::agent_activity::working(p, now, &home))
-                                    })
-                                    .collect()
-                            },
-                        )
-                    })
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or_default();
-                    let _ = tx.send(AppMsg::Activity(out));
-                });
-            }
-        }
-
         self.panel.follow_pointer_if_enabled();
 
         while let Some(update) = self.store.poll() {
@@ -666,13 +504,6 @@ impl App {
                             continue;
                         }
                         self.refreshing.remove(&reading.account.id());
-                        if matches!(
-                            reading.account.provider,
-                            Provider::ClaudeCode | Provider::Codex
-                        ) {
-                            // New windows may be priced differently now.
-                            self.estimates_dirty = true;
-                        }
                         self.readings.insert(reading.account.id(), reading);
                     }
                     self.rebuild_entries();
@@ -687,29 +518,16 @@ impl App {
         }
         quotascope_core::money::ensure_rates();
         if quotascope_core::money::take_changed() {
-            self.estimates_dirty = true;
-            self.estimates.clear();
             self.rebuild_entries();
             self.settings.refresh();
         }
         self.update_settings_status();
         if self.panel.is_visible() {
-            self.maybe_refresh_estimates();
-            self.maybe_refresh_histories();
-            self.maybe_refresh_prompt_cache();
             self.maybe_refresh_codex_details();
         }
         if self.maintenance_at.elapsed() >= std::time::Duration::from_secs(30) {
             self.maintenance_at = std::time::Instant::now();
             quotascope_core::notices::note_active();
-            if self.settings.is_open() {
-                quotascope_core::spend_warmer::cancel_running();
-            } else {
-                quotascope_core::spend_warmer::tick();
-            }
-            quotascope_core::ledger::release_expired_memory(quotascope_core::settings::with(|s| {
-                s.reads_token_spend
-            }));
         }
         self.check_updates(quotascope_core::updates::Trigger::Daily);
         self.maybe_check_services();
@@ -789,235 +607,32 @@ impl App {
         });
     }
 
-    fn invalidate_histories(&mut self) {
-        if let Some(control) = &self.histories_control {
-            control.cancel();
-        }
-        self.histories_dirty = true;
-        self.histories_generation = self.histories_generation.wrapping_add(1);
-        self.histories.clear();
-        self.estimates.clear();
-        self.estimates_at = None;
-        self.estimates_dirty = true;
-        self.prompt_cache.clear();
-        self.prompt_cache_at = None;
+    fn invalidate_details(&mut self) {
+        self.details_generation = self.details_generation.wrapping_add(1);
         self.codex_details = None;
         self.codex_details_at = None;
         self.rebuild_entries();
     }
 
-    fn maybe_refresh_prompt_cache(&mut self) {
-        let enabled = quotascope_core::settings::with(|s| {
-            s.reads_token_spend
-                && ["claudeCode", "codex"]
-                    .iter()
-                    .any(|id| s.enabled_accounts.contains(*id) && s.detailed_cards.contains(*id))
-        });
-        if !enabled
-            || !self.panel.needs_prompt_cache()
-            || self.prompt_cache_running
-            || self
-                .prompt_cache_at
-                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(5))
-        {
-            return;
-        }
-        self.prompt_cache_running = true;
-        let generation = self.histories_generation;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let reading = [Provider::ClaudeCode, Provider::Codex]
-                .into_iter()
-                .map(|provider| {
-                    (
-                        provider,
-                        quotascope_core::prompt_cache::read_for(
-                            provider,
-                            &quotascope_core::home_dir(),
-                            quotascope_core::timeutil::now_ms(),
-                        ),
-                    )
-                })
-                .collect();
-            let _ = tx.send(AppMsg::PromptCache(generation, reading));
-        });
-    }
-
     fn maybe_refresh_codex_details(&mut self) {
-        let (enabled, detailed) = quotascope_core::settings::with(|s| {
-            let detailed = s.detailed_cards.contains("codex");
-            (
-                s.enabled_accounts.contains("codex") && (s.shows_codex_reset_credits || detailed),
-                detailed,
-            )
+        let enabled = quotascope_core::settings::with(|s| {
+            s.enabled_accounts.contains("codex")
+                && (s.shows_codex_reset_credits || s.detailed_cards.contains("codex"))
         });
         if !enabled
             || self.codex_details_running
             || self
                 .codex_details_at
-                .is_some_and(|at| at.elapsed() < ESTIMATES_LIFETIME)
+                .is_some_and(|at| at.elapsed() < DETAILS_LIFETIME)
         {
             return;
         }
         self.codex_details_running = true;
-        let generation = self.histories_generation;
+        let generation = self.details_generation;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let reading = quotascope_core::codex_account::fetch(detailed);
+            let reading = quotascope_core::codex_account::fetch();
             let _ = tx.send(AppMsg::CodexDetails(generation, reading));
-        });
-    }
-
-    /// Reading records and querying statistics must never block a hover or
-    /// the settings thread. Generation checks discard replies for old keys.
-    fn maybe_refresh_histories(&mut self) {
-        if self.histories_running {
-            return;
-        }
-        let settings = quotascope_core::settings::with(|s| s.clone());
-        let subjects: Vec<_> = settings
-            .ordered_enabled()
-            .into_iter()
-            .filter(|a| {
-                a.is_primary() || matches!(a.provider, Provider::DeepSeek | Provider::Qoder)
-            })
-            .filter(|a| settings.detailed_cards.contains(&a.id()))
-            .filter(|a| a.provider.provides_history())
-            .filter(|a| {
-                settings.reads_token_spend
-                    || matches!(
-                        a.provider,
-                        Provider::Qoder
-                            | Provider::Zai
-                            | Provider::GlmCoding
-                            | Provider::OpenCodeGo
-                            | Provider::DeepSeek
-                    )
-            })
-            .collect();
-        if subjects.is_empty() {
-            if !self.histories.is_empty() {
-                self.histories.clear();
-                self.rebuild_entries();
-            }
-            self.histories_dirty = false;
-            return;
-        }
-        if !self.histories_dirty
-            && self
-                .histories_at
-                .is_some_and(|at| at.elapsed() < ESTIMATES_LIFETIME)
-        {
-            return;
-        }
-        self.histories_running = true;
-        self.histories_dirty = false;
-        let generation = self.histories_generation;
-        let tx = self.tx.clone();
-        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
-        self.histories_control = Some(control.clone());
-        std::thread::spawn(move || {
-            let stop = control.clone();
-            let map = quotascope_core::scan::run(
-                control,
-                0,
-                |_| {},
-                || {
-                    subjects
-                        .into_iter()
-                        .take_while(|_| !stop.is_cancelled())
-                        .map(|a| (a.id(), quotascope_core::history::read_account(&a)))
-                        .collect()
-                },
-            )
-            .unwrap_or_default();
-            let _ = tx.send(AppMsg::Histories(generation, map));
-        });
-    }
-
-    /// Works out the value estimates off the UI path, the way upstream reads
-    /// its ledgers when a card opens: on a worker, with the results coming
-    /// back through the channel. A cold first scan can walk a few hundred
-    /// megabytes of transcripts; nothing here may block the message loop.
-    fn maybe_refresh_estimates(&mut self) {
-        if self.estimates_running {
-            return;
-        }
-        if !quotascope_core::settings::with(|s| s.reads_token_spend) {
-            if !self.estimates.is_empty() {
-                self.estimates.clear();
-                self.rebuild_entries();
-            }
-            self.estimates_dirty = false;
-            return;
-        }
-        let subjects: Vec<ProviderUsage> = self
-            .readings
-            .values()
-            .filter(|r| r.account.is_primary())
-            .filter(|r| {
-                matches!(
-                    r.account.provider,
-                    Provider::ClaudeCode | Provider::Codex | Provider::Antigravity
-                )
-            })
-            .cloned()
-            .collect();
-        if subjects.is_empty() {
-            return;
-        }
-        let fresh = self
-            .estimates_at
-            .map(|at| at.elapsed() >= ESTIMATES_LIFETIME)
-            .unwrap_or(true);
-        if !self.estimates_dirty && !fresh {
-            return;
-        }
-        self.estimates_running = true;
-        self.estimates_dirty = false;
-        let tx = self.tx.clone();
-        let generation = self.histories_generation;
-        std::thread::spawn(move || {
-            let now = quotascope_core::timeutil::now_ms();
-            let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
-            let mut elsewhere = quotascope_core::elsewhere::Watch::load();
-            quotascope_core::ledger::invalidate_memory();
-            for reading in subjects {
-                let ledger = quotascope_core::ledger::ledger(reading.account.provider);
-                elsewhere.observe(&reading, &ledger, now);
-                // Only Antigravity can say which of its logged models spent a
-                // given window; every other provider's windows are priced as
-                // account-wide or not at all.
-                let rule = match reading.account.provider {
-                    Provider::Antigravity => quotascope_core::providers::antigravity::ESTIMATE,
-                    _ => quotascope_core::estimate::Rule::default(),
-                };
-                let mut lines = HashMap::new();
-                for window in &reading.windows {
-                    if elsewhere.marked(&reading, window) {
-                        lines.insert(
-                            window.id.clone(),
-                            quotascope_core::localization::t(
-                                "Usage outside this computer was detected; value estimate paused.",
-                            )
-                            .to_string(),
-                        );
-                        continue;
-                    }
-                    if let Some(text) = quotascope_core::estimate::window_text_at(
-                        window,
-                        &ledger,
-                        reading.observed_at,
-                        now,
-                        rule,
-                    ) {
-                        lines.insert(window.id.clone(), text);
-                    }
-                }
-                out.insert(reading.account.id(), lines);
-            }
-            elsewhere.save();
-            let _ = tx.send(AppMsg::Estimates(generation, out));
         });
     }
 
@@ -1038,24 +653,7 @@ impl App {
                 }
                 entry.account = account.clone();
                 entry.ring.robot = crate::robot::style(&account.id(), &settings);
-                entry.ring.is_busy = account.is_primary()
-                    && self
-                        .activity
-                        .get(&account.provider)
-                        .copied()
-                        .unwrap_or(false);
                 entry.title = crate::panel::account_title(account.provider, &account, &settings);
-                entry.value_lines = self
-                    .estimates
-                    .get(&account.id())
-                    .cloned()
-                    .unwrap_or_default();
-                entry.history = self.histories.get(&account.id()).cloned();
-                if account.is_primary()
-                    && matches!(account.provider, Provider::ClaudeCode | Provider::Codex)
-                {
-                    entry.prompt_cache = self.prompt_cache.get(&entry.account.provider).cloned();
-                }
                 if account.is_primary() && account.provider == Provider::Codex {
                     entry.codex_details = self.codex_details.clone();
                 }
@@ -1150,12 +748,6 @@ impl App {
             };
             self.settings.set_status(&provider_raw, text);
         }
-    }
-}
-
-fn forget_official_history(account: &quotascope_core::model::AccountKey) {
-    if account.provider == Provider::DeepSeek {
-        quotascope_core::deepseek_history::forget(account);
     }
 }
 

@@ -81,12 +81,7 @@ impl DeepSeekService {
                 let (result, _) = crate::deepseek_session::renewing(
                     token,
                     |current| {
-                        let reply = crate::deepseek_session::get(
-                            &self.http,
-                            crate::deepseek_session::Route::Summary,
-                            None,
-                            current,
-                        )?;
+                        let reply = crate::deepseek_session::get(&self.http, current)?;
                         let balance = crate::deepseek_console::parse_summary(&reply)?;
                         if purse(&balance, basis.currency.as_deref()).is_none() {
                             return Err(crate::model::Unavailability::NoLimitsReported);

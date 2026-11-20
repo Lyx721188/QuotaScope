@@ -1,6 +1,6 @@
 //! The console's own session, separately encrypted from an API key.
 //! Transport keeps HTTP refusal distinct from authentication expiration.
-use crate::deepseek_console::{self as protocol, Range};
+use crate::deepseek_console as protocol;
 use crate::http::HttpClient;
 use crate::http::ObserveRequest as _;
 use crate::model::{AccountKey, Unavailability};
@@ -57,22 +57,7 @@ pub fn renew_from_browser(account: &AccountKey, refused: &str) -> Option<String>
     Some(new)
 }
 
-#[derive(Clone, Copy)]
-pub enum Route {
-    Amount,
-    Cost,
-    Summary,
-}
-
-impl Route {
-    fn path(self) -> &'static str {
-        match self {
-            Self::Amount => "/api/v0/usage/by_api_key/amount",
-            Self::Cost => "/api/v0/usage/by_api_key/cost",
-            Self::Summary => "/api/v0/users/get_user_summary",
-        }
-    }
-}
+const SUMMARY_PATH: &str = "/api/v0/users/get_user_summary";
 
 pub fn status_problem(status: u16) -> Option<Unavailability> {
     match status {
@@ -84,20 +69,9 @@ pub fn status_problem(status: u16) -> Option<Unavailability> {
     }
 }
 
-pub fn get(
-    http: &HttpClient,
-    route: Route,
-    range: Option<&Range>,
-    token: &str,
-) -> Result<Value, Unavailability> {
-    if !crate::scan::checkpoint() {
-        return Err(Unavailability::Loading);
-    }
-    let mut url = url::Url::parse(&format!("{}{}", protocol::ORIGIN, route.path()))
+pub fn get(http: &HttpClient, token: &str) -> Result<Value, Unavailability> {
+    let url = url::Url::parse(&format!("{}{SUMMARY_PATH}", protocol::ORIGIN))
         .map_err(|_| Unavailability::UnreadableReply)?;
-    if let Some(range) = range {
-        url.query_pairs_mut().extend_pairs(range.query());
-    }
     fetch(http.client_for_login(), url, token)
 }
 
@@ -123,9 +97,6 @@ fn fetch(
         .take((LIMIT + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|_| Unavailability::UnreadableReply)?;
-    if !crate::scan::checkpoint() {
-        return Err(Unavailability::Loading);
-    }
     if bytes.len() > LIMIT {
         return Err(Unavailability::UnreadableReply);
     }
@@ -140,7 +111,7 @@ pub fn renewing<T>(
     renew: impl FnOnce() -> Option<String>,
 ) -> (Result<T, Unavailability>, Option<String>) {
     let first = read(old);
-    if !matches!(first, Err(Unavailability::SessionExpired)) || !crate::scan::checkpoint() {
+    if !matches!(first, Err(Unavailability::SessionExpired)) {
         return (first, None);
     }
     let Some(new) = renew().filter(|new| new != old) else {

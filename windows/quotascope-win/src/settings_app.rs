@@ -12,16 +12,12 @@
 //! changes.
 
 use std::collections::HashMap;
-#[path = "account_history_view.rs"]
-mod account_history_view;
 #[path = "connection_view.rs"]
 mod connection_view;
 #[path = "notices_view.rs"]
 mod notices_view;
 #[path = "session_import.rs"]
 mod session_import;
-#[path = "spend_history_view.rs"]
-mod spend_history_view;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -31,10 +27,6 @@ use windows_reactor::SlotsControl;
 use windows_reactor::*;
 
 use quotascope_core::model::Provider;
-use quotascope_core::spend_analysis::{
-    Cache as AnalysisCache, Query as AnalysisQuery, Request as AnalysisRequest,
-    Summary as SpendSummary,
-};
 
 /// Messages the settings window sends the app. The app owns the panel, the
 /// store and the tray; the window only describes what the user asked for.
@@ -63,25 +55,10 @@ struct SettingsSnapshot {
     status: HashMap<String, String>,
     readings: HashMap<String, quotascope_core::model::ProviderUsage>,
     dashboard_requested: bool,
-    spend: Option<Arc<quotascope_core::spend::Snapshot>>,
-    spend_generation: u64,
-    spend_loading: bool,
-    spend_worker_running: bool,
-    spend_failed: bool,
-    spend_cancelled: bool,
-    spend_control: Option<Arc<quotascope_core::scan::Control>>,
-    spend_progress: Option<quotascope_core::scan::Progress>,
-    spend_analysis: SpendAnalysisState,
     update: UpdateStatus,
     maintenance_running: bool,
-    cache: Option<quotascope_core::statistics_cache::Inventory>,
-    maintenance_result: Option<MaintenanceResult>,
     diagnostic_path: Option<std::path::PathBuf>,
-    account_details: HashMap<Provider, Arc<AccountDetails>>,
-    account_histories: HashMap<String, account_history_view::AccountHistoryState>,
     connections: HashMap<Provider, connection_view::ConnectionState>,
-    account_detail_controls: HashMap<Provider, Arc<quotascope_core::scan::Control>>,
-    account_detail_generation: u64,
     console_operations: HashMap<String, ConsoleOperation>,
     service_status: HashMap<quotascope_core::service_status::Page, ServiceStatusState>,
 }
@@ -131,107 +108,13 @@ struct ConsoleOperation {
     message: Option<String>,
 }
 
-struct AccountDetails {
-    models: Vec<quotascope_core::model_details::Model>,
-    cache: quotascope_core::prompt_cache::CacheReading,
-    partial: bool,
-    timings_partial: bool,
-}
-
-#[derive(Default)]
-struct SpendAnalysisState {
-    request: Option<AnalysisRequest>,
-    result: Option<Arc<SpendSummary>>,
-    cache: AnalysisCache,
-    generation: u64,
-    worker_running: bool,
-    control: Option<Arc<quotascope_core::scan::Control>>,
-    failed: bool,
-    cancelled: bool,
-}
-
-impl SpendAnalysisState {
-    fn select(&mut self, request: AnalysisRequest) {
-        if self
-            .request
-            .as_ref()
-            .is_some_and(|old| old.matches(&request))
-        {
-            return;
-        }
-        if let Some(control) = &self.control {
-            control.cancel();
-        }
-        self.generation = self.generation.wrapping_add(1);
-        self.result = self.cache.exact(&request);
-        self.request = Some(request);
-        self.failed = false;
-        self.cancelled = false;
-    }
-
-    fn release(&mut self) {
-        if let Some(control) = &self.control {
-            control.cancel();
-        }
-        self.generation = self.generation.wrapping_add(1);
-        self.request = None;
-        self.result = None;
-        self.cache.clear();
-        self.failed = false;
-        self.cancelled = false;
-        // A reopened page waits for the cancelled worker to leave its loop.
-    }
-
-    fn cancel(&mut self) {
-        if let Some(control) = &self.control {
-            control.cancel();
-        }
-        self.generation = self.generation.wrapping_add(1);
-        self.cancelled = true;
-    }
-
-    fn accepts(&self, request: &AnalysisRequest, generation: u64) -> bool {
-        self.generation == generation
-            && !self.cancelled
-            && self
-                .request
-                .as_ref()
-                .is_some_and(|current| current.matches(request))
-    }
-}
-
-enum SpendAnalysisStatus {
-    Ready(Arc<SpendSummary>),
-    Loading,
-    Failed,
-    Cancelled,
-}
-
-impl SettingsSnapshot {
-    fn set_spend(&mut self, snapshot: Arc<quotascope_core::spend::Snapshot>) {
-        if self
-            .spend
-            .as_ref()
-            .is_none_or(|old| !Arc::ptr_eq(old, &snapshot))
-        {
-            self.spend_analysis.release();
-        }
-        self.spend = Some(snapshot);
-    }
-}
-
 #[derive(Clone, Copy, PartialEq)]
 enum MaintenanceOperation {
-    Inspect,
-    Clear,
-    Enforce,
     Export,
 }
 
 #[derive(Clone)]
 enum MaintenanceResult {
-    Inspected,
-    Cleaned(quotascope_core::statistics_cache::Cleanup),
     Exported,
     Failed,
 }
@@ -381,9 +264,6 @@ impl Shared {
                     .into(),
                 )
             };
-            if saved {
-                quotascope_core::deepseek_history::forget(&account);
-            }
             operation.running = false;
             operation.message = Some(message);
             state.generation = state.generation.wrapping_add(1);
@@ -406,131 +286,24 @@ impl Shared {
         state.dashboard_requested = true;
         state.generation += 1;
     }
-    fn release_account_details(&self) {
-        self.release_histories(None);
+    fn release_transient(&self) {
         self.release_connections();
         self.release_service_status(None);
         let mut state = self.snapshot.lock().unwrap();
-        for control in state.account_detail_controls.values() {
-            control.cancel();
-        }
-        state.account_details.clear();
-        state.account_detail_generation = state.account_detail_generation.wrapping_add(1);
         state.generation = state.generation.wrapping_add(1);
     }
 
-    fn request_account_details(self: &Arc<Self>, provider: Provider, force_refresh: bool) {
-        if !matches!(provider, Provider::ClaudeCode | Provider::Codex)
-            || !self.alive.load(Ordering::SeqCst)
-            || !quotascope_core::settings::with(|s| s.reads_token_spend)
-        {
-            return;
-        }
-        let (generation, control) = {
-            let mut state = self.snapshot.lock().unwrap();
-            if state.account_detail_controls.contains_key(&provider)
-                || (!force_refresh && state.account_details.contains_key(&provider))
-            {
-                return;
-            }
-            let control = Arc::new(quotascope_core::scan::Control::default());
-            state
-                .account_detail_controls
-                .insert(provider, control.clone());
-            state.generation = state.generation.wrapping_add(1);
-            (state.account_detail_generation, control)
-        };
-        let shared = self.clone();
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(|| {
-                quotascope_core::scan::run(
-                    control,
-                    3,
-                    |_| {},
-                    || {
-                        if force_refresh {
-                            quotascope_core::ledger::invalidate_memory();
-                        }
-                        let ledger = quotascope_core::ledger::ledger(provider);
-                        let now = quotascope_core::timeutil::now_ms();
-                        let timings = quotascope_core::ledger::transcript_root(provider)
-                            .map(|root| {
-                                quotascope_core::model_details::read_timings(provider, &root, now)
-                            })
-                            .unwrap_or_default();
-                        AccountDetails {
-                            models: quotascope_core::model_details::models(
-                                &ledger,
-                                &timings.models,
-                                30,
-                            ),
-                            cache: quotascope_core::prompt_cache::read_for(
-                                provider,
-                                &quotascope_core::home_dir(),
-                                now,
-                            ),
-                            partial: ledger.has_partial_records,
-                            timings_partial: timings.partial,
-                        }
-                    },
-                )
-            });
-            let mut state = shared.snapshot.lock().unwrap();
-            state.account_detail_controls.remove(&provider);
-            if generation == state.account_detail_generation
-                && shared.alive.load(Ordering::SeqCst)
-                && quotascope_core::settings::with(|s| s.reads_token_spend)
-            {
-                if let Ok(Ok(details)) = result {
-                    state.account_details.insert(provider, Arc::new(details));
-                }
-            }
-            state.generation = state.generation.wrapping_add(1);
-        });
-    }
-
     fn request_maintenance(self: &Arc<Self>, operation: MaintenanceOperation) {
-        use quotascope_core::diagnostics::{Runtime, ScanStatus, UpdateStatus as DiagnosticUpdate};
+        use quotascope_core::diagnostics::{Runtime, UpdateStatus as DiagnosticUpdate};
         let runtime = {
             let mut state = self.snapshot.lock().unwrap();
-            if state.maintenance_running
-                || (state.spend_worker_running
-                    && matches!(
-                        operation,
-                        MaintenanceOperation::Clear | MaintenanceOperation::Enforce
-                    ))
-            {
+            if state.maintenance_running {
                 return;
             }
             state.maintenance_running = true;
-            state.maintenance_result = None;
             state.generation = state.generation.wrapping_add(1);
-            let progress = state.spend_progress.clone().unwrap_or_default();
             Runtime {
                 settings_visible: self.alive.load(Ordering::SeqCst),
-                scan_status: if state.spend_worker_running {
-                    if state.spend_cancelled
-                        || state
-                            .spend_control
-                            .as_ref()
-                            .is_some_and(|c| c.is_cancelled())
-                    {
-                        ScanStatus::Stopping
-                    } else {
-                        ScanStatus::Running
-                    }
-                } else if state.spend_failed {
-                    ScanStatus::Failed
-                } else if state.spend_cancelled {
-                    ScanStatus::Cancelled
-                } else if state.spend.is_some() {
-                    ScanStatus::Complete
-                } else {
-                    ScanStatus::Idle
-                },
-                sources_done: progress.sources_done,
-                sources_total: progress.sources_total,
-                files_read: progress.files_read,
                 update_status: match state.update {
                     UpdateStatus::Idle => DiagnosticUpdate::Idle,
                     UpdateStatus::Checking => DiagnosticUpdate::Checking,
@@ -548,15 +321,6 @@ impl Shared {
         let shared = self.clone();
         std::thread::spawn(move || {
             let result = std::panic::catch_unwind(|| match operation {
-                MaintenanceOperation::Inspect => (MaintenanceResult::Inspected, None),
-                MaintenanceOperation::Clear => (
-                    MaintenanceResult::Cleaned(quotascope_core::ledger::clear_statistics_cache()),
-                    None,
-                ),
-                MaintenanceOperation::Enforce => (
-                    MaintenanceResult::Cleaned(quotascope_core::statistics_cache::enforce()),
-                    None,
-                ),
                 MaintenanceOperation::Export => {
                     let mut runtime = runtime;
                     runtime.process = crate::winutil::process_metrics();
@@ -566,235 +330,14 @@ impl Shared {
                     }
                 }
             });
-            let inventory = quotascope_core::statistics_cache::inspect();
             let mut state = shared.snapshot.lock().unwrap();
             state.maintenance_running = false;
-            state.cache = Some(inventory);
-            let (result, path) = result.unwrap_or((MaintenanceResult::Failed, None));
-            state.maintenance_result = Some(result);
+            let (_, path) = result.unwrap_or((MaintenanceResult::Failed, None));
             if path.is_some() {
                 state.diagnostic_path = path;
             }
             state.generation = state.generation.wrapping_add(1);
-            let retry = state.spend_loading
-                && !state.spend_worker_running
-                && shared.alive.load(Ordering::SeqCst);
-            drop(state);
-            if retry {
-                shared.request_spend(false);
-            }
         });
-    }
-
-    fn release_spend(&self) {
-        let mut state = self.snapshot.lock().unwrap();
-        if let Some(control) = &state.spend_control {
-            control.cancel();
-        }
-        state.spend = None;
-        state.spend_analysis.release();
-        state.spend_generation = state.spend_generation.wrapping_add(1);
-        state.spend_loading = false;
-        state.spend_failed = false;
-        state.spend_cancelled = false;
-        state.spend_progress = None;
-        state.generation = state.generation.wrapping_add(1);
-    }
-
-    fn cancel_spend(&self) {
-        let mut state = self.snapshot.lock().unwrap();
-        if (!state.spend_worker_running && !state.spend_analysis.worker_running)
-            || (state.spend_cancelled && state.spend_analysis.cancelled)
-        {
-            return;
-        }
-        if let Some(control) = &state.spend_control {
-            control.cancel();
-        }
-        state.spend_generation = state.spend_generation.wrapping_add(1);
-        state.spend_loading = false;
-        state.spend_cancelled = true;
-        state.spend_analysis.cancel();
-        state.spend_failed = false;
-        state.generation = state.generation.wrapping_add(1);
-    }
-
-    fn request_spend(self: &Arc<Self>, refresh: bool) {
-        quotascope_core::spend_warmer::cancel_running();
-        let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
-        if !allowed {
-            self.release_spend();
-            return;
-        }
-        if !refresh {
-            if let Some(snapshot) = quotascope_core::spend_warmer::snapshot() {
-                let mut state = self.snapshot.lock().unwrap();
-                state.set_spend(snapshot);
-                state.spend_loading = false;
-                state.generation += 1;
-                return;
-            }
-        }
-        let (generation, control) = {
-            let mut state = self.snapshot.lock().unwrap();
-            if state.maintenance_running {
-                state.spend_loading = true;
-                state.generation = state.generation.wrapping_add(1);
-                return;
-            }
-            if state.spend_worker_running {
-                // A reopened Spend page waits for the existing scan instead
-                // of starting another one over the same transcript files.
-                state.spend_loading = true;
-                state.spend_cancelled = false;
-                state.generation = state.generation.wrapping_add(1);
-                return;
-            }
-            state.spend_generation = state.spend_generation.wrapping_add(1);
-            state.generation += 1;
-            state.spend_loading = true;
-            state.spend_failed = false;
-            state.spend_cancelled = false;
-            state.spend_progress = None;
-            let control = Arc::new(quotascope_core::scan::Control::default());
-            state.spend_control = Some(control.clone());
-            state.spend_worker_running = true;
-            (state.spend_generation, control)
-        };
-        let shared = self.clone();
-        std::thread::spawn(move || {
-            let progress_shared = shared.clone();
-            let result = std::panic::catch_unwind(|| {
-                quotascope_core::spend::Snapshot::read_controlled(
-                    control,
-                    refresh,
-                    move |progress| {
-                        let mut state = progress_shared.snapshot.lock().unwrap();
-                        if state.spend_generation == generation && state.spend_loading {
-                            state.spend_progress = Some(progress);
-                            state.generation = state.generation.wrapping_add(1);
-                        }
-                    },
-                )
-            });
-            let allowed = quotascope_core::settings::with(|s| s.reads_token_spend);
-            let mut state = shared.snapshot.lock().unwrap();
-            state.spend_worker_running = false;
-            state.spend_control = None;
-            state.generation = state.generation.wrapping_add(1);
-            if state.spend_generation != generation {
-                let retry = state.spend_loading && allowed && shared.alive.load(Ordering::SeqCst);
-                state.spend_loading = false;
-                drop(state);
-                if retry {
-                    shared.request_spend(false);
-                }
-                return;
-            }
-            state.spend_loading = false;
-            state.spend_failed = result.is_err();
-            match result {
-                Ok(Ok(snapshot)) if allowed => state.set_spend(Arc::new(snapshot)),
-                Ok(Err(_)) => state.spend_cancelled = true,
-                _ => {}
-            }
-            if !allowed {
-                state.spend = None;
-                state.spend_analysis.release();
-            }
-        });
-    }
-
-    fn request_spend_analysis(self: &Arc<Self>, request: AnalysisRequest) -> SpendAnalysisStatus {
-        let allowed = quotascope_core::settings::with(|settings| settings.reads_token_spend);
-        let mut state = self.snapshot.lock().unwrap();
-        if !allowed
-            || !self.alive.load(Ordering::SeqCst)
-            || state
-                .spend
-                .as_ref()
-                .is_none_or(|snapshot| !Arc::ptr_eq(snapshot, &request.snapshot))
-        {
-            return SpendAnalysisStatus::Cancelled;
-        }
-        let analysis = &mut state.spend_analysis;
-        analysis.select(request);
-        if let Some(result) = &analysis.result {
-            return SpendAnalysisStatus::Ready(result.clone());
-        }
-        if analysis.failed {
-            return SpendAnalysisStatus::Failed;
-        }
-        if analysis.cancelled {
-            return SpendAnalysisStatus::Cancelled;
-        }
-        if !analysis.worker_running {
-            analysis.worker_running = true;
-            state.generation = state.generation.wrapping_add(1);
-            let shared = self.clone();
-            drop(state);
-            std::thread::spawn(move || shared.run_spend_analysis());
-        }
-        SpendAnalysisStatus::Loading
-    }
-
-    fn run_spend_analysis(self: Arc<Self>) {
-        loop {
-            let (request, generation, control, previous) = {
-                let mut state = self.snapshot.lock().unwrap();
-                let analysis = &mut state.spend_analysis;
-                if !self.alive.load(Ordering::SeqCst)
-                    || analysis.request.is_none()
-                    || analysis.result.is_some()
-                    || analysis.failed
-                    || analysis.cancelled
-                {
-                    analysis.worker_running = false;
-                    analysis.control = None;
-                    state.generation = state.generation.wrapping_add(1);
-                    return;
-                }
-                let request = analysis.request.clone().expect("checked above");
-                let previous = analysis.cache.aggregation(&request);
-                let control = Arc::new(quotascope_core::scan::Control::default());
-                analysis.control = Some(control.clone());
-                (request, analysis.generation, control, previous)
-            };
-            let result = std::panic::catch_unwind(|| {
-                SpendSummary::compute(request.clone(), control, previous)
-            });
-            let allowed = quotascope_core::settings::with(|settings| settings.reads_token_spend);
-            let mut state = self.snapshot.lock().unwrap();
-            let live = state
-                .spend
-                .as_ref()
-                .is_some_and(|snapshot| Arc::ptr_eq(snapshot, &request.snapshot));
-            let analysis = &mut state.spend_analysis;
-            analysis.control = None;
-            if analysis.accepts(&request, generation)
-                && live
-                && allowed
-                && self.alive.load(Ordering::SeqCst)
-            {
-                match result {
-                    Ok(Ok(summary)) => {
-                        let summary = Arc::new(summary);
-                        analysis.cache.insert(summary.clone());
-                        analysis.result = Some(summary);
-                    }
-                    Ok(Err(_)) => analysis.cancelled = true,
-                    Err(_) => analysis.failed = true,
-                }
-            } else if !allowed
-                || !self.alive.load(Ordering::SeqCst)
-                || (analysis.accepts(&request, generation) && !live)
-            {
-                analysis.release();
-            }
-            state.generation = state.generation.wrapping_add(1);
-            // A superseded task advances straight to the newest pending key;
-            // no second aggregation thread can overlap it.
-        }
     }
     fn generation(&self) -> u64 {
         self.snapshot.lock().unwrap().generation
@@ -929,8 +472,7 @@ unsafe extern "system" fn settings_subclass(
                 return false;
             }
             shared.alive.store(false, Ordering::SeqCst);
-            shared.release_spend();
-            shared.release_account_details();
+            shared.release_transient();
             true
         });
         if hide {
@@ -1007,7 +549,6 @@ enum Page {
     General,
     Dashboard,
     Accounts,
-    Spend,
     Notifications,
     Maintenance,
     About,
@@ -1019,7 +560,6 @@ impl Page {
             Page::General => "general",
             Page::Dashboard => "dashboard",
             Page::Accounts => "accounts",
-            Page::Spend => "spend",
             Page::Notifications => "notifications",
             Page::Maintenance => "maintenance",
             Page::About => "about",
@@ -1029,7 +569,6 @@ impl Page {
         match tag {
             "dashboard" => Page::Dashboard,
             "accounts" => Page::Accounts,
-            "spend" => Page::Spend,
             "notifications" => Page::Notifications,
             "maintenance" => Page::Maintenance,
             "about" => Page::About,
@@ -1041,9 +580,8 @@ impl Page {
             Page::General => "General",
             Page::Dashboard => "Dashboard",
             Page::Accounts => "Accounts",
-            Page::Spend => "Token spend",
             Page::Notifications => "Notifications",
-            Page::Maintenance => "Storage and diagnostics",
+            Page::Maintenance => "Diagnostics",
             Page::About => "About",
         }
     }
@@ -1052,7 +590,6 @@ impl Page {
             Page::General => "\u{E713}",
             Page::Dashboard => "\u{E80F}",
             Page::Accounts => "\u{E77B}",
-            Page::Spend => "\u{E9D9}",
             Page::Notifications => "\u{EA8F}",
             Page::Maintenance => "\u{E7B8}",
             Page::About => "\u{E946}",
@@ -1074,10 +611,7 @@ enum ToggleKey {
     AutoCollapse,
     FollowDisplay,
     HideTrayIcon,
-    TokenSpend,
-    BackgroundSpend,
     AnimatedBots,
-    RingActivity,
     GlobalShortcuts,
     CodexResetCredits,
     Startup,
@@ -1104,42 +638,23 @@ enum ChoiceKey {
     WarningThreshold,
     Interval,
     AlertThreshold,
-    StatisticsCache,
 }
 
 #[derive(Clone, PartialEq)]
 enum Message {
     Tick,
-    SpendChoice(u8, Option<usize>),
-    SpendRangeEdit(usize, String),
-    SpendRangeApply,
-    SpendPage(bool),
-    SpendDrill(String),
-    SpendRefresh,
-    SpendCancel,
-    ActivityMode(Option<usize>),
-    ActivityDate(String),
-    RecapMonth(Option<usize>),
-    RecapPeriod(Option<usize>),
-    RecapStep(bool),
-    RecapExport(u8),
-    RecapCard(Option<usize>),
     DismissStar,
     DismissNotice,
-    RecapBudget(String),
     MoneyRateEdit(String),
     SaveMoneyRate,
     TestNotification,
-    RecapToggle,
     Maintenance(MaintenanceOperation),
     OpenDiagnosticsFolder,
     Nav(Option<String>),
     Toggle(ToggleKey, bool),
     ToggleEnabled(usize, bool),
     ExpandAccount(usize),
-    RefreshAccountDetails(usize),
     ConnectionCheck(Provider),
-    HistoryRefreshAccount(quotascope_core::model::AccountKey),
     CreditAmounts(String, bool),
     ShowAmounts(usize, bool),
     AvatarChoice(String, u8, Option<usize>),
@@ -1189,22 +704,7 @@ struct SettingsApp {
     hwnd: Option<windows::Win32::Foundation::HWND>,
     page: Page,
     about_visible: bool,
-    spend_group: quotascope_core::spend::Group,
-    spend_sort: quotascope_core::spend::Sort,
-    spend_descending: bool,
-    spend_page: usize,
-    spend_source: Option<String>,
-    spend_model: Option<String>,
-    activity_mode: usize,
-    activity_date: Option<chrono::NaiveDate>,
-    recap_month: Option<chrono::NaiveDate>,
-    recap_period: quotascope_core::recap::Period,
-    recap_export_result: String,
-    recap_card: usize,
     star_banner: bool,
-    recap_budget: String,
-    spend_range: [String; 2],
-    recap_open: bool,
     dark: bool,
     /// Draft key text per provider raw, until Saved.
     keys: HashMap<String, String>,
@@ -1243,30 +743,7 @@ impl Component for SettingsApp {
                 Page::General
             },
             about_visible: false,
-            spend_group: Default::default(),
-            spend_sort: Default::default(),
-            spend_descending: true,
-            spend_page: 0,
-            spend_source: None,
-            spend_model: None,
-            activity_mode: 0,
-            activity_date: None,
-            recap_month: None,
-            recap_period: quotascope_core::recap::Period::Month,
-            recap_export_result: String::new(),
-            recap_card: 0,
             star_banner: quotascope_core::notices::claim_star(),
-            recap_budget: String::new(),
-            spend_range: quotascope_core::settings::with(|s| match s.spend_span {
-                quotascope_core::spend::Span::Custom { start, end } => {
-                    [start.to_string(), end.to_string()]
-                }
-                _ => {
-                    let today = chrono::Local::now().date_naive().to_string();
-                    [today.clone(), today]
-                }
-            }),
-            recap_open: false,
             // XAML follows the system appearance; the muted ink follows it
             // too, read once here — a reopened window re-reads.
             dark: crate::theme::panel::is_dark(),
@@ -1312,9 +789,6 @@ impl Component for SettingsApp {
                 } else if self.hwnd.is_some()
                     && self.shared.show_requested.swap(false, Ordering::SeqCst)
                 {
-                    if self.page == Page::Spend {
-                        self.shared.release_spend();
-                    }
                     let requested = std::mem::take(
                         &mut self.shared.snapshot.lock().unwrap().dashboard_requested,
                     );
@@ -1349,27 +823,15 @@ impl Component for SettingsApp {
             Message::Nav(tag) => {
                 let previous = self.page;
                 self.page = tag.as_deref().map(Page::from_tag).unwrap_or(self.page);
-                if previous == Page::Spend && self.page != Page::Spend {
-                    self.shared.release_spend();
-                }
                 if matches!(previous, Page::Accounts | Page::Dashboard)
                     && !matches!(self.page, Page::Accounts | Page::Dashboard)
                 {
-                    self.shared.release_account_details();
-                }
-                if self.page == Page::Spend {
-                    self.shared.request_spend(false);
-                }
-                if self.page == Page::Maintenance {
-                    self.shared
-                        .request_maintenance(MaintenanceOperation::Inspect);
+                    self.shared.release_transient();
                 }
                 self.refresh_visible_service_status();
                 self.refresh_visible_about();
                 self.revealed_keys.clear();
             }
-            Message::SpendRefresh => self.shared.request_spend(true),
-            Message::SpendCancel => self.shared.cancel_spend(),
             Message::Maintenance(operation) => self.shared.request_maintenance(operation),
             Message::OpenDiagnosticsFolder => {
                 if let Some(path) = &self.shared.snapshot.lock().unwrap().diagnostic_path {
@@ -1378,114 +840,6 @@ impl Component for SettingsApp {
                             .send(SettingsAction::OpenFolder(folder.to_owned()));
                     }
                 }
-            }
-            Message::SpendPage(next) => {
-                self.spend_page = if next {
-                    self.spend_page.saturating_add(1)
-                } else {
-                    self.spend_page.saturating_sub(1)
-                };
-            }
-            Message::SpendDrill(id) => {
-                match self.spend_group {
-                    quotascope_core::spend::Group::Agents => {
-                        self.spend_source = Some(id);
-                        self.spend_group = quotascope_core::spend::Group::Models;
-                    }
-                    quotascope_core::spend::Group::Models => {
-                        self.spend_model = Some(id);
-                        self.spend_group = quotascope_core::spend::Group::Days;
-                    }
-                    _ => {}
-                }
-                self.spend_page = 0;
-            }
-            Message::SpendRangeEdit(index, text) => {
-                if let Some(draft) = self.spend_range.get_mut(index) {
-                    *draft = text;
-                }
-            }
-            Message::SpendRangeApply => {
-                let parse = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
-                match (parse(&self.spend_range[0]), parse(&self.spend_range[1])) {
-                    (Some(start), Some(end))
-                        if start <= end && end <= chrono::Local::now().date_naive() =>
-                    {
-                        quotascope_core::settings::mutate(|s| {
-                            s.spend_span = quotascope_core::spend::Span::Custom { start, end }
-                        });
-                        self.status.remove("__spend_range");
-                        self.spend_page = 0;
-                    }
-                    _ => {
-                        self.status.insert("__spend_range".into(), quotascope_core::localization::t("Enter dates as YYYY-MM-DD, with start no later than end and end no later than today.").into());
-                    }
-                }
-            }
-            Message::SpendChoice(key, Some(index)) => {
-                use quotascope_core::spend::{Group, Sort, Span};
-                match key {
-                    0 => {
-                        if let Some(span) = Span::ALL.get(index) {
-                            let span = match *span {
-                                Span::Custom { .. } => {
-                                    let today = chrono::Local::now().date_naive();
-                                    Span::Custom {
-                                        start: chrono::NaiveDate::parse_from_str(
-                                            &self.spend_range[0],
-                                            "%Y-%m-%d",
-                                        )
-                                        .unwrap_or(today),
-                                        end: chrono::NaiveDate::parse_from_str(
-                                            &self.spend_range[1],
-                                            "%Y-%m-%d",
-                                        )
-                                        .unwrap_or(today),
-                                    }
-                                }
-                                value => value,
-                            };
-                            quotascope_core::settings::mutate(|s| s.spend_span = span);
-                        }
-                    }
-                    1 => {
-                        self.spend_group = [Group::Agents, Group::Models, Group::Days]
-                            .get(index)
-                            .copied()
-                            .unwrap_or_default()
-                    }
-                    2 => self.spend_sort = Sort::ALL.get(index).copied().unwrap_or_default(),
-                    3 => self.spend_descending = index == 0,
-                    4 => {
-                        let state = self.shared.snapshot.lock().unwrap();
-                        self.spend_source = index.checked_sub(1).and_then(|i| {
-                            state.spend.as_ref()?.sources.get(i).map(|s| s.id.clone())
-                        });
-                        self.spend_model = None;
-                    }
-                    5 => {
-                        self.spend_model = index
-                            .checked_sub(1)
-                            .and_then(|i| self.spend_models().get(i).cloned())
-                    }
-                    _ => {}
-                }
-                self.spend_page = 0;
-            }
-            Message::SpendChoice(_, None) => {}
-            Message::ActivityMode(index) => self.activity_mode = index.unwrap_or(0).min(2),
-            Message::ActivityDate(text) => {
-                self.activity_date = chrono::NaiveDate::parse_from_str(&text, "%Y-%m-%d").ok()
-            }
-            Message::RecapMonth(index) => {
-                let state = self.shared.snapshot.lock().unwrap();
-                self.recap_month = state.spend.as_ref().and_then(|snapshot| {
-                    index.and_then(|i| {
-                        quotascope_core::recap::months(snapshot, chrono::Local::now().date_naive())
-                            .get(i)
-                            .copied()
-                    })
-                });
             }
             Message::MoneyRateEdit(text) => {
                 self.budgets.insert("__money".into(), text);
@@ -1516,121 +870,12 @@ impl Component for SettingsApp {
                 quotascope_core::money::changed();
                 self.shared.send(SettingsAction::Changed);
             }
-            Message::RecapPeriod(Some(index)) => {
-                let today = chrono::Local::now().date_naive();
-                let date = {
-                    let state = self.shared.snapshot.lock().unwrap();
-                    state
-                        .spend
-                        .as_ref()
-                        .map(|snapshot| self.recap_date(snapshot))
-                        .unwrap_or(today)
-                };
-                let (start, end) = self.recap_period.bounds(date);
-                let anchor = end.min(today).max(start);
-                self.recap_period = [
-                    quotascope_core::recap::Period::Day,
-                    quotascope_core::recap::Period::Week,
-                    quotascope_core::recap::Period::Month,
-                    quotascope_core::recap::Period::Year,
-                ]
-                .get(index)
-                .copied()
-                .unwrap_or_default();
-                self.recap_month = Some(self.recap_period.bounds(anchor).0);
-                self.recap_export_result.clear();
-            }
-            Message::RecapPeriod(None) => {}
-            Message::RecapStep(forward) => {
-                let today = chrono::Local::now().date_naive();
-                let current = {
-                    let state = self.shared.snapshot.lock().unwrap();
-                    state
-                        .spend
-                        .as_ref()
-                        .map(|snapshot| self.recap_date(snapshot))
-                        .unwrap_or(today)
-                };
-                let date = self.recap_period.step(current, forward);
-                if date <= today {
-                    self.recap_month = Some(date);
-                    self.recap_export_result.clear();
-                }
-            }
             Message::DismissStar => self.star_banner = false,
             Message::DismissNotice => quotascope_core::notices::dismiss_message(),
-            Message::RecapCard(Some(index)) => self.recap_card = index.min(7),
-            Message::RecapCard(None) => {}
-            Message::RecapExport(mode) => {
-                let summary = {
-                    let state = self.shared.snapshot.lock().unwrap();
-                    state
-                        .spend_analysis
-                        .result
-                        .as_ref()
-                        .filter(|summary| {
-                            state
-                                .spend_analysis
-                                .request
-                                .as_ref()
-                                .is_some_and(|request| summary.request.matches(request))
-                                && summary.recap.period == self.recap_period
-                        })
-                        .cloned()
-                };
-                if let Some(summary) = summary {
-                    let monthly_usd = self
-                        .recap_budget
-                        .trim()
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|value| value.is_finite() && *value > 0.0);
-                    let cards = crate::recap_export::available(&summary.recap, monthly_usd);
-                    let Some(kind) = cards
-                        .iter()
-                        .copied()
-                        .find(|kind| *kind == self.recap_card)
-                        .or_else(|| cards.first().copied())
-                    else {
-                        return;
-                    };
-                    let result = if mode == 1 {
-                        self.hwnd
-                            .ok_or_else(|| "No settings window".to_string())
-                            .and_then(|hwnd| {
-                                crate::recap_export::copy(&summary.recap, kind, monthly_usd, hwnd)
-                            })
-                            .map(|_| quotascope_core::localization::t("Copied").to_string())
-                    } else {
-                        let result = if mode == 2 {
-                            cards
-                                .into_iter()
-                                .try_fold(std::path::PathBuf::new(), |_, kind| {
-                                    crate::recap_export::export(&summary.recap, kind, monthly_usd)
-                                })
-                        } else {
-                            crate::recap_export::export(&summary.recap, kind, monthly_usd)
-                        };
-                        result.map(|path| {
-                            self.shared
-                                .send(SettingsAction::OpenFolder(path.parent().unwrap().into()));
-                            path.display().to_string()
-                        })
-                    };
-                    self.recap_export_result = result.unwrap_or_else(|_| {
-                        quotascope_core::localization::t("Could not save or copy the recap.").into()
-                    });
-                }
-            }
-            Message::RecapBudget(text) => self.recap_budget = text,
             Message::TestNotification => self.shared.send(SettingsAction::TestNotification),
-            Message::RecapToggle => self.recap_open = !self.recap_open,
             Message::ExpandAccount(index) => {
                 if !self.expanded_accounts.insert(index) {
                     self.expanded_accounts.remove(&index);
-                    if let Some(provider) = all_providers().get(index) {
-                        self.shared.release_histories(Some(*provider));
-                    }
                     self.revealed_keys.remove(&index);
                     if let Some(page) = all_providers()
                         .get(index)
@@ -1640,8 +885,6 @@ impl Component for SettingsApp {
                         self.shared.release_service_status(Some(page));
                     }
                 } else if let Some(provider) = all_providers().get(index) {
-                    self.shared.request_account_details(*provider, false);
-                    self.shared.request_history(*provider, false);
                     if let Some(page) =
                         quotascope_core::service_status::Page::for_provider(*provider)
                     {
@@ -1755,9 +998,6 @@ impl Component for SettingsApp {
                 }
             }
             Message::ConnectionCheck(provider) => self.shared.check_connection(provider),
-            Message::HistoryRefreshAccount(account) => {
-                self.shared.request_history_for(account, true)
-            }
             Message::CreditAmounts(id, on) => {
                 quotascope_core::settings::mutate(|s| {
                     if on {
@@ -1772,11 +1012,6 @@ impl Component for SettingsApp {
             Message::ServiceStatusOpen(page) => self
                 .shared
                 .send(SettingsAction::OpenUrl(page.address().into())),
-            Message::RefreshAccountDetails(index) => {
-                if let Some(provider) = all_providers().get(index) {
-                    self.shared.request_account_details(*provider, true);
-                }
-            }
             Message::Search(text) => {
                 self.search = text;
                 self.revealed_keys.clear();
@@ -1906,21 +1141,11 @@ impl Component for SettingsApp {
             }
             Message::Toggle(key, value) => {
                 Self::apply_toggle(key, value);
-                if key == ToggleKey::TokenSpend && !value {
-                    self.shared.release_account_details();
-                }
                 if key == ToggleKey::CheckUpdates && value && self.page == Page::About {
                     self.shared.send(SettingsAction::ProbeUpdates);
                 }
                 if key != ToggleKey::CheckUpdates {
                     self.shared.send(SettingsAction::Changed);
-                }
-                if key == ToggleKey::TokenSpend {
-                    if self.page == Page::Spend {
-                        self.shared.request_spend(false);
-                    } else {
-                        self.shared.release_spend();
-                    }
                 }
             }
             Message::ToggleEnabled(index, value) => {
@@ -1956,24 +1181,6 @@ impl Component for SettingsApp {
                 self.extension_problems = scan.problems;
                 self.shared.send(SettingsAction::Changed);
             }
-            Message::Choice(ChoiceKey::StatisticsCache, Some(index)) => {
-                let blocked = {
-                    let state = self.shared.snapshot.lock().unwrap();
-                    state.maintenance_running || state.spend_worker_running
-                };
-                if !blocked {
-                    if let Some(value) = quotascope_core::statistics_cache::LIMITS_MB.get(index) {
-                        if quotascope_core::settings::with(|s| {
-                            s.statistics_cache_limit_mb != *value
-                        }) {
-                            Self::apply_choice(ChoiceKey::StatisticsCache, index);
-                            self.shared
-                                .request_maintenance(MaintenanceOperation::Enforce);
-                        }
-                    }
-                }
-            }
-            Message::Choice(ChoiceKey::StatisticsCache, None) => {}
             Message::Choice(key, Some(selected)) => {
                 if matches!(key, ChoiceKey::ImportBrowser) {
                     self.shared.invalidate_session_imports(None);
@@ -2316,7 +1523,6 @@ impl Component for SettingsApp {
                         Page::General,
                         Page::Dashboard,
                         Page::Accounts,
-                        Page::Spend,
                         Page::Notifications,
                         Page::Maintenance,
                         Page::About,
@@ -2356,7 +1562,6 @@ impl Component for SettingsApp {
                                             Page::General => self.general_view(context).into(),
                                             Page::Accounts => self.accounts_view(context),
                                             Page::Dashboard => self.dashboard_view(context),
-                                            Page::Spend => self.spend_view(context),
                                             Page::Notifications => self.notifications_view(context),
                                             Page::Maintenance => self.maintenance_view(context),
                                             Page::About => self.about_view(context),
@@ -2439,83 +1644,11 @@ impl SettingsApp {
     }
 
     fn refresh_visible_service_status(&self) {
-        if self.page == Page::Accounts && self.shared.alive.load(Ordering::SeqCst) {
-            let query = self.search.trim().to_lowercase();
-            for index in &self.expanded_accounts {
-                if let Some(provider) = all_providers().get(*index) {
-                    if provider.display_name().to_lowercase().contains(&query)
-                        || provider.raw().to_lowercase().contains(&query)
-                    {
-                        self.shared.request_account_details(*provider, false);
-                        self.shared.request_history(*provider, false);
-                    }
-                }
-            }
-        }
         for page in quotascope_core::service_status::Page::ALL {
             if self.service_status_visible(page) {
                 self.shared.request_service_status(page, false);
             }
         }
-    }
-
-    fn recap_date(&self, snapshot: &quotascope_core::spend::Snapshot) -> chrono::NaiveDate {
-        use chrono::Timelike;
-        let now = chrono::Local::now();
-        self.recap_month.unwrap_or_else(|| {
-            let earliest = snapshot
-                .sources
-                .iter()
-                .flat_map(|source| &source.ledger.days)
-                .filter(|day| day.tokens > 0 && day.date <= now.date_naive())
-                .map(|day| day.date)
-                .min();
-            self.recap_period
-                .default_date(now.date_naive(), now.hour(), earliest)
-        })
-    }
-
-    fn spend_models(&self) -> Vec<String> {
-        let state = self.shared.snapshot.lock().unwrap();
-        let Some(snapshot) = state.spend.as_ref() else {
-            return Vec::new();
-        };
-        let mut models = state
-            .spend_analysis
-            .cache
-            .models(snapshot, self.spend_source.as_deref())
-            .unwrap_or_default()
-            .to_vec();
-        // Keep the chosen filter while a replacement snapshot is being
-        // analyzed, including a model that now has no records. Otherwise an
-        // interim one-item ComboBox can reset it to "all models".
-        if let Some(model) = &self.spend_model {
-            if !models.contains(model) {
-                models.push(model.clone());
-                models.sort();
-            }
-        }
-        models
-    }
-
-    fn spend_choice(
-        &self,
-        key: u8,
-        label: &str,
-        options: Vec<String>,
-        index: usize,
-        context: &ViewContext<Self>,
-    ) -> View {
-        self.aligned(
-            label,
-            ComboBox::new()
-                .min_width(180.0)
-                .max_width(340.0)
-                .items_source(options)
-                .selected_index(index)
-                .on_selection_changed(context.callback(move |i| Message::SpendChoice(key, i)))
-                .into(),
-        )
     }
 
     fn dashboard_view(&self, context: &ViewContext<Self>) -> View {
@@ -2642,537 +1775,6 @@ impl SettingsApp {
             .into()
     }
 
-    fn spend_view(&self, context: &ViewContext<Self>) -> View {
-        use quotascope_core::spend::{Group, Sort, Span};
-        let settings = quotascope_core::settings::with(|s| s.clone());
-        let t = quotascope_core::localization::t;
-        let mut content = vec![
-            heading("Token spend").into(),
-            self.muted(t(
-                "Local records · API value is an estimate, not your bill.",
-            ))
-            .into(),
-            self.toggle(
-                ToggleKey::TokenSpend,
-                "Read local token spend",
-                settings.reads_token_spend,
-                context,
-            ),
-        ];
-        if !settings.reads_token_spend {
-            content.push(
-                self.muted(t(
-                    "Enable local reading to analyze records on this computer.",
-                ))
-                .into(),
-            );
-            return StackPanel::new()
-                .spacing(18.0)
-                .children((View::keyed_fragment(content.into_iter().enumerate()),));
-        }
-        content.push(self.toggle(
-            ToggleKey::BackgroundSpend,
-            "Keep token statistics warm in the background (five minutes, 30-second scan limit)",
-            settings.background_token_spend,
-            context,
-        ));
-        let (snapshot, loading, running, failed, cancelled, progress, stopping) = {
-            let state = self.shared.snapshot.lock().unwrap();
-            (
-                state.spend.clone(),
-                state.spend_loading,
-                state.spend_worker_running || state.spend_analysis.worker_running,
-                state.spend_failed,
-                state.spend_cancelled,
-                state.spend_progress.clone(),
-                state
-                    .spend_control
-                    .as_ref()
-                    .is_some_and(|c| c.is_cancelled()),
-            )
-        };
-        let status = if running && stopping {
-            "Stopping local scan…"
-        } else if loading {
-            "Reading local records…"
-        } else if cancelled {
-            "Local scan cancelled."
-        } else if failed {
-            "Unable to read local records."
-        } else {
-            "Only records available on this computer are included."
-        };
-        content.push(row((
-            Button::new()
-                .is_enabled(!running)
-                .on_click(context.message(Message::SpendRefresh))
-                .content(t("Refresh")),
-            Button::new()
-                .is_enabled(running && !cancelled)
-                .on_click(context.message(Message::SpendCancel))
-                .content(t("Cancel scan")),
-            self.muted(t(status)),
-        )));
-        if let Some(progress) = progress.filter(|_| loading || running) {
-            let text = t("Scanning {source} · sources {done}/{total} · files read {files}")
-                .replace("{source}", &progress.source)
-                .replace("{done}", &progress.sources_done.to_string())
-                .replace("{total}", &progress.sources_total.to_string())
-                .replace("{files}", &progress.files_read.to_string());
-            content.push(self.muted(&text).into());
-        }
-        if snapshot.is_some() && (loading || running || cancelled || failed) {
-            content.push(self.muted(t("Previous results remain displayed.")).into());
-        }
-        let Some(snapshot) = snapshot else {
-            return StackPanel::new()
-                .spacing(18.0)
-                .children((View::keyed_fragment(content.into_iter().enumerate()),));
-        };
-        let summary = self.shared.request_spend_analysis(AnalysisRequest {
-            snapshot: snapshot.clone(),
-            query: AnalysisQuery {
-                span: settings.spend_span,
-                today: chrono::Local::now().date_naive(),
-                recap_period: self.recap_period,
-                recap_month: self.recap_date(&snapshot),
-                source: self.spend_source.clone(),
-                model: self.spend_model.clone(),
-                group: self.spend_group,
-                sort: self.spend_sort,
-                descending: self.spend_descending,
-            },
-        });
-        let models = self.spend_models();
-        let mut sources = vec![t("All agents").into()];
-        sources.extend(snapshot.sources.iter().map(|s| s.title.clone()));
-        let source_index = self
-            .spend_source
-            .as_ref()
-            .and_then(|id| snapshot.sources.iter().position(|s| s.id == *id))
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let mut model_options = vec![t("All models").into()];
-        model_options.extend(models.iter().cloned());
-        let model_index = self
-            .spend_model
-            .as_ref()
-            .and_then(|id| models.iter().position(|m| m == id))
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let translated =
-            |items: &[&str]| items.iter().map(|s| t(s).to_string()).collect::<Vec<_>>();
-        if matches!(settings.spend_span, Span::Custom { .. }) {
-            content.push(
-                self.surface(
-                    StackPanel::new()
-                        .spacing(8.0)
-                        .children((
-                            self.aligned(
-                                "From (YYYY-MM-DD)",
-                                TextBox::new()
-                                    .automation_name("Custom range start")
-                                    .text(self.spend_range[0].clone())
-                                    .on_text_changed(
-                                        context.callback(|text| Message::SpendRangeEdit(0, text)),
-                                    )
-                                    .into(),
-                            ),
-                            self.aligned(
-                                "To (YYYY-MM-DD)",
-                                TextBox::new()
-                                    .automation_name("Custom range end")
-                                    .text(self.spend_range[1].clone())
-                                    .on_text_changed(
-                                        context.callback(|text| Message::SpendRangeEdit(1, text)),
-                                    )
-                                    .into(),
-                            ),
-                            Button::new()
-                                .on_click(context.message(Message::SpendRangeApply))
-                                .content(t("Apply range")),
-                            self.muted(
-                                self.status
-                                    .get("__spend_range")
-                                    .map(String::as_str)
-                                    .unwrap_or(""),
-                            ),
-                        ))
-                        .into(),
-                ),
-            );
-        }
-
-        content.push(
-            self.surface(
-                StackPanel::new().spacing(12.0).children([
-                    self.spend_choice(
-                        0,
-                        "Time range",
-                        translated(&[
-                            "Today",
-                            "Last 7 days",
-                            "Last 30 days",
-                            "Last 90 days",
-                            "All time",
-                            "This month",
-                            "Last month",
-                            "This year",
-                            "Custom range",
-                        ]),
-                        settings.spend_span.selection_index(),
-                        context,
-                    ),
-                    self.spend_choice(4, "Agent", sources, source_index, context),
-                    self.spend_choice(5, "Model", model_options, model_index, context),
-                    self.spend_choice(
-                        1,
-                        "Group by",
-                        translated(&["Agents", "Models", "Days"]),
-                        match self.spend_group {
-                            Group::Agents => 0,
-                            Group::Models => 1,
-                            Group::Days => 2,
-                        },
-                        context,
-                    ),
-                    self.spend_choice(
-                        2,
-                        "Sort by",
-                        translated(&[
-                            "Name / date",
-                            "Total tokens",
-                            "API value",
-                            "Input",
-                            "Output",
-                            "Cache read",
-                            "Cache write",
-                        ]),
-                        Sort::ALL
-                            .iter()
-                            .position(|s| *s == self.spend_sort)
-                            .unwrap_or(1),
-                        context,
-                    ),
-                    self.spend_choice(
-                        3,
-                        "Order",
-                        translated(&["Descending", "Ascending"]),
-                        usize::from(!self.spend_descending),
-                        context,
-                    ),
-                ]),
-            ),
-        );
-        let summary = match summary {
-            SpendAnalysisStatus::Ready(summary) => summary,
-            status => {
-                content.push(
-                    self.muted(t(match status {
-                        SpendAnalysisStatus::Loading => "Calculating token statistics…",
-                        SpendAnalysisStatus::Failed => "Unable to calculate token statistics.",
-                        _ => "Token statistics calculation cancelled.",
-                    }))
-                    .into(),
-                );
-                return StackPanel::new()
-                    .spacing(18.0)
-                    .children((View::keyed_fragment(content.into_iter().enumerate()),));
-            }
-        };
-        let analysis = &summary.analysis;
-        content.push(self.token_activity_view(&summary.activity, context));
-        content.push(self.monthly_recap_view(&summary.recap, &summary.months, context));
-        let total = analysis.total;
-        let summary_grid = Grid::new()
-            .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
-            .column_spacing(24.0)
-            .children((
-                StackPanel::new().spacing(6.0).children((
-                    self.muted(t("Total tokens")),
-                    TextBlock::new()
-                        .text(total.tokens.to_string())
-                        .font_size(28.0)
-                        .font_weight(FontWeight::SEMI_BOLD),
-                    self.muted(&format!(
-                        "{} {}",
-                        t("Tokens without public prices:"),
-                        total.unpriced
-                    )),
-                    self.muted(&format!(
-                        "{} {}",
-                        t("Tokens without a kind breakdown:"),
-                        total.unclassified
-                    )),
-                )),
-                StackPanel::new().grid_column(1).spacing(6.0).children((
-                    self.muted(t("API value")),
-                    TextBlock::new()
-                        .text(quotascope_core::money::estimate(total.cost))
-                        .font_size(28.0)
-                        .font_weight(FontWeight::SEMI_BOLD),
-                    self.muted(&format!(
-                        "{} {} · {} {}",
-                        t("Input"),
-                        quotascope_core::money::estimate(total.costs.input),
-                        t("Output"),
-                        quotascope_core::money::estimate(total.costs.output)
-                    )),
-                    self.muted(&format!(
-                        "{} {} · {} {}",
-                        t("Cache read"),
-                        quotascope_core::money::estimate(total.costs.cache_read),
-                        t("Cache write"),
-                        quotascope_core::money::estimate(total.costs.cache_write)
-                    )),
-                )),
-            ));
-        content.push(self.surface(summary_grid.into()));
-        if !summary.partial_sources.is_empty() {
-            content.push(
-                self.muted(&quotascope_core::localization::t_fmt(
-                    "Incomplete local records: {sources}. Totals cover readable counters only.",
-                    &[&summary.partial_sources.join(", ")],
-                ))
-                .into(),
-            );
-        }
-        if let Some(rate) = total.cache_hit_rate() {
-            content.push(
-                self.muted(&format!("{} {:.0}%", t("Cache hit rate"), rate * 100.0))
-                    .into(),
-            );
-        }
-        if total.tokens == 0 {
-            content.push(
-                self.muted(t("No measured token records in this range."))
-                    .into(),
-            );
-        }
-        // Up to 40 calendar bins, each retaining its actual total. No samples
-        // are discarded when a long span is selected.
-        if !analysis.days.is_empty() {
-            let bins = &summary.bins;
-            let max = bins.iter().copied().max().unwrap_or(1).max(1) as f64;
-            content.push(
-                StackPanel::new()
-                    .orientation(Orientation::Horizontal)
-                    .spacing(4.0)
-                    .height(76.0)
-                    .children((View::keyed_fragment(bins.iter().enumerate().map(
-                        |(i, value)| {
-                            (
-                                i,
-                                Border::new()
-                                    .width(8.0)
-                                    .height((*value as f64 / max * 76.0).max(0.0))
-                                    .vertical_alignment(VerticalAlignment::Bottom)
-                                    .corner_radius(CornerRadius::uniform(2.0))
-                                    .background(Color::argb(255, 0, 120, 212)),
-                            )
-                        },
-                    )),))
-                    .into(),
-            );
-            content.push(
-                self.muted(&format!(
-                    "{} — {}",
-                    analysis.days.first().unwrap().date,
-                    analysis.days.last().unwrap().date
-                ))
-                .into(),
-            );
-        }
-        let hours = &summary.hours;
-        let peak = hours.iter().copied().max().unwrap_or(1).max(1) as f64;
-        content.push(
-            TextBlock::new()
-                .text(t("Tokens by local hour (recorded time buckets only)"))
-                .into(),
-        );
-        content.push(
-            StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(4.0)
-                .height(90.0)
-                .children((View::keyed_fragment(hours.iter().enumerate().map(
-                    |(hour, tokens)| {
-                        (
-                            hour,
-                            StackPanel::new()
-                                .vertical_alignment(VerticalAlignment::Bottom)
-                                .width(24.0)
-                                .children((
-                                    Border::new()
-                                        .height(*tokens as f64 / peak * 64.0)
-                                        .background(Color::argb(255, 0, 120, 212)),
-                                    TextBlock::new().text(hour.to_string()).font_size(10.0),
-                                )),
-                        )
-                    },
-                )),))
-                .into(),
-        );
-        let columns = [
-            "Name / date",
-            "Input",
-            "Cache write",
-            "Cache read",
-            "Output",
-            "Total tokens",
-            "API value",
-        ];
-        let table_row = |cells: Vec<View>| {
-            Grid::new()
-                .columns([
-                    GridLength::Star(2.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                    GridLength::Star(1.0),
-                ])
-                .column_spacing(12.0)
-                .min_width(780.0)
-                .children((View::keyed_fragment(
-                    cells
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, v)| (i, Border::new().grid_column(i as i32).content(v))),
-                ),))
-        };
-        let mut table: Vec<View> = vec![table_row(
-            columns
-                .iter()
-                .map(|label| {
-                    TextBlock::new()
-                        .text(t(label))
-                        .font_weight(FontWeight::SEMI_BOLD)
-                        .into()
-                })
-                .collect(),
-        )
-        .into()];
-        let pages = analysis.rows.len().div_ceil(20).max(1);
-        let page = self.spend_page.min(pages - 1);
-        for entry in analysis.page(page, 20) {
-            let values = entry.measures;
-            let id = entry.id.clone();
-            let name: View = if self.spend_group == Group::Days {
-                TextBlock::new().text(&entry.title).into()
-            } else {
-                Button::new()
-                    .on_click(context.message(Message::SpendDrill(id)))
-                    .content(entry.title.clone())
-            };
-            let cost = if values.unpriced == values.tokens && values.tokens > 0 {
-                t("Unpriced").to_string()
-            } else {
-                format!(
-                    "{}{}",
-                    quotascope_core::money::estimate(values.cost),
-                    if values.unpriced > 0 { " *" } else { "" }
-                )
-            };
-            table.push(
-                table_row(vec![
-                    name,
-                    TextBlock::new().text(values.tally.input.to_string()).into(),
-                    TextBlock::new()
-                        .text(values.tally.cache_write.to_string())
-                        .into(),
-                    TextBlock::new()
-                        .text(values.tally.cache_read.to_string())
-                        .into(),
-                    TextBlock::new()
-                        .text(values.tally.output.to_string())
-                        .into(),
-                    TextBlock::new().text(values.tokens.to_string()).into(),
-                    TextBlock::new().text(cost).into(),
-                ])
-                .into(),
-            );
-        }
-        content.push(
-            self.surface(
-                ScrollViewer::new()
-                    .horizontal_scroll_bar_visibility(ScrollBarVisibility::Auto)
-                    .content(
-                        StackPanel::new()
-                            .spacing(10.0)
-                            .children((View::keyed_fragment(table.into_iter().enumerate()),)),
-                    )
-                    .into(),
-            ),
-        );
-        content.push(row((
-            Button::new()
-                .is_enabled(page > 0)
-                .on_click(context.message(Message::SpendPage(false)))
-                .content(t("Previous")),
-            TextBlock::new().text(format!("{} / {}", page + 1, pages)),
-            Button::new()
-                .is_enabled(page + 1 < pages)
-                .on_click(context.message(Message::SpendPage(true)))
-                .content(t("Next")),
-        )));
-        content.push(
-            self.muted(t("* API value excludes tokens without a published price."))
-                .into(),
-        );
-        let coverage = snapshot
-            .sources
-            .iter()
-            .map(|s| {
-                StackPanel::new().spacing(4.0).children((
-                    TextBlock::new()
-                        .text(format!(
-                            "{} · {}",
-                            s.title,
-                            t(if !s.present {
-                                "Store not found"
-                            } else if s.ledger.has_partial_records {
-                                "Some local records couldn't be read"
-                            } else if summary.coverage.get(&s.id).copied().unwrap_or(false) {
-                                if s.location.contains("UsageImports") {
-                                    "Recorded tokens; native and imported coverage varies"
-                                } else {
-                                    "Native token records"
-                                }
-                            } else if quotascope_core::additional_spend::CATALOG
-                                .iter()
-                                .any(|(id, _, _)| *id == s.id)
-                                && !quotascope_core::additional_spend::native_supported(&s.id)
-                            {
-                                "Native format not yet supported; accepts explicit local imports"
-                            } else {
-                                "No token counters found"
-                            })
-                        ))
-                        .font_weight(FontWeight::SEMI_BOLD),
-                    self.muted(&s.location),
-                ))
-            })
-            .collect::<Vec<_>>();
-        content.push(
-            self.surface(
-                StackPanel::new()
-                    .spacing(12.0)
-                    .children((
-                        section("Source coverage"),
-                        StackPanel::new()
-                            .spacing(14.0)
-                            .children((View::keyed_fragment(coverage.into_iter().enumerate()),)),
-                    ))
-                    .into(),
-            ),
-        );
-        StackPanel::new()
-            .spacing(18.0)
-            .children((View::keyed_fragment(content.into_iter().enumerate()),))
-    }
-
     fn credential_field(
         &self,
         index: usize,
@@ -3294,10 +1896,7 @@ impl SettingsApp {
             ToggleKey::AutoCollapse => s.auto_collapse = value,
             ToggleKey::FollowDisplay => s.follows_active_display = value,
             ToggleKey::HideTrayIcon => s.hides_tray_icon = value,
-            ToggleKey::TokenSpend => s.reads_token_spend = value,
-            ToggleKey::BackgroundSpend => s.background_token_spend = value,
             ToggleKey::GlobalShortcuts => s.global_shortcuts = value,
-            ToggleKey::RingActivity => s.animates_ring_activity = value,
             ToggleKey::AnimatedBots => s.animated_bots = value,
             ToggleKey::CodexResetCredits => s.shows_codex_reset_credits = value,
             ToggleKey::Alerts => s.wants_alerts = value,
@@ -3309,9 +1908,6 @@ impl SettingsApp {
         });
         if key == ToggleKey::Startup {
             crate::autostart::set_enabled(value);
-        }
-        if !value && matches!(key, ToggleKey::TokenSpend | ToggleKey::BackgroundSpend) {
-            quotascope_core::spend_warmer::clear();
         }
     }
 
@@ -3465,11 +2061,6 @@ impl SettingsApp {
                     3 => 95,
                     _ => 75,
                 };
-            }
-            ChoiceKey::StatisticsCache => {
-                if let Some(value) = quotascope_core::statistics_cache::LIMITS_MB.get(selected) {
-                    s.statistics_cache_limit_mb = *value;
-                }
             }
         });
     }
@@ -3693,7 +2284,6 @@ impl SettingsApp {
                             Button::new().on_click(context.message(Message::SaveProxy)).content(quotascope_core::localization::t("Save proxy and refresh")),
                             self.toggle(ToggleKey::GlobalShortcuts,"Global shortcuts: Ctrl+Shift+F10 panel, F11 dashboard, F12 refresh",s.global_shortcuts,context),
                             self.toggle(ToggleKey::AnimatedBots,"Animated dashboard buddy",s.animated_bots,context),
-                            self.toggle(ToggleKey::RingActivity,"Animate ring activity",s.animates_ring_activity,context),
                             self.choice(ChoiceKey::Language,"Language",&["Automatic","English","简体中文","繁體中文","日本語","한국어","Русский"],match s.language.as_str(){"en"=>1,"zh"=>2,"zh-Hant"=>3,"ja"=>4,"ko"=>5,"ru"=>6,_=>0},context),
                         )),
                         self.choice(
@@ -3797,22 +2387,13 @@ impl SettingsApp {
                     crate::autostart::is_enabled(),
                     context,
                 ))).into()),
-                self.surface(StackPanel::new().spacing(14.0).children((section("Token spend"),
+                self.surface(StackPanel::new().spacing(14.0).children((section("Accounts"),
                 self.toggle(
                     ToggleKey::CodexResetCredits,
                     "Show Codex reset credits",
                     s.shows_codex_reset_credits,
                     context,
-                ),
-                self.toggle(
-                    ToggleKey::TokenSpend,
-                    "Read token spend",
-                    s.reads_token_spend,
-                    context,
-                ),
-                self.muted(&quotascope_core::localization::t(
-                    "Read this machine's Claude Code and Codex transcripts and Antigravity conversation databases, then price known token counts at published API rates. These records never leave this machine.",
-                )))).into()),
+                ))).into()),
             ))
             .into()
     }
@@ -4129,8 +2710,7 @@ impl SettingsApp {
                     if matches!(provider, Provider::Qoder | Provider::DimAgent) {
                         self.aligned("Show credit amounts", ToggleSwitch::new().is_on(quotascope_core::settings::with(|s| s.credit_amounts.contains(raw))).on_toggled(context.callback(move |on| Message::ShowAmounts(index,on))).into())
                     } else { View::empty() },
-                    StackPanel::new().spacing(12.0).children((self.avatar_controls(provider.raw(),context),self.connection_view(provider,context),self.account_history_view(provider, context))),
-                    self.account_details_view(index, provider, context),
+                    StackPanel::new().spacing(12.0).children((self.avatar_controls(provider.raw(),context),self.connection_view(provider,context))),
                     self.service_status_view(provider, context),
                 )),
         )
@@ -4318,114 +2898,6 @@ impl SettingsApp {
         ))
     }
 
-    fn account_details_view(
-        &self,
-        index: usize,
-        provider: Provider,
-        context: &ViewContext<Self>,
-    ) -> View {
-        use quotascope_core::localization::{t, t_fmt};
-        if !matches!(provider, Provider::ClaudeCode | Provider::Codex) {
-            return View::empty();
-        }
-        if !quotascope_core::settings::with(|s| s.reads_token_spend) {
-            return self
-                .muted(t(
-                    "Enable local reading to analyze records on this computer.",
-                ))
-                .into();
-        }
-        let (details, running) = {
-            let state = self.shared.snapshot.lock().unwrap();
-            (
-                state.account_details.get(&provider).cloned(),
-                state.account_detail_controls.contains_key(&provider),
-            )
-        };
-        let mut rows: Vec<View> = vec![
-            section("Usage by model (last 30 days)").into(),
-            Button::new()
-                .is_enabled(!running)
-                .on_click(context.message(Message::RefreshAccountDetails(index)))
-                .content(t("Refresh"))
-                .into(),
-        ];
-        if let Some(details) = details {
-            if details.partial {
-                rows.push(self.muted(t("Counts may be incomplete.")).into());
-            }
-            if details.timings_partial {
-                rows.push(self.muted(t("Some local timing records couldn't be read; speed covers readable replies only.")).into());
-            }
-            if details.models.is_empty() {
-                rows.push(self.muted(t("No local records.")).into());
-            }
-            for model in &details.models {
-                let hit = model
-                    .cache_hit
-                    .map(|v| format!("{:.1}%", v * 100.0))
-                    .unwrap_or_else(|| "—".into());
-                let speed = model
-                    .timing
-                    .speed()
-                    .map(|v| format!("{v:.1}"))
-                    .unwrap_or_else(|| "—".into());
-                let first = model
-                    .timing
-                    .first_token()
-                    .map(|v| format!("{v:.2}"))
-                    .unwrap_or_else(|| "—".into());
-                let text = t_fmt("{model} · {share}% · {tokens} tokens · cache {hit}% · {speed} tokens/s · first token {first}s", &[&model.id, &format!("{:.1}", model.share * 100.0), &model.tokens.to_string(), &hit.trim_end_matches('%'), &speed, &first]);
-                rows.push(
-                    TextBlock::new()
-                        .text(text)
-                        .text_wrapping(TextWrapping::Wrap)
-                        .into(),
-                );
-            }
-            rows.push(self.muted(t("Speed covers the last 24 hours, includes request wait, and needs three measured replies.")).into());
-            rows.push(section("Prompt cache sessions").into());
-            let now = quotascope_core::timeutil::now_ms();
-            let sessions = details.cache.alive(now);
-            if sessions.is_empty() {
-                rows.push(self.muted(t("No active prompt cache.")).into());
-            }
-            for session in sessions {
-                let name = session
-                    .title
-                    .as_deref()
-                    .or(session.project.as_deref())
-                    .unwrap_or(t("Untitled conversation"));
-                let minutes =
-                    ((session.lapse.expires_at().saturating_sub(now) + 59_999) / 60_000).max(1);
-                rows.push(
-                    TextBlock::new()
-                        .text(t_fmt(
-                            "{session} · {minutes} min remaining",
-                            &[name, &minutes.to_string()],
-                        ))
-                        .text_wrapping(TextWrapping::Wrap)
-                        .into(),
-                );
-            }
-            if provider == Provider::Codex {
-                rows.push(self.muted(t("Documented cache eligibility is a minimum; routing can still cause a cache miss.")).into());
-            }
-        } else {
-            rows.push(
-                self.muted(t(if running {
-                    "Reading local records…"
-                } else {
-                    "Refresh to read account details."
-                }))
-                .into(),
-            );
-        }
-        StackPanel::new()
-            .spacing(8.0)
-            .keyed_children(rows.into_iter().enumerate())
-    }
-
     fn deepseek_console_controls(
         &self,
         account: &quotascope_core::model::AccountKey,
@@ -4437,7 +2909,7 @@ impl SettingsApp {
         let id = account.id();
         let detailed = quotascope_core::settings::with(|s| s.detailed_cards.contains(&id));
         StackPanel::new().spacing(6.0).children((
-            self.muted(t("Import the DeepSeek console session to read 30 calendar days of account-wide tokens and actual bills. API keys stay separate.")),
+            self.muted(t("Import the DeepSeek console session to read the account balance. API keys stay separate.")),
             if account.is_primary() { View::empty() } else {
                 self.muted(t("Sign in to the intended DeepSeek account in your browser before importing. Additional accounts never renew from another browser login.")).into()
             },
@@ -4532,12 +3004,6 @@ impl SettingsApp {
             let id = account.id();
             let credit_id = id.clone();
             let credit_on = quotascope_core::settings::with(|s| s.credit_amounts.contains(&id));
-            let history = if matches!(account.provider, Provider::Qoder | Provider::DeepSeek) {
-                self.shared.request_history_for(account.clone(), false);
-                self.account_history_for(&account, context)
-            } else {
-                View::empty()
-            };
             let key = format!("__account-{id}");
             rows.push((
                 key,
@@ -4565,7 +3031,6 @@ impl SettingsApp {
                         } else {
                             View::empty()
                         },
-                        history,
                     )),
                 ),
             ));
@@ -4713,80 +3178,24 @@ impl SettingsApp {
 
     fn maintenance_view(&self, context: &ViewContext<Self>) -> View {
         use quotascope_core::localization::t;
-        let (cache, busy, scanning, result, path) = {
+        let (busy, path) = {
             let state = self.shared.snapshot.lock().unwrap();
-            (
-                state.cache.clone(),
-                state.maintenance_running,
-                state.spend_worker_running,
-                state.maintenance_result.clone(),
-                state.diagnostic_path.clone(),
-            )
-        };
-        let limit = quotascope_core::settings::with(|s| {
-            quotascope_core::statistics_cache::limit_mb(s.statistics_cache_limit_mb)
-        });
-        let selected = quotascope_core::statistics_cache::LIMITS_MB
-            .iter()
-            .position(|v| *v == limit)
-            .unwrap_or(2);
-        let size_text = cache
-            .map(|cache| {
-                t("Statistics cache: {size} MiB · {files} files")
-                    .replace("{size}", &format!("{:.2}", cache.bytes as f64 / 1048576.0))
-                    .replace("{files}", &cache.files.len().to_string())
-            })
-            .unwrap_or_else(|| t("Reading cache information…").into());
-        let status = if busy {
-            t("Working…").to_owned()
-        } else {
-            match result {
-                Some(MaintenanceResult::Cleaned(cleanup)) => {
-                    t("Removed {files} cache files · freed {size} MiB · {failed} failures")
-                        .replace("{files}", &cleanup.removed_files.to_string())
-                        .replace(
-                            "{size}",
-                            &format!("{:.2}", cleanup.freed_bytes as f64 / 1048576.0),
-                        )
-                        .replace("{failed}", &cleanup.failed_files.to_string())
-                }
-                Some(MaintenanceResult::Exported) => t("Diagnostics exported locally.").into(),
-                Some(MaintenanceResult::Failed) => t(
-                    "Could not complete this operation. Check folder permissions and try again.",
-                )
-                .into(),
-                _ => String::new(),
-            }
+            (state.maintenance_running, state.diagnostic_path.clone())
         };
         StackPanel::new().spacing(14.0).children((
-            heading("Storage and diagnostics"),
-            self.surface(StackPanel::new().spacing(10.0).children((
-                section("Statistics cache"),
-                TextBlock::new().text(size_text),
-                self.aligned("Disk cache budget", ComboBox::new()
-                    .is_enabled(!busy && !scanning)
-                    .min_width(170.0)
-                    .items_source(["No disk cache", "16 MiB", "64 MiB (default)", "256 MiB"].map(t))
-                    .selected_index(selected)
-                    .on_selection_changed(context.callback(|index| Message::Choice(ChoiceKey::StatisticsCache, index))).into()),
-                self.muted(t("Oldest statistics caches are removed when over budget. Oversized files are not saved. Account settings, keys and original logs are kept.")),
-                self.muted(t("After clearing, statistics are rebuilt on the next read. The price table is retained.")),
-                if scanning { self.muted(t("Wait for the local scan to stop before clearing or changing the budget.")).into() } else { View::empty() },
-                StackPanel::new().orientation(Orientation::Horizontal).spacing(8.0).children((
-                    Button::new().is_enabled(!busy).on_click(context.message(Message::Maintenance(MaintenanceOperation::Inspect))).content(t("Refresh cache information")),
-                    Button::new().is_enabled(!busy && !scanning).on_click(context.message(Message::Maintenance(MaintenanceOperation::Clear))).content(t("Clear statistics cache")),
-                )),
-            ))),
+            heading("Diagnostics"),
             self.surface(StackPanel::new().spacing(10.0).children((
                 section("Diagnostics"),
-                self.muted(t("Export a local JSON report with version, process resources, cache sizes and scan status. Keys, account addresses and conversation contents are excluded. A new export replaces the previous report.")),
+                self.muted(t("Export a local JSON report with version and process resources. Keys, account addresses and conversation contents are excluded. A new export replaces the previous report.")),
                 StackPanel::new().orientation(Orientation::Horizontal).spacing(8.0).children((
                     Button::new().is_enabled(!busy).on_click(context.message(Message::Maintenance(MaintenanceOperation::Export))).content(t("Export diagnostics")),
                     Button::new().is_enabled(path.is_some() && !busy).on_click(context.message(Message::OpenDiagnosticsFolder)).content(t("Open diagnostics folder")),
                 )),
                 TextBlock::new().text(path.map(|p| p.display().to_string()).unwrap_or_default()).is_text_selection_enabled(true).text_wrapping(TextWrapping::Wrap),
             ))),
-            TextBlock::new().text(status).text_wrapping(TextWrapping::Wrap),
+            TextBlock::new()
+                .text(if busy { t("Working…").into() } else { String::new() })
+                .text_wrapping(TextWrapping::Wrap),
         ))
     }
 
@@ -4903,6 +3312,177 @@ impl SettingsApp {
     }
 }
 
+impl SettingsApp {
+    fn quota_progress(&self, fraction: f64) -> View {
+        if !quotascope_core::settings::with(|s| s.progress_bars == "segmented") {
+            return ProgressBar::new()
+                .maximum(100.0)
+                .value(fraction.clamp(0.0, 1.0) * 100.0)
+                .into();
+        }
+        let accent = crate::theme::panel::accent();
+        let color = Color::argb(
+            255,
+            (accent.r * 255.0) as u8,
+            (accent.g * 255.0) as u8,
+            (accent.b * 255.0) as u8,
+        );
+        Grid::new()
+            .height(6.0)
+            .columns(vec![GridLength::Star(1.0); 48])
+            .column_spacing(2.0)
+            .children((View::keyed_fragment((0..48).map(|index| {
+                let lit = (fraction.clamp(0.0, 1.0) * 48.0 - index as f64).clamp(0.0, 1.0);
+                (
+                    index as usize,
+                    Grid::new()
+                        .grid_column(index)
+                        .columns([GridLength::Star(lit), GridLength::Star(1.0 - lit)])
+                        .children((
+                            Border::new().background(color),
+                            Border::new()
+                                .grid_column(1)
+                                .background(Color::argb(35, 128, 128, 128)),
+                        )),
+                )
+            })),))
+    }
+
+    fn avatar_controls(&self, id: &str, context: &ViewContext<Self>) -> View {
+        use quotascope_core::localization::t;
+        let config = quotascope_core::settings::with(|s| {
+            s.robot_avatars.get(id).cloned().unwrap_or_default()
+        });
+        let choice =
+            |kind, label: &str, options: &[&str], selected| {
+                let account = id.to_string();
+                self.aligned(
+                    label,
+                    ComboBox::new()
+                        .automation_name(t(label))
+                        .items_source(options.iter().map(|s| t(s)).collect::<Vec<_>>())
+                        .selected_index(Some(selected))
+                        .on_selection_changed(context.callback(move |index| {
+                            Message::AvatarChoice(account.clone(), kind, index)
+                        }))
+                        .into(),
+                )
+            };
+        let mut rows = vec![choice(
+            0,
+            "Ring mark",
+            &["Provider logo", "Agent Robot Avatar"],
+            usize::from(config.enabled),
+        )];
+        if config.enabled {
+            rows.push(choice(
+                1,
+                "Personality",
+                &["Automatic", "Calm", "Curious", "Lively"],
+                match config.personality.as_str() {
+                    "calm" => 1,
+                    "curious" => 2,
+                    "lively" => 3,
+                    _ => 0,
+                },
+            ));
+            rows.push(choice(
+                2,
+                "Head shape",
+                &["Original", "Squarer", "Rounder"],
+                match config.shape.as_str() {
+                    "square" => 1,
+                    "round" => 2,
+                    _ => 0,
+                },
+            ));
+            let color_id = id.to_string();
+            let save_id = color_id.clone();
+            rows.push(
+                self.aligned(
+                    "Robot color",
+                    TextBox::new()
+                        .text(
+                            self.addresses
+                                .get(&format!("__robot-{id}"))
+                                .cloned()
+                                .unwrap_or(config.color),
+                        )
+                        .placeholder_text("#RRGGBB")
+                        .on_text_changed(
+                            context
+                                .callback(move |text| Message::AvatarColor(color_id.clone(), text)),
+                        )
+                        .into(),
+                ),
+            );
+            rows.push(
+                Button::new()
+                    .on_click(context.message(Message::SaveAvatarColor(save_id)))
+                    .content(t("Save color (empty for automatic)")),
+            );
+        }
+        StackPanel::new()
+            .spacing(6.0)
+            .children((View::keyed_fragment(rows.into_iter().enumerate()),))
+    }
+
+    fn model_group_controls(&self, provider: Provider, context: &ViewContext<Self>) -> View {
+        use quotascope_core::localization::t;
+        let id = provider.raw().to_string();
+        let settings = quotascope_core::settings::with(Clone::clone);
+        let split = settings.split_accounts.contains(&id);
+        let toggle_id = id.clone();
+        let mut rows: Vec<View> = vec![self.aligned(
+            "One ring per model group",
+            ToggleSwitch::new()
+                .automation_name(t("One ring per model group"))
+                .is_on(split)
+                .on_toggled(
+                    context.callback(move |on| Message::SplitAccount(toggle_id.clone(), on)),
+                )
+                .into(),
+        )];
+        if split {
+            let state = self.shared.snapshot.lock().unwrap();
+            if let Some(usage) = state.readings.get(&id) {
+                let groups: std::collections::BTreeSet<_> = usage
+                    .windows
+                    .iter()
+                    .filter_map(|w| w.scope.clone())
+                    .collect();
+                for group in groups.into_iter().take(3) {
+                    let on = settings
+                        .shown_model_groups
+                        .get(&id)
+                        .is_none_or(|chosen| chosen.contains(&group));
+                    let key = id.clone();
+                    let name = group.clone();
+                    rows.push(
+                        self.aligned(
+                            &group,
+                            ToggleSwitch::new()
+                                .automation_name(&group)
+                                .is_on(on)
+                                .on_toggled(context.callback(move |on| {
+                                    Message::ModelGroup(key.clone(), name.clone(), on)
+                                }))
+                                .into(),
+                        ),
+                    );
+                }
+            }
+            rows.push(
+                self.muted(t("The last visible model group stays enabled."))
+                    .into(),
+            );
+        }
+        StackPanel::new()
+            .spacing(6.0)
+            .children((View::keyed_fragment(rows.into_iter().enumerate()),))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::positive_or_empty;
@@ -4917,166 +3497,6 @@ mod tests {
             super::icon_cache_name(b"old"),
             super::icon_cache_name(b"new")
         );
-    }
-
-    fn analysis_request() -> quotascope_core::spend_analysis::Request {
-        use quotascope_core::spend::{Group, Sort, Span};
-        quotascope_core::spend_analysis::Request {
-            snapshot: std::sync::Arc::new(Default::default()),
-            query: quotascope_core::spend_analysis::Query {
-                span: Span::Week,
-                today: chrono::NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
-                recap_period: quotascope_core::recap::Period::Month,
-                recap_month: chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
-                source: None,
-                model: None,
-                group: Group::Agents,
-                sort: Sort::Tokens,
-                descending: true,
-            },
-        }
-    }
-
-    #[test]
-    fn changing_filters_rejects_old_analysis_and_reuses_only_the_matching_cache() {
-        let request = analysis_request();
-        let mut state = super::SpendAnalysisState::default();
-        state.select(request.clone());
-        let old_generation = state.generation;
-        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
-        state.control = Some(control.clone());
-        let result = std::sync::Arc::new(
-            super::SpendSummary::compute(
-                request.clone(),
-                std::sync::Arc::new(Default::default()),
-                None,
-            )
-            .unwrap(),
-        );
-        state.result = Some(result.clone());
-        state.cache.insert(result.clone());
-        let mut other = request.clone();
-        other.query.source = Some("other".into());
-        state.select(other.clone());
-        assert!(control.is_cancelled());
-        assert!(state.result.is_none());
-        assert!(!state.accepts(&request, old_generation));
-        assert!(state.accepts(&other, state.generation));
-        state.select(request);
-        assert!(std::sync::Arc::ptr_eq(
-            state.result.as_ref().unwrap(),
-            &result
-        ));
-    }
-
-    #[test]
-    fn closing_and_reopening_cannot_accept_a_cancelled_analysis_completion() {
-        let request = analysis_request();
-        let mut state = super::SpendAnalysisState::default();
-        state.select(request.clone());
-        state.worker_running = true;
-        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
-        state.control = Some(control.clone());
-        let old_generation = state.generation;
-        state.release();
-        assert!(control.is_cancelled() && state.worker_running);
-        assert!(state.request.is_none() && state.result.is_none());
-        state.select(request.clone());
-        assert!(!state.accepts(&request, old_generation));
-        assert!(state.accepts(&request, state.generation));
-        let generation = state.generation;
-        state.cancel();
-        assert!(!state.accepts(&request, generation));
-    }
-
-    #[test]
-    fn replacing_the_raw_snapshot_invalidates_its_derived_result() {
-        let request = analysis_request();
-        let mut state = super::SettingsSnapshot::default();
-        state.set_spend(request.snapshot.clone());
-        state.spend_analysis.select(request.clone());
-        let generation = state.spend_analysis.generation;
-        state.set_spend(request.snapshot.clone());
-        assert!(state.spend_analysis.accepts(&request, generation));
-        state.set_spend(std::sync::Arc::new(Default::default()));
-        assert!(!state.spend_analysis.accepts(&request, generation));
-        assert!(state.spend_analysis.result.is_none());
-    }
-
-    #[test]
-    fn cleanup_and_budget_changes_wait_for_a_running_scan() {
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let host = super::SettingsHost::new(tx, std::sync::mpsc::channel().0);
-        let shared = host.shared();
-        shared.snapshot.lock().unwrap().spend_worker_running = true;
-        shared.request_maintenance(super::MaintenanceOperation::Clear);
-        shared.request_maintenance(super::MaintenanceOperation::Enforce);
-        let state = shared.snapshot.lock().unwrap();
-        assert!(!state.maintenance_running);
-        assert!(state.maintenance_result.is_none());
-        assert_eq!(state.generation, 0);
-    }
-
-    #[test]
-    fn hiding_settings_releases_spend_and_invalidates_pending_results() {
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let host = super::SettingsHost::new(tx, std::sync::mpsc::channel().0);
-        let shared = host.shared();
-        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
-        {
-            let mut state = shared.snapshot.lock().unwrap();
-            state.spend = Some(std::sync::Arc::new(Default::default()));
-            state.spend_loading = true;
-            state.spend_generation = 42;
-            state.spend_worker_running = true;
-            state.spend_control = Some(control.clone());
-            state.spend_progress = Some(Default::default());
-        }
-        shared.release_spend();
-        let state = shared.snapshot.lock().unwrap();
-        assert!(state.spend.is_none());
-        assert!(!state.spend_loading);
-        assert_ne!(state.spend_generation, 42);
-        assert!(control.is_cancelled());
-        assert!(state.spend_progress.is_none());
-        assert!(
-            state.spend_worker_running,
-            "a second scan must wait for this worker to exit"
-        );
-    }
-
-    #[test]
-    fn cancelling_keeps_the_last_complete_snapshot_and_invalidates_worker_results() {
-        let host =
-            super::SettingsHost::new(std::sync::mpsc::channel().0, std::sync::mpsc::channel().0);
-        let shared = host.shared();
-        let snapshot = std::sync::Arc::new(quotascope_core::spend::Snapshot::default());
-        let control = std::sync::Arc::new(quotascope_core::scan::Control::default());
-        {
-            let mut state = shared.snapshot.lock().unwrap();
-            state.spend = Some(snapshot.clone());
-            state.spend_worker_running = true;
-            state.spend_loading = true;
-            state.spend_control = Some(control.clone());
-            state.spend_generation = 42;
-        }
-        shared.cancel_spend();
-        let generation = shared.generation();
-        shared.cancel_spend();
-        assert_eq!(
-            shared.generation(),
-            generation,
-            "duplicate cancellation is harmless"
-        );
-        let state = shared.snapshot.lock().unwrap();
-        assert!(control.is_cancelled());
-        assert!(std::sync::Arc::ptr_eq(
-            state.spend.as_ref().unwrap(),
-            &snapshot
-        ));
-        assert!(!state.spend_loading);
-        assert!(state.spend_cancelled);
-        assert_ne!(state.spend_generation, 42);
     }
 
     #[test]

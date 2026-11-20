@@ -19,7 +19,7 @@ $data=Join-Path $profile 'appdata/QuotaScope'
 New-Item -ItemType Directory -Force -Path $data,(Join-Path $profile 'home') | Out-Null
 $proxy=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
 $proxy.Start()
-$settings=@{hasRun=$true;enabledAccounts=@();language='zh';readsTokenSpend=$false;checksForUpdates=$false;wantsAlerts=$false;alertsOnOutage=$false;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
+$settings=@{hasRun=$true;enabledAccounts=@();language='zh';checksForUpdates=$false;wantsAlerts=$false;alertsOnOutage=$false;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
 $fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
 $settings.notices=@{lastVersion=$fixtureVersion}
 if($ProbePublicPages){$settings.proxyMode='disabled';$settings.proxyUrl=''}

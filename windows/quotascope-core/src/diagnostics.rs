@@ -13,18 +13,6 @@ pub struct ProcessMetrics {
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ScanStatus {
-    #[default]
-    Idle,
-    Running,
-    Stopping,
-    Cancelled,
-    Failed,
-    Complete,
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub enum UpdateStatus {
     #[default]
     Idle,
@@ -37,10 +25,6 @@ pub enum UpdateStatus {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Runtime {
     pub settings_visible: bool,
-    pub scan_status: ScanStatus,
-    pub sources_done: usize,
-    pub sources_total: usize,
-    pub files_read: u64,
     pub update_status: UpdateStatus,
     pub process: ProcessMetrics,
 }
@@ -48,8 +32,6 @@ pub struct Runtime {
 #[derive(Serialize)]
 struct Preferences {
     enabled_account_count: usize,
-    local_statistics_enabled: bool,
-    statistics_cache_limit_mb: u32,
     automatic_updates: bool,
     last_update_check_at: Option<i64>,
     update_version_skipped: bool,
@@ -65,14 +47,9 @@ struct Report {
     architecture: &'static str,
     preferences: Preferences,
     runtime: Runtime,
-    statistics_cache: crate::statistics_cache::Inventory,
 }
 
-fn report(
-    settings: &crate::settings::AppSettings,
-    runtime: Runtime,
-    inventory: crate::statistics_cache::Inventory,
-) -> Report {
+fn report(settings: &crate::settings::AppSettings, runtime: Runtime) -> Report {
     Report {
         schema_version: 1,
         generated_at: chrono::Utc::now().to_rfc3339(),
@@ -81,17 +58,12 @@ fn report(
         architecture: std::env::consts::ARCH,
         preferences: Preferences {
             enabled_account_count: settings.enabled_accounts.len(),
-            local_statistics_enabled: settings.reads_token_spend,
-            statistics_cache_limit_mb: crate::statistics_cache::limit_mb(
-                settings.statistics_cache_limit_mb,
-            ),
             automatic_updates: settings.checks_for_updates,
             last_update_check_at: settings.last_update_check_at,
             update_version_skipped: settings.skipped_update_version.is_some(),
             refresh_interval_seconds: settings.refresh_interval,
         },
         runtime,
-        statistics_cache: inventory,
     }
 }
 
@@ -144,7 +116,7 @@ pub fn export(runtime: Runtime) -> io::Result<PathBuf> {
     static EXPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _export = EXPORT.lock().unwrap_or_else(|e| e.into_inner());
     let settings = crate::settings::with(Clone::clone);
-    let report = report(&settings, runtime, crate::statistics_cache::inspect());
+    let report = report(&settings, runtime);
     export_at(&crate::data_dir(), &report)
 }
 
@@ -166,8 +138,7 @@ mod tests {
             .insert("secret-id".into(), "private-extension-name".into());
         settings.display = "private-device-path".into();
         settings.skipped_update_version = Some("private-arbitrary-string".into());
-        let value = serde_json::to_value(report(&settings, Runtime::default(), Default::default()))
-            .unwrap();
+        let value = serde_json::to_value(report(&settings, Runtime::default())).unwrap();
         let text = value.to_string();
         for marker in [
             "private-account-secret",
@@ -182,7 +153,7 @@ mod tests {
         }
         assert_eq!(value["preferences"]["enabled_account_count"], 1);
         assert_eq!(value["preferences"]["update_version_skipped"], true);
-        assert_eq!(value["preferences"].as_object().unwrap().len(), 7);
+        assert_eq!(value["preferences"].as_object().unwrap().len(), 5);
     }
     #[test]
     fn repeated_exports_replace_one_valid_report_and_preserve_other_files() {
@@ -192,7 +163,7 @@ mod tests {
             crate::timeutil::now_ms()
         ));
         std::fs::create_dir(&dir).unwrap();
-        let report = report(&Default::default(), Runtime::default(), Default::default());
+        let report = report(&Default::default(), Runtime::default());
         let path = export_at(&dir, &report).unwrap();
         std::fs::write(dir.join("diagnostics/other.txt"), b"preserve").unwrap();
         export_at(&dir, &report).unwrap();

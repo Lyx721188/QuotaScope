@@ -7,10 +7,8 @@
 //! permanently due and spin the loop). A fixed interval chosen in Settings
 //! applies to everything equally.
 //!
-//! The one asymmetry: providers this machine cannot watch (prepaid credit
-//! draining on somebody else's servers) are blind to every activity signal
-//! and would land on the ceiling for ever — so their wait is capped at
-//! `UNWATCHED_CEILING`.
+//! The one asymmetry: no provider's spending is visible to this machine
+//! between polls, so the ladder's wait is capped at `UNWATCHED_CEILING`.
 
 use crate::cache::UsageCache;
 use crate::model::{AccountKey, Provider, ProviderUsage, State, UsageWindow};
@@ -20,7 +18,6 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 pub const FLOOR: i64 = 120;
-pub const CEILING: i64 = 1800;
 pub const UNWATCHED_CEILING: i64 = 300;
 
 #[derive(Debug, Clone)]
@@ -175,7 +172,7 @@ fn due_accounts(state: &HashMap<String, AccountState>) -> Vec<AccountKey> {
             .into_iter()
             .filter(|account| match state.get(&account.id()) {
                 Some(entry) => {
-                    let interval = interval_for(settings, &account.provider, entry.stable_passes);
+                    let interval = interval_for(settings, entry.stable_passes);
                     now - entry.asked_at >= interval * 1000
                 }
                 None => true,
@@ -184,22 +181,13 @@ fn due_accounts(state: &HashMap<String, AccountState>) -> Vec<AccountKey> {
     })
 }
 
-fn interval_for(
-    settings: &crate::settings::AppSettings,
-    provider: &Provider,
-    stable_passes: u32,
-) -> i64 {
+fn interval_for(settings: &crate::settings::AppSettings, stable_passes: u32) -> i64 {
     // A fixed interval chosen in Settings applies to everything equally:
     // somebody who picked five minutes meant five minutes.
     if settings.refresh_interval > 0 {
         return settings.refresh_interval;
     }
-    let ceiling = if provider.spending_is_watched_locally() {
-        CEILING
-    } else {
-        UNWATCHED_CEILING
-    };
-    ladder_interval(stable_passes, ceiling)
+    ladder_interval(stable_passes, UNWATCHED_CEILING)
 }
 
 /// The adaptive ladder. Every signal here is a reason to wait **longer**,
@@ -218,7 +206,7 @@ fn schedule_next(state: &HashMap<String, AccountState>) -> i64 {
         let mut earliest = now + FLOOR * 1000;
         for account in settings.ordered_enabled() {
             let interval = match state.get(&account.id()) {
-                Some(entry) => interval_for(settings, &account.provider, entry.stable_passes),
+                Some(entry) => interval_for(settings, entry.stable_passes),
                 None => FLOOR,
             };
             let due_at = state
@@ -442,37 +430,17 @@ pub fn initial_readings_from_cache() -> Vec<ProviderUsage> {
 #[cfg(test)]
 mod tests {
     //! Refresh pacing, ported from `RefreshPacingTests`. Every signal the
-    //! ladder reads is local; a provider billed entirely on its own servers
-    //! is invisible to all of them and lands on the cap every time.
+    //! ladder reads is local; nothing local watches a provider's spending
+    //! between polls, so the wait tops out at `UNWATCHED_CEILING`.
 
-    use super::{ladder_interval, CEILING, FLOOR, UNWATCHED_CEILING};
+    use super::{ladder_interval, FLOOR, UNWATCHED_CEILING};
 
     #[test]
     fn an_unchanged_reading_climbs_the_ladder_to_the_ceiling() {
-        assert_eq!(ladder_interval(0, CEILING), 120);
-        assert_eq!(ladder_interval(1, CEILING), 180);
-        assert_eq!(ladder_interval(3, CEILING), 480);
-        assert_eq!(ladder_interval(5, CEILING), 1200);
-        assert_eq!(ladder_interval(6, CEILING), CEILING);
-        assert_eq!(ladder_interval(50, CEILING), CEILING);
-    }
-
-    #[test]
-    fn a_provider_this_machine_cannot_watch_is_capped_well_short() {
-        // Six stable passes would sit at the top of the ladder, but a
-        // provider billed on its own servers never earns it: nothing
-        // appears to change because nothing local can see it move.
+        assert_eq!(ladder_interval(0, UNWATCHED_CEILING), 120);
+        assert_eq!(ladder_interval(1, UNWATCHED_CEILING), 180);
+        assert_eq!(ladder_interval(2, UNWATCHED_CEILING), UNWATCHED_CEILING);
         assert_eq!(ladder_interval(50, UNWATCHED_CEILING), UNWATCHED_CEILING);
-        assert!(UNWATCHED_CEILING < CEILING);
-    }
-
-    #[test]
-    fn the_cap_only_ever_lowers_a_wait() {
-        for passes in [0u32, 1, 2, 3, 5, 7, 50] {
-            let watched = ladder_interval(passes, CEILING);
-            let unwatched = ladder_interval(passes, UNWATCHED_CEILING);
-            assert!(unwatched <= watched, "cap raised the wait at {passes}");
-        }
     }
 
     #[test]

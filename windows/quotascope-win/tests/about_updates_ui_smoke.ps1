@@ -9,7 +9,7 @@ $data=Join-Path $profile 'appdata/QuotaScope'
 New-Item -ItemType Directory -Path $data,(Join-Path $profile 'home'),$OutputDirectory -Force|Out-Null
 $proxy=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$proxy.Start()
 $seed=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-$settings=@{hasRun=$true;enabledAccounts=@();language='zh';readsTokenSpend=$false;checksForUpdates=$false;lastUpdateCheckAt=$seed;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
+$settings=@{hasRun=$true;enabledAccounts=@();language='zh';checksForUpdates=$false;lastUpdateCheckAt=$seed;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
 $fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
 $settings.notices=@{lastVersion=$fixtureVersion}
 $settingsPath=Join-Path $data 'settings.json'

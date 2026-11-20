@@ -1,8 +1,6 @@
-//! Account-wide Codex statistics and one-off rate-limit reset credits.
-//! Statistics report tokens, never a price or a subscription bill.
+//! One-off rate-limit reset credits from the Codex account endpoint.
 
 use crate::codex_rpc::{self, RpcError};
-use chrono::NaiveDate;
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,45 +14,18 @@ pub enum ResetCredits {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UsageDay {
-    pub date: NaiveDate,
-    pub tokens: i64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AccountUsage {
-    pub days: Vec<UsageDay>,
-    pub lifetime_tokens: Option<i64>,
-    pub peak_daily_tokens: Option<i64>,
-    pub current_streak_days: Option<i64>,
-    pub longest_streak_days: Option<i64>,
-    pub next_credit_title: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct AccountDetails {
-    pub usage: Option<AccountUsage>,
     pub reset_credits: ResetCredits,
 }
 
-pub fn fetch(include_usage: bool) -> AccountDetails {
+pub fn fetch() -> AccountDetails {
     let limits = codex_rpc::request("account/rateLimits/read");
     let reset_credits = match &limits {
         Ok(root) => parse_reset_credits(root),
         Err(RpcError::Missing) => ResetCredits::CodexMissing,
         Err(_) => ResetCredits::Unreported,
     };
-    let usage = if include_usage && limits.is_ok() {
-        codex_rpc::request("account/usage/read")
-            .ok()
-            .and_then(|usage| parse_usage(&usage, limits.as_ref().ok()?))
-    } else {
-        None
-    };
-    AccountDetails {
-        usage,
-        reset_credits,
-    }
+    AccountDetails { reset_credits }
 }
 
 fn count(value: Option<&Value>) -> Option<i64> {
@@ -111,40 +82,6 @@ pub fn parse_reset_credits(root: &Value) -> ResetCredits {
     }
 }
 
-pub fn parse_usage(root: &Value, limits: &Value) -> Option<AccountUsage> {
-    let summary = root.get("summary").filter(|v| v.is_object());
-    let buckets = root.get("dailyUsageBuckets").and_then(Value::as_array);
-    if summary.is_none() && buckets.is_none() {
-        return None;
-    }
-    let mut days: Vec<_> = buckets
-        .into_iter()
-        .flatten()
-        .filter_map(|bucket| {
-            Some(UsageDay {
-                date: NaiveDate::parse_from_str(bucket.get("startDate")?.as_str()?, "%Y-%m-%d")
-                    .ok()?,
-                tokens: count(bucket.get("tokens"))?,
-            })
-        })
-        .collect();
-    days.sort_by_key(|d| d.date);
-    let next_credit_title = available(limits)
-        .into_iter()
-        .filter(|credit| credit.get("title").and_then(Value::as_str).is_some())
-        .min_by_key(|credit| expiry(credit.get("expiresAt")).unwrap_or(i64::MAX))
-        .and_then(|credit| credit.get("title").and_then(Value::as_str))
-        .map(str::to_string);
-    Some(AccountUsage {
-        days,
-        lifetime_tokens: count(summary.and_then(|s| s.get("lifetimeTokens"))),
-        peak_daily_tokens: count(summary.and_then(|s| s.get("peakDailyTokens"))),
-        current_streak_days: count(summary.and_then(|s| s.get("currentStreakDays"))),
-        longest_streak_days: count(summary.and_then(|s| s.get("longestStreakDays"))),
-        next_credit_title,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_unstated_counts_are_unknown_and_missing_summary_is_not_zero() {
+    fn malformed_or_unstated_counts_are_unknown() {
         assert_eq!(
             parse_reset_credits(&json!({"rateLimitResetCredits":{"availableCount":1e100}})),
             ResetCredits::Unreported
@@ -182,17 +119,5 @@ mod tests {
             parse_reset_credits(&json!({"rateLimitResetCredits":{"credits":"wrong type"}})),
             ResetCredits::Unreported
         );
-        assert!(parse_usage(&json!({"unrelated":true}), &json!({})).is_none());
-        let usage = parse_usage(
-            &json!({"dailyUsageBuckets":[{"startDate":"2026-10-01","tokens":12},
-            {"startDate":"wrong","tokens":999}, {"startDate":"2026-09-30","tokens":7}]}),
-            &json!({}),
-        )
-        .unwrap();
-        assert_eq!(
-            usage.days.iter().map(|d| d.tokens).collect::<Vec<_>>(),
-            vec![7, 12]
-        );
-        assert_eq!(usage.lifetime_tokens, None);
     }
 }

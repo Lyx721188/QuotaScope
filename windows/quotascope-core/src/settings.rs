@@ -13,7 +13,6 @@ use crate::model::AccountKey;
 pub struct AppSettings {
     pub notices: crate::notices::Record,
     pub robot_avatars: HashMap<String, RobotAvatar>,
-    pub animates_ring_activity: bool,
     /// Enabled account ids: a provider raw value for its primary account,
     /// or `<provider>#<slot>` for an independently stored additional account.
     pub enabled_accounts: HashSet<String>,
@@ -60,12 +59,6 @@ pub struct AppSettings {
     /// The tray icon can stand down once the panel is trusted — it comes
     /// back at the next launch, which is also how Settings is reached again.
     pub hides_tray_icon: bool,
-    /// Local records are read only after this pane is explicitly enabled.
-    /// Off by default, as upstream's `readsTokenSpend` is: reading the CLIs'
-    /// transcripts is an act worth consenting to.
-    pub reads_token_spend: bool,
-    /// Optional five-minute warm scans while Settings is closed; off by default.
-    pub background_token_spend: bool,
     /// auto | cli | desktop
     pub antigravity_source: String,
     /// default | all | chrome | edge | firefox | brave | vivaldi
@@ -80,9 +73,6 @@ pub struct AppSettings {
     pub global_shortcuts: bool,
     pub animated_bots: bool,
     pub next_account_slot: u64,
-    /// Budget for rebuildable disk statistics; 0 disables persistence.
-    pub statistics_cache_limit_mb: u32,
-    pub spend_span: crate::spend::Span,
     /// Collapse to the 6pt sliver while docked and unhovered.
     pub snaps_to_edges: bool,
     pub liquid_docking: bool,
@@ -147,7 +137,6 @@ impl Default for AppSettings {
         AppSettings {
             notices: Default::default(),
             robot_avatars: HashMap::new(),
-            animates_ring_activity: true,
             enabled_accounts: HashSet::new(),
             provider_order: Vec::new(),
             pinned_windows: HashMap::new(),
@@ -178,8 +167,6 @@ impl Default for AppSettings {
             shown_model_groups: HashMap::new(),
             warning_threshold: 75,
             hides_tray_icon: false,
-            reads_token_spend: false,
-            background_token_spend: false,
             antigravity_source: "auto".into(),
             minimax_site: "international".into(),
             qoder_site: "international".into(),
@@ -192,8 +179,6 @@ impl Default for AppSettings {
             global_shortcuts: false,
             animated_bots: false,
             next_account_slot: 1,
-            statistics_cache_limit_mb: 64,
-            spend_span: crate::spend::Span::default(),
             snaps_to_edges: true,
             liquid_docking: false,
             progress_bars: "continuous".into(),

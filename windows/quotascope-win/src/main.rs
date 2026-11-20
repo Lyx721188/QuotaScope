@@ -17,7 +17,6 @@ mod geometry;
 mod liquid_glass;
 mod panel;
 mod pulse_rail;
-mod recap_export;
 mod rings;
 mod robot;
 mod settings_app;

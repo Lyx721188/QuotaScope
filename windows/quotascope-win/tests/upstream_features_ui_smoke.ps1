@@ -11,7 +11,7 @@ $data=Join-Path $profile 'appdata/QuotaScope'
 New-Item -ItemType Directory -Path $data,(Join-Path $profile 'home'),$OutputDirectory -Force|Out-Null
 $proxy=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$proxy.Start()
 $seed=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-$settings=@{hasRun=$true;enabledAccounts=@('openDesign');language='en';manualExchangeRates=@{CNY=7.2};readsTokenSpend=$false;checksForUpdates=$false;lastUpdateCheckAt=$seed;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
+$settings=@{hasRun=$true;enabledAccounts=@('openDesign');language='en';manualExchangeRates=@{CNY=7.2};checksForUpdates=$false;lastUpdateCheckAt=$seed;proxyMode='manual';proxyUrl="http://127.0.0.1:$($proxy.LocalEndpoint.Port)"}
 $fixtureVersion=[regex]::Match([Diagnostics.FileVersionInfo]::GetVersionInfo([IO.Path]::GetFullPath($Executable)).ProductVersion,'\d+\.\d+\.\d+').Value
 $settings.notices=@{lastVersion=$fixtureVersion}
 $settingsPath=Join-Path $data 'settings.json'
@@ -177,7 +177,6 @@ try{
     Configure 'Qoder'
     Select-ComboItem (Combo 'Account site') 'qoder.com.cn'
     Check-Saved {param($s) $s.qoderSite -eq 'china'}
-    Wait-Text 'Usage history'
     $phase='avatar'
     Configure 'Codex'
     Select-ComboItem (Combo 'Ring mark') 'Agent Robot Avatar'

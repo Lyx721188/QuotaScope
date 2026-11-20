@@ -23,11 +23,10 @@ Win32、Direct2D 和 WinUI 3 之上。它直接读取各服务商自己的客户
 - Provider 图标和本地化资源随 Windows 应用一起发布
 - 托盘逐账户用量摘要和用量页入口；设置页支持账户搜索、订阅/API 分组和凭据明文切换
 - 每账户余额口径、预算与低余额提醒；扩展程序可报告自己的用量
-- 可选的本机 Token 消耗分析：54 个来源目录，其中 38 个可读取已知格式（含导出缓存），16 个支持标准导入
-- DeepSeek 官网历史与独立会话、Codex 模型用量与时序、DSH 压缩会话读取；缺失或不完整记录会明确提示
-- 账户历史、Qoder 积分与 31 天明细，MiniMax 国际站与中国站独立凭据
+- DeepSeek 官网会话导入、Codex 重置额度等账户补充信息
+- Qoder 积分显示，MiniMax 国际站与中国站独立凭据
 - Open Design / OpenDesign Go、DimAgent、Antigravity agy CLI 及 44 家官方服务状态
-- 日、周、月、年 Token 回顾、PNG 分享、估算币种与汇率设置
+- 估算币种与汇率设置
 - 分段进度条、按账户机器人头像、Antigravity 模型组圆环与自由放置
 
 ## 支持的服务商
@@ -70,12 +69,6 @@ cargo build --release
 
 - QuotaScope 不提供自有服务器、账号或遥测服务。
 - 应用请求已配置服务商的用量接口，或读取本机已登录工具的状态。
-- 启用“Token spend”后会在本机读取已支持工具的会话、数据库或日志，提取 Token 计数、
-  模型与时间；DSH 支持有界解压本机 Zstandard 会话，损坏或超限保留不完整提示。
-  不会上传会话正文。开启账户详细卡后，Antigravity 还会读取本机
-  `~/.gemini/antigravity/conversations` 会话数据库中的用量元数据，同样不读取正文。  
-  定价功能会下载 models.dev 的公开价目表，超过 24 小时后在下次读取时自动更新，  
-  离线时使用本地缓存；models.dev 没有公开价目的模型单独标记，不会用相近模型的价格代替。
 - 浏览器 cookie 仅在点击“从浏览器导入”时读取，并用 DPAPI 保存；扩展程序只在启用后运行。
 - QuotaScope 不上传源码、Prompt 或模型生成内容。启用的扩展程序使用自己的网络和登录通道。
 
@@ -90,10 +83,9 @@ cargo build --release
 QuotaScope for Windows 移植自 [qunqin24/Pulse](https://github.com/qunqin24/Pulse)——同一个项目  
 的 macOS 原生版（Swift），同样采用 [Apache 2.0](LICENSE) 许可。从那边过来的部分：
 
-- **数据模型和整套记账行为。** 额度窗口的口径、缓存、刷新节奏、告警规则、models.dev 价目表、  
-  本机 token 账本，以及“一个窗口值多少钱”的推算。这部分有出处可查：9 个 Rust 源文件在模块  
-  注释里点名了各自的 `*.swift` 来源（`model.rs` ← `UsageProvider.swift`、`estimate.rs` ←  
-  `BudgetEstimate.swift`，如此等等）。
+- **数据模型和整套记账行为。** 额度窗口的口径、缓存、刷新节奏和告警规则。这部分有出处可查：
+  Rust 源文件在模块注释里点名了各自的 `*.swift` 来源（`model.rs` ← `UsageProvider.swift`，
+  如此等等）。
 - **17 个服务商通道的判读。** 上游实测过的那些客户端接口——字段含义、单位、到期口径，以及  
   哪些数字不能信——由 `Docs/providers/` 保留下来；那下面的文档几乎每篇都指向  
   `Sources/Pulse/` 里的对应实现。这些写的是上游行为，不等于 Windows 支持情况，Windows 以  

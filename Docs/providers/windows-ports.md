@@ -91,7 +91,6 @@ API key/Cookie header 由设置保存到 DPAPI 加密文件。浏览器导入仅
 扩展程序独立于这 78 个内置 provider，见 [Windows extensions](../extensions.md)。
 
 托盘用量页使用上游明确的 18 个 URL；只有启用的账户出现在托盘中。
-详细卡历史支持主账户 Claude Code/Codex 本机账本、z.ai/智谱服务器统计及 OpenCode 官网实际请求账单。
 操作步骤和验证边界见 [Windows 1.2 guide](../windows-1.2.md)。
 
 
